@@ -30,8 +30,8 @@ import (
 	"syscall"
 	"time"
 
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/ratelimiter/rate_limiter"
-	routing "github.com/aibrix/aibrix/pkg/plugins/ratelimiter/routing_algorithms"
+	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/rate_limiter"
+	routing "github.com/aibrix/aibrix/pkg/plugins/gateway/routing_algorithms"
 	redis "github.com/redis/go-redis/v9"
 	openai "github.com/sashabaranov/go-openai"
 	"google.golang.org/grpc"

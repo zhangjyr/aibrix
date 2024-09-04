@@ -1,6 +1,8 @@
 # Image URL to use all building/pushing image targets
+AIBRIX_REPO ?= aibrix
 IMG ?= controller:latest
 PLUGINS_IMG ?= aibrix/plugins:v0.1.0
+RUNTIME_IMG ?= ${AIBRIX_REPO}/runtime:latest
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.29.0
 
@@ -114,6 +116,10 @@ docker-build: ## Build docker image with the manager.
 docker-build-plugins: ## Build docker image with the manager.
 	$(CONTAINER_TOOL) build -t ${PLUGINS_IMG} -f gateway.Dockerfile .
 
+.PHONY: docker-build-runtime
+docker-build-runtime: ## Build docker image with the AI Runime.
+	$(CONTAINER_TOOL) build -t ${RUNTIME_IMG} -f runtime.Dockerfile .
+
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
@@ -140,6 +146,10 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	mkdir -p dist
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
+
+.PHONY: docker-buildx-runtime
+docker-buildx-runtime:
+	$(CONTAINER_TOOL) buildx build --push --platform=${PLATFORMS} -f runtime.Dockerfile . -t ${AIBRIX_REPO}/${RUNTIME_IMG}
 
 ##@ Deployment
 

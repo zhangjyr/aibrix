@@ -5,8 +5,15 @@ FROM ${BASE_IMAGE} AS base
 
 WORKDIR /app
 
-# Install Poetry
 ARG POETRY_VERSION=1.8.3
+
+# Install dependencies
+RUN apt-get update \
+    && apt-get install -y python3-dev build-essential \
+    && apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+    
+# Install Poetry
 RUN python3 -m pip install poetry==${POETRY_VERSION}
 
 # Copy the runtime source

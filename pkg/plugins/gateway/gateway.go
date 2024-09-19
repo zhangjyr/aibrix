@@ -29,8 +29,7 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog"
 
@@ -158,9 +157,12 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 
 	user, err := utils.GetUser(utils.User{Name: username}, s.redisClient)
 	if err != nil {
-		// TODO: return immediate response
-		klog.Infoln("user does not exists")
-		return nil, username, targetPodIP
+		return generateErrorResponse(
+			envoyTypePb.StatusCode_Forbidden,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: "x-user-missing", RawValue: []byte("true"),
+			}}},
+			fmt.Sprintf("pre query: username is missing: %v", err.Error())), username, targetPodIP
 	}
 
 	if user.Rpm == 0 {
@@ -172,92 +174,22 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 
 	code, err := s.checkRPM(ctx, username, user.Rpm)
 	if err != nil {
-		return &extProcPb.ProcessingResponse{
-			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
-				ImmediateResponse: &extProcPb.ImmediateResponse{
-					Status: &envoyTypePb.HttpStatus{
-						Code: code,
-					},
-					Details: err.Error(),
-					Headers: &extProcPb.HeaderMutation{
-						SetHeaders: []*configPb.HeaderValueOption{
-							{
-								Header: &configPb.HeaderValue{
-									Key:      "x-rpm-exceeded",
-									RawValue: []byte("true"),
-								},
-							},
-						},
-					},
-				},
-			},
-		}, username, targetPodIP
+		return generateErrorResponse(
+			code,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: "x-rpm-exceeded", RawValue: []byte("true"),
+			}}},
+			fmt.Sprintf("pre query: error on checking rpm: %v", err.Error())), username, targetPodIP
 	}
 
 	code, err = s.checkTPM(ctx, username, user.Tpm)
 	if err != nil {
-		return &extProcPb.ProcessingResponse{
-			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
-				ImmediateResponse: &extProcPb.ImmediateResponse{
-					Status: &envoyTypePb.HttpStatus{
-						Code: code,
-					},
-					Details: err.Error(),
-					Headers: &extProcPb.HeaderMutation{
-						SetHeaders: []*configPb.HeaderValueOption{
-							{
-								Header: &configPb.HeaderValue{
-									Key:      "x-tpm-exceeded",
-									RawValue: []byte("true"),
-								},
-							},
-						},
-					},
-				},
-			},
-		}, username, targetPodIP
-	}
-
-	pods, err := s.client.CoreV1().Pods(utils.NAMESPACE).List(ctx, v1.ListOptions{
-		LabelSelector: fmt.Sprintf("model.aibrix.ai=%s", model),
-	})
-	if err != nil {
-		klog.Error(err)
-		return &extProcPb.ProcessingResponse{
-			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
-				ImmediateResponse: &extProcPb.ImmediateResponse{
-					Status: &envoyTypePb.HttpStatus{
-						Code: code,
-					},
-					Details: err.Error(),
-					Headers: &extProcPb.HeaderMutation{
-						SetHeaders: []*configPb.HeaderValueOption{
-							{
-								Header: &configPb.HeaderValue{
-									Key:      "x-routing-error",
-									RawValue: []byte("true"),
-								},
-							},
-						},
-					},
-				},
-			},
-		}, username, targetPodIP
-	}
-
-	targetPodIP, err = s.SelectTargetPod(ctx, routingStrategy, pods.Items)
-	if err != nil {
-		return &extProcPb.ProcessingResponse{
-			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
-				ImmediateResponse: &extProcPb.ImmediateResponse{
-					Status: &envoyTypePb.HttpStatus{
-						Code: envoyTypePb.StatusCode_InternalServerError,
-					},
-					Details: err.Error(),
-					Body:    "error on selecting target pod",
-				},
-			},
-		}, username, targetPodIP
+		return generateErrorResponse(
+			code,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: "x-tpm-exceeded", RawValue: []byte("true"),
+			}}},
+			fmt.Sprintf("pre query: error on checking tpm: %v", err.Error())), username, targetPodIP
 	}
 
 	headers := []*configPb.HeaderValueOption{{
@@ -266,14 +198,33 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, req *extProcPb.Proces
 			RawValue: []byte("true"),
 		},
 	}}
-	if targetPodIP != "" {
+	if routingStrategy != "" {
+		pods, err := s.cache.GetPodsForModel(model)
+		if len(pods) == 0 || err != nil {
+			return generateErrorResponse(
+				code,
+				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+					Key: "x-no-model-deployment", RawValue: []byte("true"),
+				}}},
+				fmt.Sprintf("pre query: no models are deployed: %v", err.Error())), username, targetPodIP
+		}
+
+		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods)
+		if targetPodIP == "" || err != nil {
+			return generateErrorResponse(
+				code,
+				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+					Key: "x-select-target-pod", RawValue: []byte("true"),
+				}}},
+				fmt.Sprintf("pre query: error on selecting target pod: %v", err.Error())), username, targetPodIP
+		}
+
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
 				Key:      "target-pod",
 				RawValue: []byte(targetPodIP),
 			},
 		})
-
 		podRequestCounter := s.cache.IncrPodRequestCount(fmt.Sprintf("%v_REQUEST_COUNT", targetPodIP))
 		klog.Infof("RequestStart: SelectedTargetPodIP: %s, PodRequestCount: %v", targetPodIP, podRequestCounter)
 	}
@@ -330,25 +281,27 @@ func (s *Server) HandleRequestBody(req *extProcPb.ProcessingRequest, targetPodIP
 func (s *Server) HandleResponseHeaders(req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
 	log.Println("--- In ResponseHeaders processing")
 
+	headers := []*configPb.HeaderValueOption{{
+		Header: &configPb.HeaderValue{
+			Key:      "x-went-into-resp-headers",
+			RawValue: []byte("true"),
+		},
+	}}
+	if targetPodIP != "" {
+		headers = append(headers, &configPb.HeaderValueOption{
+			Header: &configPb.HeaderValue{
+				Key:      "target-pod",
+				RawValue: []byte(targetPodIP),
+			},
+		})
+	}
+
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ResponseHeaders{
 			ResponseHeaders: &extProcPb.HeadersResponse{
 				Response: &extProcPb.CommonResponse{
 					HeaderMutation: &extProcPb.HeaderMutation{
-						SetHeaders: []*configPb.HeaderValueOption{
-							{
-								Header: &configPb.HeaderValue{
-									Key:      "x-went-into-resp-headers",
-									RawValue: []byte("true"),
-								},
-							},
-							{
-								Header: &configPb.HeaderValue{
-									Key:      "target-pod",
-									RawValue: []byte(targetPodIP),
-								},
-							},
-						},
+						SetHeaders: headers,
 					},
 					ClearRouteCache: true,
 				},
@@ -363,54 +316,44 @@ func (s *Server) HandleResponseBody(ctx context.Context, req *extProcPb.Processi
 	r := req.Request
 	b := r.(*extProcPb.ProcessingRequest_ResponseBody)
 
+	defer func() {
+		if targetPodIP != "" {
+			podRequestCounter := s.cache.DecrPodRequestCount(fmt.Sprintf("%v_REQUEST_COUNT", targetPodIP))
+			klog.Infof("RequestEnd: SelectedTargetPodIP: %s, PodRequestCount: %v", targetPodIP, podRequestCounter)
+		}
+	}()
+
 	var res openai.CompletionResponse
 	if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
-		return &extProcPb.ProcessingResponse{
-			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
-				ImmediateResponse: &extProcPb.ImmediateResponse{
-					Status: &envoyTypePb.HttpStatus{
-						Code: envoyTypePb.StatusCode_InternalServerError,
-					},
-					Details: err.Error(),
-				},
-			},
-		}
+		return generateErrorResponse(
+			envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: "x-error-response-unmarshal", RawValue: []byte("true"),
+			}}},
+			err.Error())
 	}
 
 	rpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_RPM_CURRENT", user), 1)
 	if err != nil {
-		return &extProcPb.ProcessingResponse{
-			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
-				ImmediateResponse: &extProcPb.ImmediateResponse{
-					Status: &envoyTypePb.HttpStatus{
-						Code: envoyTypePb.StatusCode_InternalServerError,
-					},
-					Details: err.Error(),
-					Body:    "post query: error on updating rpm",
-				},
-			},
-		}
+		return generateErrorResponse(
+			envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: "x-error-update-rpm", RawValue: []byte("true"),
+			}}},
+			fmt.Sprintf("post query: error on updating rpm: %v", err.Error()))
 	}
 	tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user), int64(res.Usage.TotalTokens))
 	if err != nil {
-		return &extProcPb.ProcessingResponse{
-			Response: &extProcPb.ProcessingResponse_ImmediateResponse{
-				ImmediateResponse: &extProcPb.ImmediateResponse{
-					Status: &envoyTypePb.HttpStatus{
-						Code: envoyTypePb.StatusCode_InternalServerError,
-					},
-					Details: err.Error(),
-					Body:    "post query: error on updating tpm",
-				},
-			},
-		}
+		return generateErrorResponse(
+			envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: "x-error-update-tpm", RawValue: []byte("true"),
+			}}},
+			fmt.Sprintf("post query: error on updating tpm: %v", err.Error()))
 	}
 	klog.Infof("Updated RPM: %v, TPM: %v for user: %v", rpm, tpm, user)
 
 	if targetPodIP != "" {
-		podRequestCounter := s.cache.DecrPodRequestCount(fmt.Sprintf("%v_REQUEST_COUNT", targetPodIP))
-		klog.Infof("RequestEnd: SelectedTargetPodIP: %s, PodRequestCount: %v", targetPodIP, podRequestCounter)
-
 		podTpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_THROUGHPUT", targetPodIP), int64(res.Usage.TotalTokens))
 		if err != nil {
 			klog.Error(err)
@@ -477,11 +420,9 @@ func (s *Server) checkTPM(ctx context.Context, user string, tpmLimit int64) (env
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-func (s *Server) SelectTargetPod(ctx context.Context, routingStrategy string, pods []corev1.Pod) (string, error) {
+func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, pods map[string]*v1.Pod) (string, error) {
 	var route routing.Router
 	switch routingStrategy {
-	case "random":
-		route = s.routers[routingStrategy]
 	case "least-request":
 		route = s.routers[routingStrategy]
 	case "throughput":
@@ -491,4 +432,20 @@ func (s *Server) SelectTargetPod(ctx context.Context, routingStrategy string, po
 	}
 
 	return route.Get(ctx, pods)
+}
+
+func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, body string) *extProcPb.ProcessingResponse {
+	return &extProcPb.ProcessingResponse{
+		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
+			ImmediateResponse: &extProcPb.ImmediateResponse{
+				Status: &envoyTypePb.HttpStatus{
+					Code: statusCode,
+				},
+				Headers: &extProcPb.HeaderMutation{
+					SetHeaders: headers,
+				},
+				Body: body,
+			},
+		},
+	}
 }

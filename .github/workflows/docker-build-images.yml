@@ -1,8 +1,6 @@
 name: Docker Build Images
 
 on:
-  push:
-    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
 
@@ -20,3 +18,5 @@ jobs:
       run: make docker-build-plugins
     - name: Docker Build - Runtime
       run: make docker-build-runtime
+    - name: Docker Build - Users
+      run: make docker-build-users

@@ -1,9 +1,12 @@
 import os
 import shutil
 from pathlib import Path
+from urllib.parse import urljoin
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi.datastructures import State
+from fastapi.responses import JSONResponse
 from prometheus_client import CollectorRegistry, make_asgi_app, multiprocess
 from starlette.routing import Mount
 
@@ -11,8 +14,15 @@ from aibrix import envs
 from aibrix.logger import init_logger
 from aibrix.metrics.engine_rules import get_metric_standard_rules
 from aibrix.metrics.http_collector import HTTPCollector
+from aibrix.openapi.engine.base import InferenceEngine, get_inference_engine
+from aibrix.openapi.protocol import (
+    ErrorResponse,
+    LoadLoraAdapterRequest,
+    UnloadLoraAdapterRequest,
+)
 
 logger = init_logger(__name__)
+router = APIRouter()
 
 
 def initial_prometheus_multiproc_dir():
@@ -33,6 +43,10 @@ def initial_prometheus_multiproc_dir():
     os.environ["PROMETHEUS_MULTIPROC_DIR"] = envs.PROMETHEUS_MULTIPROC_DIR
 
 
+def inference_engine(request: Request) -> InferenceEngine:
+    return request.app.state.inference_engine
+
+
 def mount_metrics(app: FastAPI):
     # setup multiprocess collector
     initial_prometheus_multiproc_dir()
@@ -44,11 +58,9 @@ def mount_metrics(app: FastAPI):
     multiprocess.MultiProcessCollector(registry)
 
     # construct scrape metric config
-    engine = envs.METRIC_SCRAPE_ENGINE
-    scrape_host = envs.METRIC_SCRAPE_HOST
-    scrape_port = envs.METRIC_SCRAPE_PORT
-    scrape_path = envs.METRIC_SCRAPE_PATH
-    scrape_endpoint = f"http://{scrape_host}:{scrape_port}{scrape_path}"
+    engine = envs.INFERENCE_ENGINE
+
+    scrape_endpoint = urljoin(envs.INFERENCE_ENGINE_ENDPOINT, envs.METRIC_SCRAPE_PATH)
     collector = HTTPCollector(scrape_endpoint, get_metric_standard_rules(engine))
     registry.register(collector)
     logger.info(
@@ -61,9 +73,37 @@ def mount_metrics(app: FastAPI):
     app.routes.append(metrics_route)
 
 
+def init_app_state(state: State) -> None:
+    state.inference_engine = get_inference_engine(
+        envs.INFERENCE_ENGINE,
+        envs.INFERENCE_ENGINE_VERSION,
+        envs.INFERENCE_ENGINE_ENDPOINT,
+    )
+
+
+@router.post("/v1/lora_adapter/load")
+async def load_lora_adapter(request: LoadLoraAdapterRequest, raw_request: Request):
+    response = await inference_engine(raw_request).load_lora_adapter(request)
+    if isinstance(response, ErrorResponse):
+        return JSONResponse(content=response.model_dump(), status_code=response.code)
+
+    return Response(status_code=200, content=response)
+
+
+@router.post("/v1/lora_adapter/unload")
+async def unload_lora_adapter(request: UnloadLoraAdapterRequest, raw_request: Request):
+    response = await inference_engine(raw_request).unload_lora_adapter(request)
+    if isinstance(response, ErrorResponse):
+        return JSONResponse(content=response.model_dump(), status_code=response.code)
+
+    return Response(status_code=200, content=response)
+
+
 def build_app():
     app = FastAPI(debug=False)
     mount_metrics(app)
+    init_app_state(app.state)
+    app.include_router(router)
     return app
 
 

@@ -80,10 +80,14 @@ DOWNLOADER_AWS_REGION = os.getenv("AWS_REGION")
 
 # Metric Standardizing Related Config
 # Scrape config
-METRIC_SCRAPE_HOST = os.getenv("METRIC_SCRAPE_HOST", "localhost")
-METRIC_SCRAPE_PORT = int(os.getenv("METRIC_SCRAPE_PORT", "8000"))
 METRIC_SCRAPE_PATH = os.getenv("METRIC_SCRAPE_PATH", "/metrics")
-METRIC_SCRAPE_ENGINE = os.getenv("METRIC_SCRAPE_ENGINE", "vllm")
 
 # Runtime Metric config
 PROMETHEUS_MULTIPROC_DIR = os.getenv("PROMETHEUS_MULTIPROC_DIR", "/tmp/aibrix/metrics/")
+
+# Inference Engine Config
+INFERENCE_ENGINE = os.getenv("INFERENCE_ENGINE", "vllm")
+INFERENCE_ENGINE_VERSION = os.getenv("INFERENCE_ENGINE_VERSION", "0.6.1")
+INFERENCE_ENGINE_ENDPOINT = os.getenv(
+    "INFERENCE_ENGINE_ENDPOINT", "http://localhost:8000"
+)

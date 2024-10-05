@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -61,7 +63,7 @@ type Scaler interface {
 	// ScaleResult which contains the recommended number of pods to scale up or down to.
 	//
 	// Refer to:  KpaAutoscaler.Scale Implementation
-	Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time) ScaleResult
+	Scale(originalReadyPodsCount int, metricKey metrics.NamespaceNameMetric, now time.Time, strategy autoscalingv1alpha1.ScalingStrategyType) ScaleResult
 }
 
 // ScaleResult contains the results of a scaling decision.

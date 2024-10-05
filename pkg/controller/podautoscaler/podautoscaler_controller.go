@@ -144,10 +144,8 @@ func (r *PodAutoscalerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	switch pa.Spec.ScalingStrategy {
 	case autoscalingv1alpha1.HPA:
 		return r.reconcileHPA(ctx, pa)
-	case autoscalingv1alpha1.KPA:
+	case autoscalingv1alpha1.KPA, autoscalingv1alpha1.APA:
 		return r.reconcileKPA(ctx, pa)
-	case autoscalingv1alpha1.APA:
-		return r.reconcileAPA(ctx, pa)
 	default:
 		return ctrl.Result{}, fmt.Errorf("unknown autoscaling strategy: %s", pa.Spec.ScalingStrategy)
 	}
@@ -315,10 +313,9 @@ func (r *PodAutoscalerReconciler) reconcileKPA(ctx context.Context, pa autoscali
 		rescale = desiredReplicas != currentReplicas
 	}
 
-	r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "KPAAlgorithmRun",
-		"KPA algorithm run. currentReplicas: %d, desiredReplicas: %d, rescale: %t",
-		desiredReplicas, currentReplicas, rescale)
-
+	r.EventRecorder.Eventf(&pa, corev1.EventTypeNormal, "AlgorithmRun",
+		"%s algorithm run. currentReplicas: %d, desiredReplicas: %d, rescale: %t",
+		pa.Spec.ScalingStrategy, currentReplicas, desiredReplicas, rescale)
 	if rescale {
 
 		if err := r.updateScale(ctx, pa.Namespace, targetGR, scale, desiredReplicas); err != nil {
@@ -496,7 +493,7 @@ func (r *PodAutoscalerReconciler) computeReplicasForMetrics(ctx context.Context,
 	metricKey := metrics.NewNamespaceNameMetric(pa.Namespace, pa.Spec.ScaleTargetRef.Name, pa.Spec.TargetMetric)
 
 	// Calculate the desired number of pods using the autoscaler logic.
-	scaleResult := r.Autoscaler.Scale(int(originalReadyPodsCount), metricKey, currentTimestamp)
+	scaleResult := r.Autoscaler.Scale(int(originalReadyPodsCount), metricKey, currentTimestamp, pa.Spec.ScalingStrategy)
 	if scaleResult.ScaleValid {
 		logger.V(4).Info("Successfully called Scale Algorithm", "scaleResult", scaleResult)
 		return scaleResult.DesiredPodCount, metricKey.MetricName, currentTimestamp, nil

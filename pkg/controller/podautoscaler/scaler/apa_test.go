@@ -25,11 +25,8 @@ import (
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
 )
 
-// TestKpaScale tests the KPA behavior under high traffic rising condition.
-// KPA stable mode recommend number of replicas 3.
-// However, in the event of a traffic spike within the last 10 seconds,
-// and surpassing the PanicThreshold, the system should enter panic mode and scale up to 10 replicas.
-func TestKpaScale(t *testing.T) {
+// TestHcpaScale tests the APA behavior. For now, APA implements HCPA algorithm.
+func TestAPAScale(t *testing.T) {
 	readyPodCount := 5
 	kpaMetricsClient := metrics.NewKPAMetricsClient()
 	now := time.Now()
@@ -43,15 +40,17 @@ func TestKpaScale(t *testing.T) {
 
 	kpaScaler, err := NewKpaAutoscaler(readyPodCount,
 		&DeciderKpaSpec{
-			MaxScaleUpRate:   2,
-			MaxScaleDownRate: 2,
-			ScalingMetric:    metricKey.MetricName,
-			TargetValue:      10,
-			TotalValue:       500,
-			PanicThreshold:   2.0,
-			StableWindow:     60 * time.Second,
-			ScaleDownDelay:   10 * time.Second,
-			ActivationScale:  2,
+			MaxScaleUpRate:           2,
+			MaxScaleDownRate:         2,
+			ScalingMetric:            metricKey.MetricName,
+			TargetValue:              10,
+			TotalValue:               500,
+			PanicThreshold:           2.0,
+			StableWindow:             60 * time.Second,
+			ScaleDownDelay:           10 * time.Second,
+			ActivationScale:          2,
+			UpFluctuationTolerance:   0.1,
+			DownFluctuationTolerance: 0.2,
 		},
 	)
 	kpaScaler.metricsClient = kpaMetricsClient
@@ -61,9 +60,20 @@ func TestKpaScale(t *testing.T) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	result := kpaScaler.Scale(readyPodCount, metricKey, now, autoscalingv1alpha1.KPA)
+	// test 1:
+	result := kpaScaler.Scale(readyPodCount, metricKey, now, autoscalingv1alpha1.APA)
 	// recent rapid rising metric value make scaler adapt turn on panic mode
 	if result.DesiredPodCount != 10 {
 		t.Errorf("result.DesiredPodCount = 10, got %d", result.DesiredPodCount)
+	}
+
+	// test 2:
+	// 1.1 means APA won't scale up unless current usage > TargetValue * (1+1.1), i.e. 210%
+	// In this test case with UpFluctuationTolerance = 1.1, APA will not scale up.
+	kpaScaler.deciderSpec.UpFluctuationTolerance = 1.1
+	result = kpaScaler.Scale(readyPodCount, metricKey, now, autoscalingv1alpha1.APA)
+	// recent rapid rising metric value make scaler adapt turn on panic mode
+	if result.DesiredPodCount != int32(readyPodCount) {
+		t.Errorf("result should remain previous replica = %d, but got %d", readyPodCount, result.DesiredPodCount)
 	}
 }

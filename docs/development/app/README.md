@@ -67,10 +67,11 @@ kubectl -n envoy-gateway-system port-forward service/envoy-aibrix-system-aibrix-
 
 # Add rpm/tpm config 
 ```shell
-kubectl -n aibrix-system exec -it aibrix-redis-master-767bcb955d-qrlfc  -- redis-cli
+kubectl -n aibrix-system port-forward svc/aibrix-gateway-users 8090:8090 &
 
-set aibrix:your-user-name_TPM_LIMIT 100
-set aibrix:your-user-name_RPM_LIMIT 10
+curl http://localhost:8090/CreateUser \
+  -H "Content-Type: application/json" \
+  -d '{"name": "your-user-name","rpm": 100,"tpm": 1000}'
 ```
 
 Test request (ensure header model name matches with deployment's model name for routing)

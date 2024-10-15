@@ -17,9 +17,12 @@ limitations under the License.
 package cache
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,6 +30,7 @@ import (
 	"time"
 
 	crdinformers "github.com/aibrix/aibrix/pkg/client/informers/externalversions"
+	"github.com/redis/go-redis/v9"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
@@ -46,11 +50,13 @@ var once sync.Once
 // type global
 type Cache struct {
 	mu                sync.RWMutex
+	redisClient       *redis.Client
 	initialized       bool
 	pods              map[string]*v1.Pod
 	podMetrics        map[string]map[string]float64  // pod_name: map[metric_name]metric_val
 	podToModelMapping map[string]map[string]struct{} // pod_name: map[model_name]struct{}
 	modelToPodMapping map[string]map[string]*v1.Pod  // model_name: map[pod_name]*v1.Pod
+	requestTrace      map[string]map[string]int      // model_name: map[Log2(input_token)-Log2(output_token)]request_count
 }
 
 var (
@@ -60,9 +66,11 @@ var (
 )
 
 const (
-	modelIdentifier                   = "model.aibrix.ai/name"
-	podPort                           = 8000
-	podMetricRefreshIntervalInSeconds = 10
+	modelIdentifier                       = "model.aibrix.ai/name"
+	podPort                               = 8000
+	podMetricRefreshIntervalInSeconds     = 10
+	writeRequestTraceIntervalInSeconds    = 10
+	expireWriteRequestTraceIntervalInMins = 10
 )
 
 func GetCache() (*Cache, error) {
@@ -72,7 +80,7 @@ func GetCache() (*Cache, error) {
 	return &instance, nil
 }
 
-func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
+func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Cache {
 	once.Do(func() {
 		if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
 			panic(err)
@@ -105,10 +113,12 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 
 		instance = Cache{
 			initialized:       true,
+			redisClient:       redisClient,
 			pods:              map[string]*v1.Pod{},
 			podMetrics:        map[string]map[string]float64{},
 			podToModelMapping: map[string]map[string]struct{}{},
 			modelToPodMapping: map[string]map[string]*v1.Pod{},
+			requestTrace:      map[string]map[string]int{},
 		}
 
 		if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -134,6 +144,27 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 				case <-ticker.C:
 					instance.updatePodMetrics()
 					instance.debugInfo()
+				case <-stopCh:
+					ticker.Stop()
+					return
+				}
+			}
+		}()
+
+		traceTicker := time.NewTicker(writeRequestTraceIntervalInSeconds * time.Second)
+		go func() {
+			if redisClient == nil {
+				return
+			}
+			for {
+				select {
+				case <-traceTicker.C:
+					if len(instance.requestTrace) == 0 {
+						continue
+					}
+					t := time.Now().Unix()
+					roundT := t - t%writeRequestTraceIntervalInSeconds
+					instance.writeRequestTraceToStorage(roundT)
 				case <-stopCh:
 					ticker.Stop()
 					return
@@ -319,6 +350,11 @@ func (c *Cache) debugInfo() {
 		}
 		klog.V(4).Infof("model: %s, pods: %s", modelName, podList)
 	}
+	for inputIndex, output := range c.requestTrace {
+		for outputIndex, requestCount := range output {
+			klog.V(4).Infof("inputIndex: %v, outputIndex: %v, requestCount: %v", inputIndex, outputIndex, requestCount)
+		}
+	}
 }
 
 func (c *Cache) GetPod(podName string) (*v1.Pod, error) {
@@ -446,4 +482,44 @@ func parseMetricFromBody(body []byte, metricName string) (float64, error) {
 		}
 	}
 	return 0, fmt.Errorf("metrics %s not found", metricName)
+}
+
+func (c *Cache) AddRequestTrace(modelName string, inputTokens, outputTokens int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	inputIndex := math.Trunc(math.Log2(float64(inputTokens)))
+	outputIndex := math.Trunc(math.Log2(float64(outputTokens)))
+
+	klog.V(5).Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
+		inputTokens, inputIndex, outputTokens, outputIndex)
+
+	if len(c.requestTrace[modelName]) == 0 {
+		c.requestTrace[modelName] = map[string]int{}
+	}
+
+	c.requestTrace[modelName][fmt.Sprintf("%v:%v", inputIndex, outputIndex)] += 1
+}
+
+func (c *Cache) writeRequestTraceToStorage(roundT int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	defer func() {
+		klog.V(5).Infof("writeRequestTraceWithKey: %v", roundT)
+		c.requestTrace = map[string]map[string]int{}
+	}()
+
+	for modelName, trace := range c.requestTrace {
+		key := fmt.Sprintf("aibrix:%v_request_trace_%v", modelName, roundT)
+		value, err := json.Marshal(trace)
+		if err != nil {
+			klog.ErrorS(err, "error to marshall request trace for redis set")
+			continue
+		}
+
+		if _, err = c.redisClient.Set(context.Background(), key, value, expireWriteRequestTraceIntervalInMins*time.Minute).Result(); err != nil {
+			klog.Error(err)
+		}
+	}
 }

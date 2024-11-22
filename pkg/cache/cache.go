@@ -64,8 +64,13 @@ const (
 	modelIdentifier                       = "model.aibrix.ai/name"
 	podPort                               = 8000
 	defaultPodMetricRefreshIntervalInMS   = 50
-	writeRequestTraceIntervalInSeconds    = 10
 	expireWriteRequestTraceIntervalInMins = 10
+	keyWriteRequestTraceIntervalInSeconds = "meta_interval_sec"
+	writeRequestTraceIntervalInSeconds    = 10
+	keyPrecisionRequestTrace              = "meta_precision"
+	precisionRequestTrace                 = 0.1
+	keyVersionRequestTrace                = "meta_v"
+	versionRequestTrace                   = 2
 )
 
 var (
@@ -514,14 +519,17 @@ func (c *Cache) AddRequestTrace(modelName string, inputTokens, outputTokens int6
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	inputIndex := math.Trunc(math.Log2(float64(inputTokens)))
-	outputIndex := math.Trunc(math.Log2(float64(outputTokens)))
+	inputIndex := int64(math.Round(math.Log2(float64(inputTokens)) / precisionRequestTrace)) // Round to the nearest precision and convert to int
+	outputIndex := int64(math.Round(math.Log2(float64(outputTokens)) / precisionRequestTrace))
 
 	klog.V(5).Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
 		inputTokens, inputIndex, outputTokens, outputIndex)
 
 	if len(c.requestTrace[modelName]) == 0 {
 		c.requestTrace[modelName] = map[string]int{}
+		c.requestTrace[modelName][keyWriteRequestTraceIntervalInSeconds] = writeRequestTraceIntervalInSeconds
+		c.requestTrace[modelName][keyPrecisionRequestTrace] = int(1 / precisionRequestTrace)
+		c.requestTrace[modelName][keyVersionRequestTrace] = versionRequestTrace
 	}
 
 	c.requestTrace[modelName][fmt.Sprintf("%v:%v", inputIndex, outputIndex)] += 1

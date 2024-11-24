@@ -14,15 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package routingalgorithms
+package cache
 
-import (
-	"context"
+type MetricValue struct {
+	Value     float64          // For simple metrics (e.g., gauge or counter)
+	Histogram *HistogramMetric // For histogram metrics
+}
 
-	v1 "k8s.io/api/core/v1"
-)
-
-type Router interface {
-	// Route returns the target pod
-	Route(ctx context.Context, pods map[string]*v1.Pod) (string, error)
+type HistogramMetric struct {
+	Sum     float64
+	Count   float64
+	Buckets map[string]float64
 }

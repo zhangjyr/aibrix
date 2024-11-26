@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/aibrix/aibrix/pkg/cache"
+	"github.com/aibrix/aibrix/pkg/metrics"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -104,20 +105,20 @@ func TestWithIPPods(t *testing.T) {
 				},
 			},
 		},
-		PodMetrics: map[string]map[string]*cache.MetricValue{
+		PodMetrics: map[string]map[string]*metrics.MetricValue{
 			"p1": {
-				num_requests_running:                 &cache.MetricValue{Value: 5},
-				num_requests_waiting:                 &cache.MetricValue{Value: 5},
-				num_requests_swapped:                 &cache.MetricValue{Value: 5},
-				avg_prompt_throughput_toks_per_s:     &cache.MetricValue{Value: 20},
-				avg_generation_throughput_toks_per_s: &cache.MetricValue{Value: 20},
+				metrics.NumRequestsRunning:              &metrics.MetricValue{Value: 5},
+				metrics.NumRequestsWaiting:              &metrics.MetricValue{Value: 5},
+				metrics.NumRequestsSwapped:              &metrics.MetricValue{Value: 5},
+				metrics.AvgPromptThroughputToksPerS:     &metrics.MetricValue{Value: 20},
+				metrics.AvgGenerationThroughputToksPerS: &metrics.MetricValue{Value: 20},
 			},
 			"p2": {
-				num_requests_running:                 &cache.MetricValue{Value: 15},
-				num_requests_waiting:                 &cache.MetricValue{Value: 15},
-				num_requests_swapped:                 &cache.MetricValue{Value: 15},
-				avg_prompt_throughput_toks_per_s:     &cache.MetricValue{Value: 15},
-				avg_generation_throughput_toks_per_s: &cache.MetricValue{Value: 2},
+				metrics.NumRequestsRunning:              &metrics.MetricValue{Value: 15},
+				metrics.NumRequestsWaiting:              &metrics.MetricValue{Value: 15},
+				metrics.NumRequestsSwapped:              &metrics.MetricValue{Value: 15},
+				metrics.AvgPromptThroughputToksPerS:     &metrics.MetricValue{Value: 15},
+				metrics.AvgGenerationThroughputToksPerS: &metrics.MetricValue{Value: 2},
 			},
 		},
 	}

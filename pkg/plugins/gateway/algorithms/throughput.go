@@ -22,6 +22,7 @@ import (
 	"math"
 
 	"github.com/aibrix/aibrix/pkg/cache"
+	"github.com/aibrix/aibrix/pkg/metrics"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -54,24 +55,24 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 			continue
 		}
 
-		promptThroughput, err := r.cache.GetPodMetric(pod.Name, avg_prompt_throughput_toks_per_s)
+		promptThroughput, err := r.cache.GetPodMetric(pod.Name, metrics.AvgPromptThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		generationThroughput, err := r.cache.GetPodMetric(pod.Name, avg_generation_throughput_toks_per_s)
+		generationThroughput, err := r.cache.GetPodMetric(pod.Name, metrics.AvgGenerationThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
 
 		// processing prompt tokens is twice as expensive than generation tokens
-		total_throughput := 2*promptThroughput.Value + generationThroughput.Value
-		klog.V(4).Infof("pod: %v, podIP: %v, promptThroughput: %v, generationThroughput: %v, total_throughput: %v",
-			pod.Name, pod.Status.PodIP, promptThroughput, generationThroughput, total_throughput)
+		totalThroughput := 2*promptThroughput.Value + generationThroughput.Value
+		klog.V(4).Infof("pod: %v, podIP: %v, promptThroughput: %v, generationThroughput: %v, totalThroughput: %v",
+			pod.Name, pod.Status.PodIP, promptThroughput, generationThroughput, totalThroughput)
 
-		if total_throughput <= minCount {
-			minCount = total_throughput
+		if totalThroughput <= minCount {
+			minCount = totalThroughput
 			targetPodIP = pod.Status.PodIP
 		}
 	}
@@ -81,4 +82,11 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 	}
 
 	return targetPodIP + ":" + podMetricPort, nil
+}
+
+func (r *throughputRouter) SubscribedMetrics() []string {
+	return []string{
+		metrics.AvgPromptThroughputToksPerS,
+		metrics.AvgGenerationThroughputToksPerS,
+	}
 }

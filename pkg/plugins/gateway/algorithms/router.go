@@ -18,13 +18,29 @@ package routingalgorithms
 
 import (
 	"context"
+	"fmt"
+
+	"github.com/aibrix/aibrix/pkg/utils"
 
 	v1 "k8s.io/api/core/v1"
 )
 
 const podMetricPort = "8000"
 
+// Router defines the interface for routing logic to select target pods.
 type Router interface {
 	// Route returns the target pod
 	Route(ctx context.Context, pods map[string]*v1.Pod) (string, error)
+}
+
+// selectRandomPodWithRand selects a random pod from the provided pod map.
+// It returns an error if no ready pods are available.
+func selectRandomPod(pods map[string]*v1.Pod, randomFn func(int) int) (string, error) {
+	// terminating pods can be chosen at this moment. FilterReadyPod didn't exclude the terminating pods yet.
+	readyPods := utils.FilterReadyPods(pods)
+	if len(readyPods) == 0 {
+		return "", fmt.Errorf("no ready pods available for fallback")
+	}
+	randomPod := readyPods[randomFn(len(readyPods))]
+	return randomPod.Status.PodIP, nil
 }

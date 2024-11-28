@@ -18,7 +18,9 @@ package routingalgorithms
 
 import (
 	"context"
+	"math/rand"
 	"testing"
+	"time"
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	"github.com/aibrix/aibrix/pkg/metrics"
@@ -86,6 +88,9 @@ func TestWithNoIPPods(t *testing.T) {
 }
 
 func TestWithIPPods(t *testing.T) {
+	// two case:
+	// case 1: pod ready
+	// case 2: pod ready & terminating -> we can send request at this moment.
 	c := cache.Cache{
 		Pods: map[string]*v1.Pod{
 			"p1": {
@@ -94,14 +99,27 @@ func TestWithIPPods(t *testing.T) {
 				},
 				Status: v1.PodStatus{
 					PodIP: "0.0.0.0",
+					Conditions: []v1.PodCondition{
+						{
+							Type:   v1.PodReady,
+							Status: v1.ConditionTrue,
+						},
+					},
 				},
 			},
 			"p2": {
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "p2",
+					Name:              "p2",
+					DeletionTimestamp: &metav1.Time{Time: time.Now()},
 				},
 				Status: v1.PodStatus{
 					PodIP: "1.0.0.0",
+					Conditions: []v1.PodCondition{
+						{
+							Type:   v1.PodReady,
+							Status: v1.ConditionTrue,
+						},
+					},
 				},
 			},
 		},
@@ -141,4 +159,113 @@ func TestWithIPPods(t *testing.T) {
 	targetPodIP, err = r3.Route(context.TODO(), c.Pods)
 	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
 	assert.NoError(t, err)
+}
+
+// TestSelectRandomPod tests the selectRandomPod function.
+func TestSelectRandomPod(t *testing.T) {
+	tests := []struct {
+		name      string
+		pods      map[string]*v1.Pod
+		expectErr bool
+	}{
+		{
+			name: "Single ready pod",
+			pods: map[string]*v1.Pod{
+				"pod1": {
+					Status: v1.PodStatus{
+						PodIP: "10.0.0.1",
+						Conditions: []v1.PodCondition{
+							{
+								Type:   v1.PodReady,
+								Status: v1.ConditionTrue,
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "Multiple ready pods",
+			pods: map[string]*v1.Pod{
+				"pod1": {
+					Status: v1.PodStatus{
+						PodIP: "10.0.0.1",
+						Conditions: []v1.PodCondition{
+							{
+								Type:   v1.PodReady,
+								Status: v1.ConditionTrue,
+							},
+						},
+					},
+				},
+				"pod2": {
+					Status: v1.PodStatus{
+						PodIP: "10.0.0.2",
+						Conditions: []v1.PodCondition{
+							{
+								Type:   v1.PodReady,
+								Status: v1.ConditionTrue,
+							},
+						},
+					},
+				},
+				"pod3": {
+					Status: v1.PodStatus{
+						PodIP: "10.0.0.3",
+						Conditions: []v1.PodCondition{
+							{
+								Type:   v1.PodReady,
+								Status: v1.ConditionTrue,
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name:      "No pods",
+			pods:      map[string]*v1.Pod{},
+			expectErr: true,
+		},
+		{
+			name: "Pods without IP",
+			pods: map[string]*v1.Pod{
+				"pod1": {
+					Status: v1.PodStatus{PodIP: ""},
+				},
+			},
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a new random generator with a fixed seed for consistent test results
+			// Seed randomness for consistent results in tests
+			r := rand.New(rand.NewSource(42))
+			podIP, err := selectRandomPod(tt.pods, r.Intn)
+			if tt.expectErr {
+				if err == nil {
+					t.Errorf("expected an error but got none")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				// Verify that the returned pod IP exists in the input map
+				found := false
+				for _, pod := range tt.pods {
+					if pod.Status.PodIP == podIP {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("returned pod IP %v is not in the input pods", podIP)
+				}
+			}
+		})
+	}
 }

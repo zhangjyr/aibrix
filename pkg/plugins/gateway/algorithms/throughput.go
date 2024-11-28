@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand"
 
 	"github.com/aibrix/aibrix/pkg/cache"
 	"github.com/aibrix/aibrix/pkg/metrics"
@@ -74,6 +75,16 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod) (s
 		if totalThroughput <= minCount {
 			minCount = totalThroughput
 			targetPodIP = pod.Status.PodIP
+		}
+	}
+
+	// Use fallback if no valid metrics
+	if targetPodIP == "" {
+		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
+		var err error
+		targetPodIP, err = selectRandomPod(pods, rand.Intn)
+		if err != nil {
+			return "", err
 		}
 	}
 

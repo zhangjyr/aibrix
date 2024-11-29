@@ -22,6 +22,7 @@ import (
 	"github.com/aibrix/aibrix/pkg/controller/podautoscaler"
 	"github.com/aibrix/aibrix/pkg/controller/rayclusterfleet"
 	"github.com/aibrix/aibrix/pkg/controller/rayclusterreplicaset"
+	"github.com/aibrix/aibrix/pkg/features"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -34,13 +35,24 @@ import (
 
 var controllerAddFuncs []func(manager.Manager) error
 
-func init() {
-	controllerAddFuncs = append(controllerAddFuncs, podautoscaler.Add)
-	controllerAddFuncs = append(controllerAddFuncs, modeladapter.Add)
-	controllerAddFuncs = append(controllerAddFuncs, modelrouter.Add)
-	// TODO: only enable them if KubeRay is installed (check RayCluster CRD exist)
-	controllerAddFuncs = append(controllerAddFuncs, rayclusterreplicaset.Add)
-	controllerAddFuncs = append(controllerAddFuncs, rayclusterfleet.Add)
+func Initialize() {
+	if features.IsControllerEnabled(features.PodAutoscalerController) {
+		controllerAddFuncs = append(controllerAddFuncs, podautoscaler.Add)
+	}
+
+	if features.IsControllerEnabled(features.ModelAdapterController) {
+		controllerAddFuncs = append(controllerAddFuncs, modeladapter.Add)
+	}
+
+	if features.IsControllerEnabled(features.ModelRouteController) {
+		controllerAddFuncs = append(controllerAddFuncs, modelrouter.Add)
+	}
+
+	if features.IsControllerEnabled(features.DistributedInferenceController) {
+		// TODO: only enable them if KubeRay is installed (check RayCluster CRD exist)
+		controllerAddFuncs = append(controllerAddFuncs, rayclusterreplicaset.Add)
+		controllerAddFuncs = append(controllerAddFuncs, rayclusterfleet.Add)
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.

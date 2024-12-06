@@ -52,9 +52,13 @@ def sample_sharegpt_requests(
                 continue
             if prompt_len > 1024 or prompt_len + output_len > 2048:
                 continue
-            filtered_dataset.append((prompt, prompt_len, output_len, None))
+            filtered_dataset.append({"Prompt": prompt, 
+                                     "Prompt Length": prompt_len, 
+                                     "Output Length": output_len})
         else:
-            filtered_dataset.append((prompt, -1, -1, None))
+            filtered_dataset.append({"Prompt": prompt, 
+                                     "Prompt Length": -1, 
+                                     "Output Length": -1})
 
     return filtered_dataset
     
@@ -89,7 +93,9 @@ def sample_sharegpt_requests_len_range(
             if not filtered.empty:
                 # Select the first match or random sample
                 sample = filtered.iloc[0]  # Or filtered.sample(1) for random
-                filtered_results.append((sample["prompt"], sample["prompt_len"], sample["completion_len"], None))
+                filtered_results.append({"Prompt": sample["prompt"], 
+                                         "Prompt Length": sample["prompt_len"], 
+                                         "Output Length": sample["completion_len"]})
                 break  # Stop relaxing for this request once a match is found
 
             # Reduce err_perc for next iteration

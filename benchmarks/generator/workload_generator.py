@@ -129,7 +129,7 @@ def pair_requests_with_prompts_round_robin(workload: List[List[Any]],
         requests_with_prompts = [
             prompts[request % prompt_count] for request in requests
         ]
-        paired_workload.append((ts, requests_with_prompts))
+        paired_workload.append({"Timestamp": ts, "Requests": requests_with_prompts})
 
     # Save to file
     save_workload(paired_workload, output_file, use_jsonl = to_jsonl)
@@ -185,7 +185,7 @@ def generate_from_azure_csv(file_path: str,
                 )
         
         if sampled_requests:  # Only add non-empty groups
-            grouped_requests.append((ts, sampled_requests))
+            grouped_requests.append({"Timestamp": ts, "Requests": sampled_requests})
         ts += interval_ms
         if ts > duration_ms:
             break

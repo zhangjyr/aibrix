@@ -41,7 +41,7 @@ Alternatively, [vidur](https://github.com/microsoft/vidur) is integrated for hig
 
 1. Builder simulator base model image
 ```dockerfile
-docker build -t aibrix/vllm-simulator:nightly --build-arg GPU_TYPE=a100 -f Dockerfile .
+docker build -t aibrix/vllm-simulator:nightly --build-arg SIMULATION=a100 -f Dockerfile .
 ```
 
 1.b (Optional) Load container image to docker context

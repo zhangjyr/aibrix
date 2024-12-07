@@ -27,7 +27,6 @@ from aibrix.gpu_optimizer.load_monitor.profile_reader import RedisProfileReader
 from aibrix.gpu_optimizer.load_monitor.visualizer import mount_to as mount_visulizer
 from aibrix.gpu_optimizer.utils import ExcludePathsFilter
 
-NAMESPACE = os.getenv("NAMESPACE", "aibrix-system")
 MODEL_LABEL = "model.aibrix.ai/name"
 MIN_REPLICAS_LABEL = "model.aibrix.ai/min_replicas"
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
@@ -186,6 +185,22 @@ async def stop_deployment_optimization(request):
         )
 
 
+@app.route("/update_profile/{model_name}")
+async def update_profile(request):
+    model_name = request.path_params["model_name"]
+    monitor = model_monitors.get(model_name, None)
+    if monitor is None:
+        return JSONResponse({"error": f"{model_name} not monitored"}, status_code=404)
+
+    if monitor.load_profiles():
+        return JSONResponse({"message": f"workload profile of {model_name} updated"})
+    else:
+        return JSONResponse(
+            {"error": f"failed to update workload profile of {model_name}"},
+            status_code=500,
+        )
+
+
 @app.route("/scale/{namespace}/{deployment_name}/{replicas}", methods=["POST"])
 async def scale_deployment(request):
     namespace = request.path_params["namespace"]
@@ -249,9 +264,9 @@ def main(signal, timeout):
             apps_v1 = client.AppsV1Api()
 
             # List existing deployments
-            logger.info(f"Looking for deployments in {NAMESPACE} with {MODEL_LABEL}")
-            deployments = apps_v1.list_namespaced_deployment(
-                namespace=NAMESPACE, label_selector=MODEL_LABEL
+            logger.info(f"Looking for deployments with {MODEL_LABEL}")
+            deployments = apps_v1.list_deployment_for_all_namespaces(
+                label_selector=MODEL_LABEL
             )
             watch_version = deployments.metadata.resource_version
             logger.debug(f"last watch version: {watch_version}")
@@ -284,8 +299,7 @@ def main(signal, timeout):
             w = watch.Watch()
             signal["watch"] = w
             for event in w.stream(
-                apps_v1.list_namespaced_deployment,
-                namespace=NAMESPACE,
+                apps_v1.list_deployment_for_all_namespaces,
                 label_selector=MODEL_LABEL,
                 resource_version=watch_version,
                 timeout_seconds=timeout,

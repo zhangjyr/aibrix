@@ -3,18 +3,6 @@ all: build
 DP ?= profiling
 DATASET ?= [set your DATASET path]
 
-.PHONY: deploy
-deploy:
-	kubectl apply -f deployment.yaml
-	sleep 2
-	kubectl -n aibrix-system port-forward svc/gpu-optimizer 8080:8080 1>/dev/null 2>&1 &
-
-.PHONY: clean
-clean:
-	kubectl delete -f deployment.yaml
-	sleep 1
-	curl http://localhost:8080/metrics/aibrix-system/simulator-llama2-7b
-
 .PHONY: benchmark
 benchmark:
 	optimizer/profiling/benchmark.sh $(DP)
@@ -33,27 +21,31 @@ debug:
 
 .PHONY: debug-init-simulator
 debug-init-simulator:
-	curl http://localhost:8080/monitor/aibrix-system/simulator-llama2-7b \
+	curl http://localhost:8080/monitor/default/simulator-llama2-7b-a100 \
 		-H "Content-Type: application/json" \
 		-H "Authorization: Bearer any_key" \
 		-d '{}'
 
 .PHONY: debug-scale-simulator	
 debug-scale-simulator:
-	curl http://localhost:8080/scale/aibrix-system/simulator-llama2-7b/2 \
+	curl http://localhost:8080/scale/default/simulator-llama2-7b-a100-a100/2 \
 		-H "Content-Type: application/json" \
 		-H "Authorization: Bearer any_key" \
 		-d '{}'
 
 .PHONY: debug-stop-simulator
 debug-stop-simulator:
-	curl -X DELETE http://localhost:8080/monitor/aibrix-system/simulator-llama2-7b \
+	curl -X DELETE http://localhost:8080/monitor/default/simulator-llama2-7b-a100 \
 		-H "Content-Type: application/json" \
 		-H "Authorization: Bearer any_key"
 
+.PHONY: debug-update-profile
+debug-update-profile:
+	curl http://localhost:8080/update_profile/llama2-7b
+
 .PHONY: debug-metrics
 debug-metrics:
-	curl http://localhost:8080/metrics/aibrix-system/simulator-llama2-7b
+	curl http://localhost:8080/metrics/aibrix-system/simulator-llama2-7b-a100
 
 .PHONY: debug-workload
 debug-workload:

@@ -127,7 +127,6 @@ class MovingDBSCANClusterer:
         if len(self.clusterers) < self.buffer_size:
             self.clusterers.append(self.clusterers[current].clone())
             self.frontier = len(self.clusterers) - 1
-            logger.debug("test")
             logger.debug(
                 "moving buffer created: %s, buffers: %s",
                 self._reason,

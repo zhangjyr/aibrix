@@ -9,7 +9,7 @@ spec:
     kind: Deployment
     name: simulator-llama2-7b-a40
   metricsSources: 
-    - endpoint: gpu-optimizer.aibrix-system.svc.cluster.local:8080
+    - endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
       path: /metrics/default/simulator-llama2-7b-a40
       metric: "vllm:deployment_replicas"
   targetValue: "1"

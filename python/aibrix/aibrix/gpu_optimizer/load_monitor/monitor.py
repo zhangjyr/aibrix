@@ -137,7 +137,12 @@ class ModelMonitor:
         profile = self._match_profile(key, deployment_name)
         if profile is not None:
             # No lock required here since the deployment has not been added to deployments.
-            self._optimizer.set_profile(profile)
+            try:
+                self._optimizer.set_profile(profile)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to set GPU profile for {key}. Optimizer will skip the GPU: {e}"
+                )
         else:
             logger.warning(
                 f"No GPU profile found for {key}. Optimizer will skip the GPU."
@@ -197,12 +202,13 @@ class ModelMonitor:
                 del self.deployments[key]
         return len(self.deployments)
 
-    def load_profiles(self, profile_reader: Optional[ProfileReader] = None):
+    def load_profiles(self, profile_reader: Optional[ProfileReader] = None) -> bool:
         """Load profiles from a file"""
         try:
             if profile_reader is None:
                 if self._profile_reader is None:
-                    return
+                    logger.error("Profile reader not initialized")
+                    return False
                 profile_reader = self._profile_reader
             else:
                 self._profile_reader = profile_reader
@@ -211,8 +217,12 @@ class ModelMonitor:
             for profile in profiles:
                 if self._update_profile(profile):
                     logger.debug(f"Profile of {profile.gpu} updated.")
+
+            return True
         except Exception as e:
             logger.error(f"Failed to load profiles: {e}")
+
+            return False
 
     def _update_profile(self, profile: GPUProfile) -> bool:
         """Update a profile, will update the formal alias copy, too."""

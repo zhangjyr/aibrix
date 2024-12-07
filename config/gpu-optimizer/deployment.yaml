@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-optimizer
+  namespace: aibrix-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gpu-optimizer
+  template:
+    metadata:
+      labels:
+        app: gpu-optimizer
+    spec:
+      serviceAccountName: gpu-optimizer-sa
+      automountServiceAccountToken: true
+      containers:
+      - name: gpu-optimizer
+        image: aibrix/runtime:nightly
+        command: ["python", "-m", "aibrix.gpu_optimizer.app"]
+        ports:
+        - containerPort: 8080
+        env:
+          - name: REDIS_HOST
+            value: aibrix-redis-master.aibrix-system.svc.cluster.local

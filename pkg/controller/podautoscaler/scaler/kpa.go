@@ -249,10 +249,23 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 		return ScaleResult{}
 	}
 
-	// Use 1 if there are zero current pods.
-	readyPodsCount := math.Max(1, float64(originalReadyPodsCount))
-	maxScaleUp := math.Ceil(spec.MaxScaleUpRate * readyPodsCount)
-	maxScaleDown := math.Floor(readyPodsCount / spec.MaxScaleDownRate)
+	// Old logic:
+	// readyPodsCount = min(1, originalReadyPodsCount)
+	// maxScaleUp = ceil(spec.MaxScaleUpRate*readyPodsCount)
+	// maxScaleDown = floor(readyPodsCount / spec.MaxScaleDownRate)
+	//
+	// The problems with old way was:
+	// 1. readyPodsCount did not reflect real pods count in "KPA Details" log.
+	// 2. If originalReadyPodsCount == 0 and spec.MaxScaleDownRate == 1, maxScaleDown will reset to 1,
+	//    preventing down scale to 0.
+	//
+	// New implementation does follows:
+	// 1. readyPodsCount now reflects real pods count.
+	// 2. maxScaleUp is at lease to 1 to ensure 0 to 1 activation.
+	// 3. maxScaleDown will remain 0 in case spec.MaxScaleDownRate == 0
+	readyPodsCount := math.Max(0, float64(originalReadyPodsCount))           // A little sanitizing.
+	maxScaleUp := math.Max(1, math.Ceil(spec.MaxScaleUpRate*readyPodsCount)) // Keep scale up non zero
+	maxScaleDown := math.Floor(readyPodsCount / spec.MaxScaleDownRate)       // Make scale down zero-able
 
 	dspc := math.Ceil(observedStableValue / spec.TargetValue)
 	dppc := math.Ceil(observedPanicValue / spec.TargetValue)
@@ -263,15 +276,17 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 
 	//	If ActivationScale > 1, then adjust the desired pod counts
 	if k.scalingContext.ActivationScale > 1 {
-		if k.scalingContext.ActivationScale > desiredStablePodCount {
+		// ActivationScale only makes sense if activated (desired > 0)
+		if k.scalingContext.ActivationScale > desiredStablePodCount && desiredStablePodCount > 0 {
 			desiredStablePodCount = k.scalingContext.ActivationScale
 		}
-		if k.scalingContext.ActivationScale > desiredPanicPodCount {
+		if k.scalingContext.ActivationScale > desiredPanicPodCount && desiredPanicPodCount > 0 {
 			desiredPanicPodCount = k.scalingContext.ActivationScale
 		}
 	}
 
-	isOverPanicThreshold := dppc/readyPodsCount >= spec.PanicThreshold
+	// Now readyPodsCount can be 0, use max(1, readyPodsCount) to prevent error.
+	isOverPanicThreshold := dppc/math.Max(1, readyPodsCount) >= spec.PanicThreshold
 
 	klog.V(4).InfoS("--- KPA Details", "readyPodsCount", readyPodsCount,
 		"MaxScaleUpRate", spec.MaxScaleUpRate, "MaxScaleDownRate", spec.MaxScaleDownRate,
@@ -313,7 +328,7 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 		}
 		desiredPodCount = k.maxPanicPods
 	} else {
-		klog.InfoS("Operating in stable mode.")
+		klog.InfoS("Operating in stable mode.", "desiredPodCount", desiredPodCount)
 	}
 
 	// Delay scale down decisions, if a ScaleDownDelay was specified.
@@ -322,8 +337,9 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	// not the same in the case where two Scale()s happen in the same time
 	// interval (because the largest will be picked rather than the most recent
 	// in that case).
-	klog.V(4).InfoS("DelayWindow details", "delayWindow", k.delayWindow.String())
 	if k.delayWindow != nil {
+		klog.V(4).InfoS("DelayWindow details", "delayWindow", k.delayWindow.String())
+
 		// the actual desiredPodCount will be recorded, but return the max replicas during passed delayWindow
 		k.delayWindow.Record(now, float64(desiredPodCount))
 		delayedPodCount, err := k.delayWindow.Max()
@@ -338,6 +354,8 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 			)
 			desiredPodCount = int32(delayedPodCount)
 		}
+	} else {
+		klog.V(4).InfoS("No DelayWindow set")
 	}
 
 	// Compute excess burst capacity

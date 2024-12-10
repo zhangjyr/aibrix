@@ -63,13 +63,18 @@ func makeHPA(pa *pav1.PodAutoscaler) *autoscalingv2.HorizontalPodAutoscaler {
 	if minReplicas != nil && *minReplicas > 0 {
 		hpa.Spec.MinReplicas = minReplicas
 	}
+	source, err := pav1.GetPaMetricSources(*pa)
+	if err != nil {
+		klog.ErrorS(err, "Failed to GetPaMetricSources")
+		return nil
+	}
 
-	if targetValue, err := strconv.ParseFloat(pa.Spec.TargetValue, 64); err != nil {
+	if targetValue, err := strconv.ParseFloat(source.TargetValue, 64); err != nil {
 		klog.ErrorS(err, "Failed to parse target value")
 	} else {
-		klog.V(4).InfoS("Creating HPA", "metric", pa.Spec.TargetMetric, "target", targetValue)
+		klog.V(4).InfoS("Creating HPA", "metric", source.TargetMetric, "target", targetValue)
 
-		switch strings.ToLower(pa.Spec.TargetMetric) {
+		switch strings.ToLower(source.TargetMetric) {
 		case pav1.CPU:
 			cpu := int32(math.Ceil(targetValue))
 			hpa.Spec.Metrics = []autoscalingv2.MetricSpec{{
@@ -102,7 +107,7 @@ func makeHPA(pa *pav1.PodAutoscaler) *autoscalingv2.HorizontalPodAutoscaler {
 				Type: autoscalingv2.PodsMetricSourceType,
 				Pods: &autoscalingv2.PodsMetricSource{
 					Metric: autoscalingv2.MetricIdentifier{
-						Name: pa.Spec.TargetMetric,
+						Name: source.TargetMetric,
 					},
 					Target: autoscalingv2.MetricTarget{
 						Type:         autoscalingv2.AverageValueMetricType,

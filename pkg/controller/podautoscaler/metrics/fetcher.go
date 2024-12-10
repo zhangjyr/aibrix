@@ -23,6 +23,8 @@ import (
 	"net/http"
 	"strings"
 
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -45,9 +47,9 @@ const (
 // MetricFetcher defines an interface for fetching metrics. it could be Kubernetes metrics or Pod prometheus metrics.
 type MetricFetcher interface {
 	// Obseleted: Call FetchMetric instead.
-	FetchPodMetrics(ctx context.Context, pod v1.Pod, metricsPort int, metricName string) (float64, error)
+	FetchPodMetrics(ctx context.Context, pod v1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error)
 
-	FetchMetric(ctx context.Context, endpoint string, path string, metricName string) (float64, error)
+	FetchMetric(ctx context.Context, protocol autoscalingv1alpha1.ProtocolType, endpoint, path, metricName string) (float64, error)
 }
 
 type abstractMetricsFetcher struct{}
@@ -59,14 +61,16 @@ func (f *abstractMetricsFetcher) FetchMetric(ctx context.Context, pod v1.Pod, me
 // RestMetricsFetcher implements MetricFetcher to fetch metrics from Pod's /metrics endpoint.
 type RestMetricsFetcher struct{}
 
-func (f *RestMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, metricsPort int, metricName string) (float64, error) {
+var _ MetricFetcher = (*RestMetricsFetcher)(nil)
+
+func (f *RestMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, source autoscalingv1alpha1.MetricSource) (float64, error) {
 	// Use /metrics to fetch pod's endpoint
-	return f.FetchMetric(ctx, fmt.Sprintf("%s:%d", pod.Status.PodIP, metricsPort), "/metrics", metricName)
+	return f.FetchMetric(ctx, source.ProtocolType, fmt.Sprintf("%s:%s", pod.Status.PodIP, source.Port), source.Path, source.TargetMetric)
 }
 
-func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, endpoint string, path string, metricName string) (float64, error) {
+func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscalingv1alpha1.ProtocolType, endpoint, path, metricName string) (float64, error) {
 	// Use http to fetch endpoint
-	url := fmt.Sprintf("http://%s/%s", endpoint, strings.TrimLeft(path, "/"))
+	url := fmt.Sprintf("%s://%s/%s", protocol, endpoint, strings.TrimLeft(path, "/"))
 
 	// Create request with context, so that the request will be canceled if the context is canceled
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

@@ -71,11 +71,16 @@ func NewBaseScalingContext() *BaseScalingContext {
 
 // UpdateByPaTypes should be invoked in any scaling context that embeds BaseScalingContext.
 func (b *BaseScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
-	b.ScalingMetric = pa.Spec.TargetMetric
-	// parse target value
-	targetValue, err := strconv.ParseFloat(pa.Spec.TargetValue, 64)
+	source, err := autoscalingv1alpha1.GetPaMetricSources(*pa)
 	if err != nil {
-		klog.ErrorS(err, "Failed to parse target value", "targetValue", pa.Spec.TargetValue)
+		return err
+	}
+
+	b.ScalingMetric = source.TargetMetric
+	// parse target value
+	targetValue, err := strconv.ParseFloat(source.TargetValue, 64)
+	if err != nil {
+		klog.ErrorS(err, "Failed to parse target value", "targetValue", source.TargetValue)
 		return err
 	}
 	b.TargetValue = targetValue

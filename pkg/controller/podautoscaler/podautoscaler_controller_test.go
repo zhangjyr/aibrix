@@ -66,6 +66,14 @@ var _ = Describe("PodAutoscaler Controller", func() {
 						MinReplicas:     IntToPtr(5),
 						MaxReplicas:     10,
 						ScalingStrategy: "HPA",
+						MetricsSources: []autoscalingv1alpha1.MetricSource{
+							{
+								MetricSourceType: autoscalingv1alpha1.POD,
+								ProtocolType:     autoscalingv1alpha1.HTTP,
+								TargetMetric:     "test_metric",
+								TargetValue:      "1",
+							},
+						},
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())

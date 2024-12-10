@@ -34,14 +34,24 @@ spec:
                   properties:
                     endpoint:
                       type: string
-                    metric:
+                    metricSourceType:
                       type: string
                     path:
                       type: string
+                    port:
+                      type: string
+                    protocolType:
+                      type: string
+                    targetMetric:
+                      type: string
+                    targetValue:
+                      type: string
                   required:
-                  - endpoint
-                  - metric
+                  - metricSourceType
                   - path
+                  - protocolType
+                  - targetMetric
+                  - targetValue
                   type: object
                 type: array
               minReplicas:
@@ -67,16 +77,10 @@ spec:
                 x-kubernetes-map-type: atomic
               scalingStrategy:
                 type: string
-              targetMetric:
-                type: string
-              targetValue:
-                type: string
             required:
             - maxReplicas
             - scaleTargetRef
             - scalingStrategy
-            - targetMetric
-            - targetValue
             type: object
           status:
             properties:

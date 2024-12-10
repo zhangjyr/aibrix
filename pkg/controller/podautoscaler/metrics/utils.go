@@ -24,6 +24,8 @@ import (
 	"strings"
 	"time"
 
+	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -95,8 +97,8 @@ func GetMetricUsageRatio(metrics PodMetricsInfo, targetUsage int64) (usageRatio 
 	return float64(currentUsage) / float64(targetUsage), currentUsage
 }
 
-func GetPodContainerMetric(ctx context.Context, fetcher MetricFetcher, pod corev1.Pod, metricName string, metricPort int) (PodMetricsInfo, time.Time, error) {
-	_, err := fetcher.FetchPodMetrics(ctx, pod, metricPort, metricName)
+func GetPodContainerMetric(ctx context.Context, fetcher MetricFetcher, pod corev1.Pod, source autoscalingv1alpha1.MetricSource) (PodMetricsInfo, time.Time, error) {
+	_, err := fetcher.FetchPodMetrics(ctx, pod, source)
 	currentTimestamp := time.Now()
 	if err != nil {
 		return nil, currentTimestamp, err
@@ -106,11 +108,11 @@ func GetPodContainerMetric(ctx context.Context, fetcher MetricFetcher, pod corev
 	return nil, currentTimestamp, nil
 }
 
-func GetMetricsFromPods(ctx context.Context, fetcher MetricFetcher, pods []corev1.Pod, metricName string, metricPort int) ([]float64, error) {
+func GetMetricsFromPods(ctx context.Context, fetcher MetricFetcher, pods []corev1.Pod, source autoscalingv1alpha1.MetricSource) ([]float64, error) {
 	metrics := make([]float64, 0, len(pods))
 	for _, pod := range pods {
 		// TODO: Let's optimize the performance for multi-metrics later.
-		metric, err := fetcher.FetchPodMetrics(ctx, pod, metricPort, metricName)
+		metric, err := fetcher.FetchPodMetrics(ctx, pod, source)
 		if err != nil {
 			return nil, err
 		}

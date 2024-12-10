@@ -54,7 +54,7 @@ type Scaler interface {
 	//   when the last metric update occurred and can be used to calculate time-based scaling actions.
 	//
 	// This method ensures that the autoscaler has up-to-date metrics before making any scaling decisions.
-	UpdateScaleTargetMetrics(ctx context.Context, metricKey metrics.NamespaceNameMetric, pods []corev1.Pod, now time.Time) error
+	UpdateScaleTargetMetrics(ctx context.Context, metricKey metrics.NamespaceNameMetric, source autoscalingv1alpha1.MetricSource, pods []corev1.Pod, now time.Time) error
 
 	// UpdateSourceMetrics updates the current state of metrics used to determine scaling actions.
 	// It processes the latest metrics for a metrics source and stores

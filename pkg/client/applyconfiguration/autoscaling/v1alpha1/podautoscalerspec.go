@@ -28,8 +28,6 @@ type PodAutoscalerSpecApplyConfiguration struct {
 	ScaleTargetRef  *v1.ObjectReference                      `json:"scaleTargetRef,omitempty"`
 	MinReplicas     *int32                                   `json:"minReplicas,omitempty"`
 	MaxReplicas     *int32                                   `json:"maxReplicas,omitempty"`
-	TargetMetric    *string                                  `json:"targetMetric,omitempty"`
-	TargetValue     *string                                  `json:"targetValue,omitempty"`
 	MetricsSources  []MetricSourceApplyConfiguration         `json:"metricsSources,omitempty"`
 	ScalingStrategy *autoscalingv1alpha1.ScalingStrategyType `json:"scalingStrategy,omitempty"`
 }
@@ -61,22 +59,6 @@ func (b *PodAutoscalerSpecApplyConfiguration) WithMinReplicas(value int32) *PodA
 // If called multiple times, the MaxReplicas field is set to the value of the last call.
 func (b *PodAutoscalerSpecApplyConfiguration) WithMaxReplicas(value int32) *PodAutoscalerSpecApplyConfiguration {
 	b.MaxReplicas = &value
-	return b
-}
-
-// WithTargetMetric sets the TargetMetric field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the TargetMetric field is set to the value of the last call.
-func (b *PodAutoscalerSpecApplyConfiguration) WithTargetMetric(value string) *PodAutoscalerSpecApplyConfiguration {
-	b.TargetMetric = &value
-	return b
-}
-
-// WithTargetValue sets the TargetValue field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the TargetValue field is set to the value of the last call.
-func (b *PodAutoscalerSpecApplyConfiguration) WithTargetValue(value string) *PodAutoscalerSpecApplyConfiguration {
-	b.TargetValue = &value
 	return b
 }
 

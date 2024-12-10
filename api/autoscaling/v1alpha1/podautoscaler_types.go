@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -61,10 +63,6 @@ type PodAutoscalerSpec struct {
 	// It cannot be less than minReplicas
 	MaxReplicas int32 `json:"maxReplicas"`
 
-	TargetMetric string `json:"targetMetric"`
-
-	TargetValue string `json:"targetValue"`
-
 	// MetricsSources defines a list of sources from which metrics are collected to make scaling decisions.
 	MetricsSources []MetricSource `json:"metricsSources,omitempty"`
 
@@ -86,14 +84,38 @@ const (
 	APA ScalingStrategyType = "APA"
 )
 
+type MetricSourceType string
+
+const (
+	// POD need to scan all k8s pods to fetch the data
+	POD MetricSourceType = "pod"
+	// DOMAIN only need to access specified domain
+	DOMAIN MetricSourceType = "domain"
+)
+
+type ProtocolType string
+
+const (
+	HTTP  ProtocolType = "http"
+	HTTPS ProtocolType = "https"
+)
+
 // MetricSource defines an endpoint and path from which metrics are collected.
 type MetricSource struct {
-	// e.g. service1.example.com
-	Endpoint string `json:"endpoint"`
+	// access an endpoint or scan a list of k8s pod
+	MetricSourceType MetricSourceType `json:"metricSourceType"`
+	// http or https
+	ProtocolType ProtocolType `json:"protocolType"`
+	// e.g. service1.example.com. meaningless for MetricSourceType.POD
+	Endpoint string `json:"endpoint,omitempty"`
 	// e.g. /api/metrics/cpu
 	Path string `json:"path"`
-	// e.g. kv_cache_utilization metrics
-	Name string `json:"metric"`
+	// e.g. 8080. meaningless for MetricSourceType.DOMAIN
+	Port string `json:"port,omitempty"`
+	// TargetMetric identifies the specific metric to monitor (e.g., kv_cache_utilization).
+	TargetMetric string `json:"targetMetric"`
+	// TargetValue sets the desired threshold for the metric (e.g., 50 for 50% utilization).
+	TargetValue string `json:"targetValue"`
 }
 
 // PodAutoscalerStatus defines the observed state of PodAutoscaler
@@ -142,3 +164,11 @@ const (
 	// QPS is the requests per second reaching the Pod.
 	QPS = "qps"
 )
+
+// GetPaMetricSources Currently, we don't support metric resources that are more than one yet.
+func GetPaMetricSources(pa PodAutoscaler) (MetricSource, error) {
+	if len(pa.Spec.MetricsSources) != 1 {
+		return MetricSource{}, fmt.Errorf("for now we only support one MetricsSource")
+	}
+	return pa.Spec.MetricsSources[0], nil
+}

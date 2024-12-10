@@ -17,6 +17,7 @@ limitations under the License.
 package scaler
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -80,10 +81,12 @@ func TestKpaScale(t *testing.T) {
 			Namespace: "test_ns",
 		},
 		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
-			TargetMetric: spec.ScalingMetric,
 			MetricsSources: []autoscalingv1alpha1.MetricSource{
 				{
-					Name: spec.ScalingMetric,
+					MetricSourceType: autoscalingv1alpha1.POD,
+					ProtocolType:     autoscalingv1alpha1.HTTP,
+					TargetMetric:     spec.ScalingMetric,
+					TargetValue:      fmt.Sprintf("%f", spec.TargetValue),
 				},
 			},
 			ScaleTargetRef: corev1.ObjectReference{
@@ -92,7 +95,11 @@ func TestKpaScale(t *testing.T) {
 		},
 	}
 
-	metricKey := metrics.NewNamespaceNameMetric(&pa)
+	metricKey, _, err := metrics.NewNamespaceNameMetric(&pa)
+
+	if err != nil {
+		t.Errorf("NewNamespaceNameMetric() failed: %v", err)
+	}
 
 	result := kpaScaler.Scale(readyPodCount, metricKey, now)
 	// recent rapid rising metric value make scaler adapt turn on panic mode
@@ -108,14 +115,14 @@ func TestKpaUpdateContext(t *testing.T) {
 				Kind: "Deployment",
 				Name: "example-deployment",
 			},
-			MinReplicas:  nil, // expecting nil as default since it's a pointer and no value is assigned
-			MaxReplicas:  5,
-			TargetValue:  "1",
-			TargetMetric: "test.metrics",
+			MinReplicas: nil, // expecting nil as default since it's a pointer and no value is assigned
+			MaxReplicas: 5,
 			MetricsSources: []autoscalingv1alpha1.MetricSource{
 				{
-					Endpoint: "service1.example.com",
-					Path:     "/api/metrics/cpu",
+					Endpoint:     "service1.example.com",
+					Path:         "/api/metrics/cpu",
+					TargetMetric: "test.metrics",
+					TargetValue:  "1",
 				},
 			},
 			ScalingStrategy: "KPA",

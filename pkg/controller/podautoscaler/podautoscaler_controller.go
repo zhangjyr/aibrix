@@ -284,7 +284,11 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	paStatusOriginal := pa.Status.DeepCopy()
 	paType := pa.Spec.ScalingStrategy
 	scaleReference := fmt.Sprintf("%s/%s/%s", pa.Spec.ScaleTargetRef.Kind, pa.Namespace, pa.Spec.ScaleTargetRef.Name)
-	metricKey := metrics.NewNamespaceNameMetric(&pa)
+	metricKey, metricSource, err := metrics.NewNamespaceNameMetric(&pa)
+	if err != nil {
+		r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "FailedGetMetricKey", err.Error())
+		return ctrl.Result{}, err
+	}
 
 	targetGV, err := schema.ParseGroupVersion(pa.Spec.ScaleTargetRef.APIVersion)
 	if err != nil {
@@ -325,7 +329,7 @@ func (r *PodAutoscalerReconciler) reconcileCustomPA(ctx context.Context, pa auto
 	setCondition(&pa, "AbleToScale", metav1.ConditionTrue, "SucceededGetScale", "the %s controller was able to get the target's current scale", paType)
 
 	// Update the scale required metrics periodically
-	err = r.updateMetricsForScale(ctx, pa, scale, metricKey)
+	err = r.updateMetricsForScale(ctx, pa, scale, metricKey, metricSource)
 	if err != nil {
 		r.EventRecorder.Event(&pa, corev1.EventTypeWarning, "FailedUpdateMetrics", err.Error())
 		return ctrl.Result{}, fmt.Errorf("failed to update metrics for scale target reference: %v", err)
@@ -608,7 +612,7 @@ func (r *PodAutoscalerReconciler) updateScalerSpec(ctx context.Context, pa autos
 	return autoScaler.UpdateScalingContext(pa)
 }
 
-func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured, metricKey metrics.NamespaceNameMetric) (err error) {
+func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa autoscalingv1alpha1.PodAutoscaler, scale *unstructured.Unstructured, metricKey metrics.NamespaceNameMetric, metricSource autoscalingv1alpha1.MetricSource) (err error) {
 	currentTimestamp := time.Now()
 	var autoScaler scaler.Scaler
 	autoScaler, exists := r.AutoscalerMap[metricKey]
@@ -640,11 +644,6 @@ func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa 
 		}
 	}
 
-	// update metrics
-	for _, source := range pa.Spec.MetricsSources {
-		return autoScaler.UpdateSourceMetrics(ctx, metricKey, source, currentTimestamp)
-	}
-
 	// Retrieve the selector string from the Scale object's Status,
 	// and convert *metav1.LabelSelector object to labels.Selector structure
 	labelsSelector, err := extractLabelSelector(scale)
@@ -662,10 +661,12 @@ func (r *PodAutoscalerReconciler) updateMetricsForScale(ctx context.Context, pa 
 	// TODO: do we need to indicate the metrics source.
 	// Technically, the metrics could come from Kubernetes metrics API (resource or custom), pod prometheus endpoint or ai runtime
 
-	// Update targets
-	if err := autoScaler.UpdateScaleTargetMetrics(ctx, metricKey, podList.Items, currentTimestamp); err != nil {
-		return err
+	switch metricSource.MetricSourceType {
+	case autoscalingv1alpha1.POD:
+		return autoScaler.UpdateScaleTargetMetrics(ctx, metricKey, metricSource, podList.Items, currentTimestamp)
+	case autoscalingv1alpha1.DOMAIN:
+		return autoScaler.UpdateSourceMetrics(ctx, metricKey, metricSource, currentTimestamp)
+	default:
+		return fmt.Errorf("unsupported protocol type: %v", metricSource.ProtocolType)
 	}
-
-	return nil
 }

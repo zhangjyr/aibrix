@@ -123,6 +123,7 @@ func NewKpaScalingContextByPa(pa *autoscalingv1alpha1.PodAutoscaler) (*KpaScalin
 }
 
 func (k *KpaScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
+
 	err := k.BaseScalingContext.UpdateByPaTypes(pa)
 	if err != nil {
 		return err
@@ -381,10 +382,8 @@ func (k *KpaAutoscaler) Scale(originalReadyPodsCount int, metricKey metrics.Name
 	}
 }
 
-func (k *KpaAutoscaler) UpdateScaleTargetMetrics(ctx context.Context, metricKey metrics.NamespaceNameMetric, pods []v1.Pod, now time.Time) error {
-	// TODO: let's update this fix port later.
-	metricPort := 8000
-	metricValues, err := k.metricClient.GetMetricsFromPods(ctx, pods, metricKey.MetricName, metricPort)
+func (k *KpaAutoscaler) UpdateScaleTargetMetrics(ctx context.Context, metricKey metrics.NamespaceNameMetric, source autoscalingv1alpha1.MetricSource, pods []v1.Pod, now time.Time) error {
+	metricValues, err := k.metricClient.GetMetricsFromPods(ctx, pods, source)
 	if err != nil {
 		return err
 	}

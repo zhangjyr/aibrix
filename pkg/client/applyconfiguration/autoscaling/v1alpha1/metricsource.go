@@ -17,18 +17,42 @@ limitations under the License.
 
 package v1alpha1
 
+import (
+	v1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+)
+
 // MetricSourceApplyConfiguration represents an declarative configuration of the MetricSource type for use
 // with apply.
 type MetricSourceApplyConfiguration struct {
-	Endpoint *string `json:"endpoint,omitempty"`
-	Path     *string `json:"path,omitempty"`
-	Name     *string `json:"metric,omitempty"`
+	MetricSourceType *v1alpha1.MetricSourceType `json:"metricSourceType,omitempty"`
+	ProtocolType     *v1alpha1.ProtocolType     `json:"protocolType,omitempty"`
+	Endpoint         *string                    `json:"endpoint,omitempty"`
+	Path             *string                    `json:"path,omitempty"`
+	Port             *string                    `json:"port,omitempty"`
+	TargetMetric     *string                    `json:"targetMetric,omitempty"`
+	TargetValue      *string                    `json:"targetValue,omitempty"`
 }
 
 // MetricSourceApplyConfiguration constructs an declarative configuration of the MetricSource type for use with
 // apply.
 func MetricSource() *MetricSourceApplyConfiguration {
 	return &MetricSourceApplyConfiguration{}
+}
+
+// WithMetricSourceType sets the MetricSourceType field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the MetricSourceType field is set to the value of the last call.
+func (b *MetricSourceApplyConfiguration) WithMetricSourceType(value v1alpha1.MetricSourceType) *MetricSourceApplyConfiguration {
+	b.MetricSourceType = &value
+	return b
+}
+
+// WithProtocolType sets the ProtocolType field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ProtocolType field is set to the value of the last call.
+func (b *MetricSourceApplyConfiguration) WithProtocolType(value v1alpha1.ProtocolType) *MetricSourceApplyConfiguration {
+	b.ProtocolType = &value
+	return b
 }
 
 // WithEndpoint sets the Endpoint field in the declarative configuration to the given value
@@ -47,10 +71,26 @@ func (b *MetricSourceApplyConfiguration) WithPath(value string) *MetricSourceApp
 	return b
 }
 
-// WithName sets the Name field in the declarative configuration to the given value
+// WithPort sets the Port field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Name field is set to the value of the last call.
-func (b *MetricSourceApplyConfiguration) WithName(value string) *MetricSourceApplyConfiguration {
-	b.Name = &value
+// If called multiple times, the Port field is set to the value of the last call.
+func (b *MetricSourceApplyConfiguration) WithPort(value string) *MetricSourceApplyConfiguration {
+	b.Port = &value
+	return b
+}
+
+// WithTargetMetric sets the TargetMetric field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the TargetMetric field is set to the value of the last call.
+func (b *MetricSourceApplyConfiguration) WithTargetMetric(value string) *MetricSourceApplyConfiguration {
+	b.TargetMetric = &value
+	return b
+}
+
+// WithTargetValue sets the TargetValue field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the TargetValue field is set to the value of the last call.
+func (b *MetricSourceApplyConfiguration) WithTargetValue(value string) *MetricSourceApplyConfiguration {
+	b.TargetValue = &value
 	return b
 }

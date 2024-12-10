@@ -18,6 +18,7 @@ package metrics
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -33,19 +34,21 @@ type NamespaceNameMetric struct {
 	MetricName string
 }
 
-func NewNamespaceNameMetric(pa *autoscalingv1alpha1.PodAutoscaler) NamespaceNameMetric {
-	metricName := pa.Spec.TargetMetric
-	if len(pa.Spec.MetricsSources) > 0 {
-		metricName = pa.Spec.MetricsSources[0].Name
+// NewNamespaceNameMetric creates a NamespaceNameMetric based on the PodAutoscaler's metrics source.
+// For consistency, it will return the corresponding MetricSource.
+// Currently, it supports only a single metric source. In the future, this could be extended to handle multiple metric sources.
+func NewNamespaceNameMetric(pa *autoscalingv1alpha1.PodAutoscaler) (NamespaceNameMetric, autoscalingv1alpha1.MetricSource, error) {
+	if len(pa.Spec.MetricsSources) != 1 {
+		return NamespaceNameMetric{}, autoscalingv1alpha1.MetricSource{}, fmt.Errorf("metrics sources must be 1, but got %d", len(pa.Spec.MetricsSources))
 	}
-
+	metricSource := pa.Spec.MetricsSources[0]
 	return NamespaceNameMetric{
 		NamespacedName: types.NamespacedName{
 			Namespace: pa.Namespace,
 			Name:      pa.Spec.ScaleTargetRef.Name,
 		},
-		MetricName: metricName,
-	}
+		MetricName: metricSource.TargetMetric,
+	}, metricSource, nil
 }
 
 // PodMetric contains pod metric value (the metric values are expected to be the metric as a milli-value)
@@ -69,9 +72,9 @@ type MetricClient interface {
 	// for the specified named container in specific pods in the given namespace and when
 	// the container is an empty string it returns the sum of all the container metrics.
 	// TODO: should we use `metricKey` all the time?
-	GetPodContainerMetric(ctx context.Context, pod v1.Pod, metricName string, metricPort int) (PodMetricsInfo, time.Time, error)
+	GetPodContainerMetric(ctx context.Context, pod v1.Pod, source autoscalingv1alpha1.MetricSource) (PodMetricsInfo, time.Time, error)
 
-	GetMetricsFromPods(ctx context.Context, pods []v1.Pod, metricName string, metricPort int) ([]float64, error)
+	GetMetricsFromPods(ctx context.Context, pods []v1.Pod, source autoscalingv1alpha1.MetricSource) ([]float64, error)
 
 	GetMetricFromSource(ctx context.Context, source autoscalingv1alpha1.MetricSource) (float64, error)
 

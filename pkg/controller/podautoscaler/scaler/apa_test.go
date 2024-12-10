@@ -17,6 +17,7 @@ limitations under the License.
 package scaler
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -45,14 +46,24 @@ func TestAPAScale(t *testing.T) {
 			Namespace: "test_ns",
 		},
 		Spec: autoscalingv1alpha1.PodAutoscalerSpec{
-			TargetMetric: "ttot", // Set TargetMetric to "ttot"
+			MetricsSources: []autoscalingv1alpha1.MetricSource{
+				{
+					MetricSourceType: autoscalingv1alpha1.POD,
+					ProtocolType:     autoscalingv1alpha1.HTTP,
+					TargetMetric:     spec.ScalingMetric,
+					TargetValue:      fmt.Sprintf("%f", spec.TargetValue),
+				},
+			},
 			ScaleTargetRef: corev1.ObjectReference{
 				Name: "llama-70b",
 			},
 		},
 	}
 
-	metricKey := metrics.NewNamespaceNameMetric(&pa)
+	metricKey, _, err := metrics.NewNamespaceNameMetric(&pa)
+	if err != nil {
+		t.Errorf("NewNamespaceNameMetric() failed: %v", err)
+	}
 	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-60*time.Second), 10.0)
 	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-50*time.Second), 11.0)
 	_ = apaMetricsClient.UpdateMetricIntoWindow(now.Add(-40*time.Second), 12.0)
@@ -94,14 +105,14 @@ func TestApaUpdateContext(t *testing.T) {
 				Kind: "Deployment",
 				Name: "example-deployment",
 			},
-			MinReplicas:  nil, // expecting nil as default since it's a pointer and no value is assigned
-			MaxReplicas:  5,
-			TargetValue:  "1",
-			TargetMetric: "test.metrics",
+			MinReplicas: nil, // expecting nil as default since it's a pointer and no value is assigned
+			MaxReplicas: 5,
 			MetricsSources: []autoscalingv1alpha1.MetricSource{
 				{
-					Endpoint: "service1.example.com",
-					Path:     "/api/metrics/cpu",
+					Endpoint:     "service1.example.com",
+					Path:         "/api/metrics/cpu",
+					TargetValue:  "1",
+					TargetMetric: "test.metrics",
 				},
 			},
 			ScalingStrategy: "APA",

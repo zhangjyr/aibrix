@@ -127,17 +127,17 @@ func (c *KPAMetricsClient) StableAndPanicMetrics(
 	return stableValue, panicValue, nil
 }
 
-func (c *KPAMetricsClient) GetPodContainerMetric(ctx context.Context, pod corev1.Pod, metricName string, metricPort int) (PodMetricsInfo, time.Time, error) {
-	return GetPodContainerMetric(ctx, c.fetcher, pod, metricName, metricPort)
+func (c *KPAMetricsClient) GetPodContainerMetric(ctx context.Context, pod corev1.Pod, source autoscalingv1alpha1.MetricSource) (PodMetricsInfo, time.Time, error) {
+	return GetPodContainerMetric(ctx, c.fetcher, pod, source)
 }
 
-func (c *KPAMetricsClient) GetMetricsFromPods(ctx context.Context, pods []corev1.Pod, metricName string, metricPort int) ([]float64, error) {
-	return GetMetricsFromPods(ctx, c.fetcher, pods, metricName, metricPort)
+func (c *KPAMetricsClient) GetMetricsFromPods(ctx context.Context, pods []corev1.Pod, source autoscalingv1alpha1.MetricSource) ([]float64, error) {
+	return GetMetricsFromPods(ctx, c.fetcher, pods, source)
 }
 
 func (c *KPAMetricsClient) GetMetricFromSource(ctx context.Context, source autoscalingv1alpha1.MetricSource) (float64, error) {
 	// Retrieve metrics from a list of pods
-	return c.fetcher.FetchMetric(ctx, source.Endpoint, source.Path, source.Name)
+	return c.fetcher.FetchMetric(ctx, "", source.Endpoint, source.Path, source.TargetMetric)
 }
 
 type APAMetricsClient struct {
@@ -213,14 +213,14 @@ func (c *APAMetricsClient) GetMetricValue(
 	return metricValue, nil
 }
 
-func (c *APAMetricsClient) GetPodContainerMetric(ctx context.Context, pod corev1.Pod, metricName string, metricPort int) (PodMetricsInfo, time.Time, error) {
-	return GetPodContainerMetric(ctx, c.fetcher, pod, metricName, metricPort)
+func (c *APAMetricsClient) GetPodContainerMetric(ctx context.Context, pod corev1.Pod, source autoscalingv1alpha1.MetricSource) (PodMetricsInfo, time.Time, error) {
+	return GetPodContainerMetric(ctx, c.fetcher, pod, source)
 }
 
-func (c *APAMetricsClient) GetMetricsFromPods(ctx context.Context, pods []corev1.Pod, metricName string, metricPort int) ([]float64, error) {
-	return GetMetricsFromPods(ctx, c.fetcher, pods, metricName, metricPort)
+func (c *APAMetricsClient) GetMetricsFromPods(ctx context.Context, pods []corev1.Pod, source autoscalingv1alpha1.MetricSource) ([]float64, error) {
+	return GetMetricsFromPods(ctx, c.fetcher, pods, source)
 }
 
 func (c *APAMetricsClient) GetMetricFromSource(ctx context.Context, source autoscalingv1alpha1.MetricSource) (float64, error) {
-	return c.fetcher.FetchMetric(ctx, source.Endpoint, source.Path, source.Name)
+	return c.fetcher.FetchMetric(ctx, "", source.Endpoint, source.Path, source.TargetMetric)
 }

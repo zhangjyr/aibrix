@@ -15,7 +15,7 @@ import logging
 from contextlib import nullcontext
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import tos
@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
+from aibrix.downloader.s3 import S3BaseDownloader
 from aibrix.downloader.utils import (
     infer_model_name,
     meta_file,
@@ -44,7 +45,7 @@ def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
     return bucket_name, bucket_path
 
 
-class TOSDownloader(BaseDownloader):
+class TOSDownloaderV1(BaseDownloader):
     def __init__(
         self,
         model_uri,
@@ -169,3 +170,41 @@ class TOSDownloader(BaseDownloader):
                 **download_kwargs,
             )
             save_meta_data(meta_data_file, etag)
+
+
+class TOSDownloaderV2(S3BaseDownloader):
+    def __init__(
+        self,
+        model_uri,
+        model_name: Optional[str] = None,
+        enable_progress_bar: bool = False,
+    ):
+        super().__init__(
+            scheme="s3",
+            model_uri=model_uri,
+            model_name=model_name,
+            enable_progress_bar=enable_progress_bar,
+        )  # type: ignore
+
+    def _valid_config(self):
+        assert (
+            self.model_name is not None and self.model_name != ""
+        ), "TOS model name is not set, please check `--model-name`."
+        assert (
+            self.bucket_name is not None and self.bucket_name != ""
+        ), "TOS bucket name is not set."
+        assert (
+            self.bucket_path is not None and self.bucket_path != ""
+        ), "TOS bucket path is not set."
+        try:
+            self.client.head_bucket(Bucket=self.bucket_name)
+        except Exception as e:
+            assert False, f"TOS bucket {self.bucket_name} not exist for {e}."
+
+    def _get_auth_config(self) -> Dict[str, Optional[str]]:
+        return {
+            "region_name": envs.DOWNLOADER_TOS_REGION or "",
+            "endpoint_url": envs.DOWNLOADER_TOS_ENDPOINT or "",
+            "aws_access_key_id": envs.DOWNLOADER_TOS_ACCESS_KEY or "",
+            "aws_secret_access_key": envs.DOWNLOADER_TOS_SECRET_KEY or "",
+        }

@@ -11,10 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from abc import abstractmethod
 from contextlib import nullcontext
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import boto3
@@ -35,17 +36,18 @@ from aibrix.logger import init_logger
 logger = init_logger(__name__)
 
 
-def _parse_bucket_info_from_uri(uri: str) -> Tuple[str, str]:
-    parsed = urlparse(uri, scheme="s3")
+def _parse_bucket_info_from_uri(uri: str, scheme: str = "s3") -> Tuple[str, str]:
+    parsed = urlparse(uri, scheme=scheme)
     bucket_name = parsed.netloc
     bucket_path = parsed.path.lstrip("/")
     return bucket_name, bucket_path
 
 
-class S3Downloader(BaseDownloader):
+class S3BaseDownloader(BaseDownloader):
     def __init__(
         self,
-        model_uri,
+        scheme: str,
+        model_uri: str,
         model_name: Optional[str] = None,
         enable_progress_bar: bool = False,
     ):
@@ -53,14 +55,8 @@ class S3Downloader(BaseDownloader):
             model_name = infer_model_name(model_uri)
             logger.info(f"model_name is not set, using `{model_name}` as model_name")
 
-        ak = envs.DOWNLOADER_AWS_ACCESS_KEY_ID
-        sk = envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY
-        endpoint = envs.DOWNLOADER_AWS_ENDPOINT_URL
-        region = envs.DOWNLOADER_AWS_REGION
-        bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri)
-
-        assert ak is not None and ak != "", "`AWS_ACCESS_KEY_ID` is not set."
-        assert sk is not None and sk != "", "`AWS_SECRET_ACCESS_KEY` is not set."
+        auth_config = self._get_auth_config()
+        bucket_name, bucket_path = _parse_bucket_info_from_uri(model_uri, scheme=scheme)
 
         # Avoid warning log "Connection pool is full"
         # Refs: https://github.com/boto/botocore/issues/619#issuecomment-583511406
@@ -70,16 +66,12 @@ class S3Downloader(BaseDownloader):
             else MAX_POOL_CONNECTIONS
         )
         client_config = Config(
+            s3={"addressing_style": "virtual"},
             max_pool_connections=max_pool_connections,
         )
 
         self.client = boto3.client(
-            service_name="s3",
-            region_name=region,
-            endpoint_url=endpoint,
-            aws_access_key_id=ak,
-            aws_secret_access_key=sk,
-            config=client_config,
+            service_name="s3", config=client_config, **auth_config
         )
 
         super().__init__(
@@ -90,20 +82,26 @@ class S3Downloader(BaseDownloader):
             enable_progress_bar=enable_progress_bar,
         )  # type: ignore
 
-    def _valid_config(self):
-        assert (
-            self.model_name is not None and self.model_name != ""
-        ), "S3 model name is not set, please check `--model-name`."
-        assert (
-            self.bucket_name is not None and self.bucket_name != ""
-        ), "S3 bucket name is not set."
-        assert (
-            self.bucket_path is not None and self.bucket_path != ""
-        ), "S3 bucket path is not set."
-        try:
-            self.client.head_bucket(Bucket=self.bucket_name)
-        except Exception as e:
-            assert False, f"S3 bucket {self.bucket_name} not exist for {e}."
+    @abstractmethod
+    def _get_auth_config(self) -> Dict[str, Optional[str]]:
+        """Get auth config for S3 client.
+
+        Returns:
+            Dict[str, str]: auth config for S3 client, containing following keys:
+            - region_name: region name of S3 bucket
+            - endpoint_url: endpoint url of S3 bucket
+            - aws_access_key_id: access key id of S3 bucket
+            - aws_secret_access_key: secret access key of S3 bucket
+
+        Example return value:
+            {
+                region_name: "region-name",
+                endpoint_url: "URL_ADDRESS3.region-name.com",
+                aws_access_key_id: "AK****",
+                aws_secret_access_key: "SK****",,
+            }
+        """
+        pass
 
     @lru_cache()
     def _is_directory(self) -> bool:
@@ -155,6 +153,8 @@ class S3Downloader(BaseDownloader):
         config_kwargs = {
             "max_concurrency": envs.DOWNLOADER_NUM_THREADS,
             "use_threads": enable_range,
+            "max_io_queue": envs.DOWNLOADER_S3_MAX_IO_QUEUE,
+            "io_chunksize": envs.DOWNLOADER_S3_IO_CHUNKSIZE,
         }
         if envs.DOWNLOADER_PART_THRESHOLD is not None:
             config_kwargs["multipart_threshold"] = envs.DOWNLOADER_PART_THRESHOLD
@@ -182,3 +182,48 @@ class S3Downloader(BaseDownloader):
                 Callback=download_progress if self.enable_progress_bar else None,
             )
             save_meta_data(meta_data_file, etag)
+
+
+class S3Downloader(S3BaseDownloader):
+    def __init__(
+        self,
+        model_uri,
+        model_name: Optional[str] = None,
+        enable_progress_bar: bool = False,
+    ):
+        super().__init__(
+            scheme="s3",
+            model_uri=model_uri,
+            model_name=model_name,
+            enable_progress_bar=enable_progress_bar,
+        )  # type: ignore
+
+    def _valid_config(self):
+        assert (
+            self.model_name is not None and self.model_name != ""
+        ), "S3 model name is not set, please check `--model-name`."
+        assert (
+            self.bucket_name is not None and self.bucket_name != ""
+        ), "S3 bucket name is not set."
+        assert (
+            self.bucket_path is not None and self.bucket_path != ""
+        ), "S3 bucket path is not set."
+        try:
+            self.client.head_bucket(Bucket=self.bucket_name)
+        except Exception as e:
+            assert False, f"S3 bucket {self.bucket_name} not exist for {e}."
+
+    def _get_auth_config(self) -> Dict[str, Optional[str]]:
+        ak, sk = (
+            envs.DOWNLOADER_AWS_ACCESS_KEY_ID,
+            envs.DOWNLOADER_AWS_SECRET_ACCESS_KEY,
+        )
+        assert ak is not None and ak != "", "`AWS_ACCESS_KEY_ID` is not set."
+        assert sk is not None and sk != "", "`AWS_SECRET_ACCESS_KEY` is not set."
+
+        return {
+            "region_name": envs.DOWNLOADER_AWS_REGION,
+            "endpoint_url": envs.DOWNLOADER_AWS_ENDPOINT_URL,
+            "aws_access_key_id": ak,
+            "aws_secret_access_key": sk,
+        }

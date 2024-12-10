@@ -78,13 +78,16 @@ class BaseDownloader(ABC):
         used to download the directory.
         """
         directory_list = self._directory_list(self.bucket_path)
+        # filter the directory path
+        files = [file for file in directory_list if not file.endswith("/")]
+
         if self.allow_file_suffix is None:
             logger.info(f"All files from {self.bucket_path} will be downloaded.")
-            filtered_files = directory_list
+            filtered_files = files
         else:
             filtered_files = [
                 file
-                for file in directory_list
+                for file in files
                 if any(file.endswith(suffix) for suffix in self.allow_file_suffix)
             ]
 
@@ -162,9 +165,14 @@ def get_downloader(
 
         return S3Downloader(model_uri, model_name, enable_progress_bar)
     elif re.match(envs.DOWNLOADER_TOS_REGEX, model_uri):
-        from aibrix.downloader.tos import TOSDownloader
+        if envs.DOWNLOADER_TOS_VERSION == "v1":
+            from aibrix.downloader.tos import TOSDownloaderV1
 
-        return TOSDownloader(model_uri, model_name, enable_progress_bar)
+            return TOSDownloaderV1(model_uri, model_name, enable_progress_bar)
+        else:
+            from aibrix.downloader.tos import TOSDownloaderV2
+
+            return TOSDownloaderV2(model_uri, model_name, enable_progress_bar)
     else:
         from aibrix.downloader.huggingface import HuggingFaceDownloader
 

@@ -94,5 +94,15 @@ test-gateway:
 			"temperature": 0.7 \
 		}'
 
+test-gateway2:
+	curl -v http://localhost:8888/v1/completions \
+		-H "Content-Type: application/json" \
+		-d '{ \
+            "model": "llama2-7b", \
+            "prompt": "Say this is a test!", \
+            "temperature": 0.0, \
+            "max_tokens": 512 \
+        }'
+
 metrics:
 	curl http://localhost:8000/metrics

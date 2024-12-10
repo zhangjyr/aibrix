@@ -86,7 +86,6 @@ async def send_request(
 ) -> None:
     headers = {
         "User-Agent": "Benchmark Client",
-        "user": "your-user-name",
         "model": model,
     }
     streaming = True
@@ -101,7 +100,7 @@ async def send_request(
             # "top_p": 1.0,
             "max_tokens": output_len,
             # "ignore_eos": True,
-            # "stream": stream,
+            # "stream": streaming
         }
         if next_in > 0.0:
             pload["next_in"] = next_in

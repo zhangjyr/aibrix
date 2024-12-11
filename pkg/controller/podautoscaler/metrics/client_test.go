@@ -88,16 +88,20 @@ var _ = Describe("KPAMetricsClient", func() {
 		recorder := NewMetricFetcherRecorder()
 		client := NewKPAMetricsClient(recorder, 0, 0)
 
-		client.GetMetricFromSource(context.Background(), GetDomainMetricSource0())
+		_, err := client.GetMetricFromSource(context.Background(), GetDomainMetricSource0())
+		Expect(err).To(BeNil())
 		Expect(recorder.url).To(Equal("http://example.com/metrics"))
 
-		client.GetMetricFromSource(context.Background(), GetDomainMetricSource1())
+		_, err = client.GetMetricFromSource(context.Background(), GetDomainMetricSource1())
+		Expect(err).To(BeNil())
 		Expect(recorder.url).To(Equal("http://example.com:8080/metrics"))
 
-		client.GetMetricFromSource(context.Background(), GetDomainMetricSource2())
+		_, err = client.GetMetricFromSource(context.Background(), GetDomainMetricSource2())
+		Expect(err).To(BeNil())
 		Expect(recorder.url).To(Equal("https://example.com:8000/metrics"))
 
-		client.GetMetricFromSource(context.Background(), GetDomainMetricSource3())
+		_, err = client.GetMetricFromSource(context.Background(), GetDomainMetricSource3())
+		Expect(err).To(BeNil())
 		Expect(recorder.url).To(Equal("https://example.com:8080/metrics"))
 	})
 

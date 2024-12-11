@@ -318,7 +318,7 @@ class ModelMonitor:
                 raise e
             finally:
                 self._lock.release()
-                
+
             if log_event:
                 logger.info(
                     f"Profile added to {profile.gpu}. Optimizer will consider corresponding GPU."

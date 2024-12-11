@@ -309,6 +309,7 @@ class ModelMonitor:
             try:
                 self._lock.acquire(blocking=True)
                 if profile.gpu in self.deployments:  # double check
+                    self.deployments[key].profile = profile
                     self._optimizer.set_profile(profile)
                     self._cost += cost_diff * self.deployments[key].replicas
                 else:

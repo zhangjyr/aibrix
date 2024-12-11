@@ -19,6 +19,7 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -119,6 +120,19 @@ func GetMetricsFromPods(ctx context.Context, fetcher MetricFetcher, pods []corev
 		metrics = append(metrics, metric)
 	}
 	return metrics, nil
+}
+
+func GetMetricFromSource(ctx context.Context, fetcher MetricFetcher, source autoscalingv1alpha1.MetricSource) (float64, error) {
+	endpoint := source.Endpoint
+
+	// If port specified, try override.
+	if source.Port != "" {
+		u := url.URL{Host: source.Endpoint}
+		if u.Port() == "" {
+			endpoint = fmt.Sprintf("%s:%s", u.Hostname(), source.Port)
+		}
+	}
+	return fetcher.FetchMetric(ctx, source.ProtocolType, endpoint, source.Path, source.TargetMetric)
 }
 
 // getEnvKey retrieves the value of the environment variable named by the key.

@@ -14,8 +14,10 @@ gen-profile:
 
 .PHONY: debug-init
 debug-init:
-	ps aux | grep "8080:8080" | grep -v grep | awk '{print $$2}' | xargs kill -9 && kubectl -n aibrix-system port-forward svc/aibrix-gpu-optimizer 8080:8080 1>/dev/null 2>&1 &
-	ps aux | grep "6379:6379" | grep -v grep | awk '{print $$2}' | xargs kill -9 && kubectl -n aibrix-system port-forward svc/aibrix-redis-master 6379:6379 1>/dev/null 2>&1 &
+	ps aux | grep "8080:8080" | grep -v grep | awk '{print $$2}' | xargs kill -9
+	ps aux | grep "6379:6379" | grep -v grep | awk '{print $$2}' | xargs kill -9
+	kubectl -n aibrix-system port-forward svc/aibrix-gpu-optimizer 8080:8080 1>/dev/null 2>&1 &
+	kubectl -n aibrix-system port-forward svc/aibrix-redis-master 6379:6379 1>/dev/null 2>&1 &
 
 .PHONY: debug
 debug:

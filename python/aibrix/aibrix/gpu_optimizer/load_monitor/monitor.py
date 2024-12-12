@@ -306,13 +306,19 @@ class ModelMonitor:
                 break
         # deployment existed
         if deployment_key is not None:
-            self._lock.acquire(blocking=True)
-            if profile.gpu in self.deployments:  # double check
-                self._optimizer.set_profile(profile)
-                self._cost += cost_diff * self.deployments[key].replicas
-            else:
-                log_event = False
-            self._lock.release()
+            try:
+                self._lock.acquire(blocking=True)
+                if profile.gpu in self.deployments:  # double check
+                    self.deployments[key].profile = profile
+                    self._optimizer.set_profile(profile)
+                    self._cost += cost_diff * self.deployments[key].replicas
+                else:
+                    log_event = False
+            except Exception as e:
+                raise e
+            finally:
+                self._lock.release()
+
             if log_event:
                 logger.info(
                     f"Profile added to {profile.gpu}. Optimizer will consider corresponding GPU."
@@ -446,11 +452,6 @@ class ModelMonitor:
             profile: GPUProfile = self._profiles[deployment_name]
             profile.gpu = key
             return profile
-        elif self.debug:
-            # Copy the debug profile and override the gpu name with given key
-            copy = GPUProfile(**debug_gpu_profile.__dict__)
-            copy.gpu = key
-            return copy
 
         return None
 

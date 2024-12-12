@@ -136,8 +136,7 @@ func (c *KPAMetricsClient) GetMetricsFromPods(ctx context.Context, pods []corev1
 }
 
 func (c *KPAMetricsClient) GetMetricFromSource(ctx context.Context, source autoscalingv1alpha1.MetricSource) (float64, error) {
-	// Retrieve metrics from a list of pods
-	return c.fetcher.FetchMetric(ctx, "", source.Endpoint, source.Path, source.TargetMetric)
+	return GetMetricFromSource(ctx, c.fetcher, source)
 }
 
 type APAMetricsClient struct {
@@ -222,5 +221,5 @@ func (c *APAMetricsClient) GetMetricsFromPods(ctx context.Context, pods []corev1
 }
 
 func (c *APAMetricsClient) GetMetricFromSource(ctx context.Context, source autoscalingv1alpha1.MetricSource) (float64, error) {
-	return c.fetcher.FetchMetric(ctx, "", source.Endpoint, source.Path, source.TargetMetric)
+	return GetMetricFromSource(ctx, c.fetcher, source)
 }

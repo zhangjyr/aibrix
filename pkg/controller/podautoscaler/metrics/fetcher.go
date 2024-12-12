@@ -59,7 +59,10 @@ func (f *abstractMetricsFetcher) FetchMetric(ctx context.Context, pod v1.Pod, me
 }
 
 // RestMetricsFetcher implements MetricFetcher to fetch metrics from Pod's /metrics endpoint.
-type RestMetricsFetcher struct{}
+type RestMetricsFetcher struct {
+	// For unit test purpose only
+	test_url_setter func(string)
+}
 
 var _ MetricFetcher = (*RestMetricsFetcher)(nil)
 
@@ -71,6 +74,10 @@ func (f *RestMetricsFetcher) FetchPodMetrics(ctx context.Context, pod v1.Pod, so
 func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscalingv1alpha1.ProtocolType, endpoint, path, metricName string) (float64, error) {
 	// Use http to fetch endpoint
 	url := fmt.Sprintf("%s://%s/%s", protocol, endpoint, strings.TrimLeft(path, "/"))
+	if f.test_url_setter != nil {
+		f.test_url_setter(url)
+		return 0.0, nil
+	}
 
 	// Create request with context, so that the request will be canceled if the context is canceled
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -102,6 +109,10 @@ func (f *RestMetricsFetcher) FetchMetric(ctx context.Context, protocol autoscali
 	klog.InfoS("Successfully parsed metrics", "metric", metricName, "source", url, "metricValue", metricValue)
 
 	return metricValue, nil
+}
+
+func (f *RestMetricsFetcher) _get_url(protocol autoscalingv1alpha1.ProtocolType, endpoint, path string) string {
+	return fmt.Sprintf("%s://%s/%s", protocol, endpoint, strings.TrimLeft(path, "/"))
 }
 
 // ResourceMetricsFetcher fetches resource metrics from Kubernetes metrics API (metrics.k8s.io).

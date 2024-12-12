@@ -2,6 +2,7 @@ all: build
 
 DP ?= profiling
 DATASET ?= [set your DATASET path]
+COST ?= 1.0
 
 .PHONY: benchmark
 benchmark:
@@ -9,10 +10,12 @@ benchmark:
 
 .PHONY: gen-profile
 gen-profile:
-	python optimizer/profiling/gen_profile.py $(DP) -o "redis://localhost:6379/?model=llama2-7b"
+	python optimizer/profiling/gen_profile.py $(DP) --cost $(COST) -o "redis://localhost:6379/?model=llama2-7b"
 
 .PHONY: debug-init
 debug-init:
+	ps aux | grep "8080:8080" | grep -v grep | awk '{print $$2}' | xargs kill -9
+	ps aux | grep "6379:6379" | grep -v grep | awk '{print $$2}' | xargs kill -9
 	kubectl -n aibrix-system port-forward svc/aibrix-gpu-optimizer 8080:8080 1>/dev/null 2>&1 &
 	kubectl -n aibrix-system port-forward svc/aibrix-redis-master 6379:6379 1>/dev/null 2>&1 &
 

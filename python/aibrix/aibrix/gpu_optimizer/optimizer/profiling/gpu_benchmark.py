@@ -24,7 +24,7 @@ import asyncio
 import json
 import random
 import time
-from typing import AsyncGenerator, List, Tuple
+from typing import AsyncGenerator, List, Optional, Tuple
 
 import aiohttp
 import numpy as np
@@ -75,6 +75,7 @@ async def send_request(
     idx: int,
     backend: str,
     api_url: str,
+    api_key: Optional[str],
     model: str,
     prompt: str,
     prompt_len: int,
@@ -86,8 +87,9 @@ async def send_request(
 ) -> None:
     headers = {
         "User-Agent": "Benchmark Client",
-        "model": model,
     }
+    if api_key is not None or api_key != "":
+        headers["Authorization"] = f"Bearer {api_key}"
     streaming = True
     if backend == "vllm":
         pload = {
@@ -168,6 +170,7 @@ async def send_request(
 async def benchmark(
     backend: str,
     api_url: str,
+    api_key: Optional[str],
     model: str,
     input_requests: List[Tuple[str, int, int]],
     best_of: int,
@@ -185,6 +188,7 @@ async def benchmark(
                 len(tasks),
                 backend,
                 api_url,
+                api_key,
                 model,
                 prompt,
                 prompt_len,
@@ -223,6 +227,7 @@ def main(args: argparse.Namespace):
         benchmark(
             args.backend,
             api_url,
+            args.api_key,
             args.model,
             input_requests,
             args.best_of,
@@ -351,8 +356,9 @@ if __name__ == "__main__":
         action="store_true",
         help="trust remote code from huggingface",
     )
-    parser.add_argument("--input_len", type=int, default=0)
-    parser.add_argument("--output_len", type=int, default=0)
+    parser.add_argument("--input-len", type=int, default=0)
+    parser.add_argument("--output-len", type=int, default=0)
+    parser.add_argument("--api-key", type=str, default=None)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     main(args)

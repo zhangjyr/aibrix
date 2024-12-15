@@ -53,7 +53,7 @@ debug-metrics:
 
 .PHONY: debug-workload
 debug-workload:
-	python optimizer/profiling/gpu_benchmark.py --backend=vllm --port 8888 --request-rate=10 --num-prompts=100 --input_len 2000 --output_len 512 --model=llama2-7b --verbose
+	python optimizer/profiling/gpu_benchmark.py --backend=vllm --port 8888 --request-rate=10 --num-prompts=100 --input-len 2000 --output-len 512 --model=llama2-7b --verbose
 
 .PHONY: visualizer
 visualizer:

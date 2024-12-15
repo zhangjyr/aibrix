@@ -148,15 +148,15 @@ async def send_request(
                         print(f"Failed to read response for request {idx}: {e}")
                     break
             try:
-                ret = json.loads(santicized)
+                ret = json.loads(santicized.replace("\\", "\\\\"))
 
                 # Re-send the request if it failed.
                 if "error" not in ret:
                     break
-            except Exception:
+            except Exception as e:
                 # Will retry
                 if log_error:
-                    print(f"Invalid response for request {idx}: {output}")
+                    print(f"Invalid response for request {idx}: {output}: {e}")
                 break
 
     request_end_time = time.perf_counter()

@@ -6,7 +6,7 @@ COST ?= 1.0
 
 .PHONY: benchmark
 benchmark:
-	optimizer/profiling/benchmark.sh $(DP)
+	optimizer/profiling/benchmark.sh -o $(DP) --input-start 128
 
 .PHONY: gen-profile
 gen-profile:

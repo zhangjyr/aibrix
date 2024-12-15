@@ -43,11 +43,11 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --input-limit)
-      output_start=$2
+      input-limit=$2
       shift 2
       ;;
     --output-start)
-      input_start=$2
+      output_start=$2
       shift 2
       ;;
     --output-limit)

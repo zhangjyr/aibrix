@@ -104,7 +104,8 @@ async def send_request(
             # "ignore_eos": True,
             # "stream": streaming
         }
-        if next_in > 0.0:
+        # Only apply "next_in" for simulator which requires no api_key.
+        if next_in > 0.0 and (api_key is None or api_key == ""):
             pload["next_in"] = next_in
     else:
         raise ValueError(f"Unknown backend: {backend}")

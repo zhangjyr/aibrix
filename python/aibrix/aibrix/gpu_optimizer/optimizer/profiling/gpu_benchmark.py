@@ -83,6 +83,7 @@ async def send_request(
     next_in: float,
     best_of: int,
     use_beam_search: bool,
+    stream: bool,
     log_error: bool,
 ) -> None:
     headers = {
@@ -102,8 +103,9 @@ async def send_request(
             # "top_p": 1.0,
             "max_tokens": output_len,
             # "ignore_eos": True,
-            # "stream": streaming
         }
+        if stream:
+            pload["stream"] = 1
         # Only apply "next_in" for simulator which requires no api_key.
         if next_in > 0.0 and (api_key is None or api_key == ""):
             pload["next_in"] = next_in
@@ -138,7 +140,9 @@ async def send_request(
                             # chunks.append(chunk)
 
                         output = b"".join(chunks).decode("utf-8")
-                        santicized = output[:-1]  # Get rid of EOF
+                        santicized = output.rstrip(
+                            "\n\t "
+                        )  # Remove trailing whitespace characters, in particular EOF
                     else:
                         time_to_first = time.perf_counter() - previous_token_time
                         output = await response.text()
@@ -148,7 +152,8 @@ async def send_request(
                         print(f"Failed to read response for request {idx}: {e}")
                     break
             try:
-                ret = json.loads(santicized.replace("\\", "\\\\"))
+                santicized = santicized.replace("\\", "\\\\")
+                ret = json.loads(santicized)
 
                 # Re-send the request if it failed.
                 if "error" not in ret:
@@ -156,7 +161,7 @@ async def send_request(
             except Exception as e:
                 # Will retry
                 if log_error:
-                    print(f"Invalid response for request {idx}: {output}: {e}")
+                    print(f"Invalid response for request {idx}: {santicized}: {e}")
                 break
 
     request_end_time = time.perf_counter()
@@ -178,6 +183,7 @@ async def benchmark(
     use_beam_search: bool,
     request_rate: float,
     num_requests: int,
+    stream: bool,
     log_error: bool,
 ) -> None:
     tasks: List[asyncio.Task] = []
@@ -197,6 +203,7 @@ async def benchmark(
                 next_in,
                 best_of,
                 use_beam_search,
+                stream,
                 log_error,
             )
         )
@@ -235,6 +242,7 @@ def main(args: argparse.Namespace):
             args.use_beam_search,
             args.request_rate,
             args.num_prompts,
+            args.stream,
             args.verbose,
         )
     )
@@ -361,5 +369,6 @@ if __name__ == "__main__":
     parser.add_argument("--output-len", type=int, default=0)
     parser.add_argument("--api-key", type=str, default=None)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--stream", action="store_true")
     args = parser.parse_args()
     main(args)

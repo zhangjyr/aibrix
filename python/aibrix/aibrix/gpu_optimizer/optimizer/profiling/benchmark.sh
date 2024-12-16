@@ -94,7 +94,7 @@ while [[ $input_len -le $input_limit ]]; do
   while [[ $output_len -le $output_limit ]]; do
     req_rate=$rate_start
     while [[ $req_rate -le $rate_limit ]]; do
-      python $PATH_PREFIX/gpu_benchmark.py --backend=vllm --port 8010 --model=$MODEL --request-rate=$req_rate --num-prompts=$TOTAL --input-len $input_len --output-len $output_len --api-key "$LLM_API_KEY" >> ${OUTPUT_FILE} 
+      python $PATH_PREFIX/gpu_benchmark.py --backend=vllm --port 8010 --model=$MODEL --request-rate=$req_rate --num-prompts=$TOTAL --input-len $input_len --output-len $output_len --api-key "$LLM_API_KEY" --stream >> ${OUTPUT_FILE} 
       req_rate=$((req_rate * 2)) 
     done
     output_len=$((output_len * 2)) 

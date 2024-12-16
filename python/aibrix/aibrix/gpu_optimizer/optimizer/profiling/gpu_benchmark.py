@@ -23,6 +23,7 @@ import argparse
 import asyncio
 import json
 import random
+import re
 import time
 from typing import AsyncGenerator, List, Optional, Tuple
 
@@ -140,9 +141,9 @@ async def send_request(
                             # chunks.append(chunk)
 
                         output = b"".join(chunks).decode("utf-8")
-                        santicized = output.rstrip(
-                            "\n\t "
-                        )  # Remove trailing whitespace characters, in particular EOF
+                        santicized = re.sub(
+                            r"\s*\[DONE\]\s*$", "", output
+                        )  # Remove trailing whitespace characters including EOF, and "[DONE]"
                     else:
                         time_to_first = time.perf_counter() - previous_token_time
                         output = await response.text()

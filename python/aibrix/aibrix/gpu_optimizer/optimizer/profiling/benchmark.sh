@@ -25,7 +25,7 @@ input_limit=$((2**11)) # 2K
 output_start=4
 output_limit=$((2**9)) # 512
 rate_start=1
-rate_limit=$((2**6)) # 32
+rate_limit=$((2**6)) # 64
 dry_run=0
 
 while [[ $# -gt 0 ]]; do

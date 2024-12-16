@@ -141,9 +141,7 @@ async def send_request(
                             # chunks.append(chunk)
 
                         output = b"".join(chunks).decode("utf-8")
-                        santicized = re.sub(
-                            r"\s*\[DONE\]\s*$", "", output
-                        )  # Remove trailing whitespace characters including EOF, and "[DONE]"
+                        santicized = output.rstrip("\n\t ")  # Remove trailing whitespace characters including EOF, and "[DONE]"
                     else:
                         time_to_first = time.perf_counter() - previous_token_time
                         output = await response.text()
@@ -160,10 +158,9 @@ async def send_request(
                 if "error" not in ret:
                     break
             except Exception as e:
-                # Will retry
+                # It's ok to parse failure, santicized output could be jsonl, other format, or internal error.
                 if log_error:
                     print(f"Invalid response for request {idx}: {santicized}: {e}")
-                break
 
     request_end_time = time.perf_counter()
     request_latency = request_end_time - request_start_time

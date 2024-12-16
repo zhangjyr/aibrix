@@ -303,7 +303,7 @@ def main(args: argparse.Namespace):
         print(json.dumps(result))
 
     all_token_latencies = np.array(
-        [token_latencies for _, _, token_latencies in TOKEN_LATENCY]
+        [latency for _, _, token_latencies in TOKEN_LATENCY for latency in token_latencies]
     )
     if args.verbose:
         print("TOKEN LATENCIES")

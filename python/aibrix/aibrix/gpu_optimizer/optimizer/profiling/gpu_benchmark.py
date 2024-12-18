@@ -23,7 +23,6 @@ import argparse
 import asyncio
 import json
 import random
-import re
 import time
 from typing import AsyncGenerator, List, Optional, Tuple
 
@@ -141,7 +140,9 @@ async def send_request(
                             # chunks.append(chunk)
 
                         output = b"".join(chunks).decode("utf-8")
-                        santicized = output.rstrip("\n\t ")  # Remove trailing whitespace characters including EOF, and "[DONE]"
+                        santicized = output.rstrip(
+                            "\n\t "
+                        )  # Remove trailing whitespace characters including EOF, and "[DONE]"
                     else:
                         time_to_first = time.perf_counter() - previous_token_time
                         output = await response.text()
@@ -300,7 +301,11 @@ def main(args: argparse.Namespace):
         print(json.dumps(result))
 
     all_token_latencies = np.array(
-        [latency for _, _, token_latencies in TOKEN_LATENCY for latency in token_latencies]
+        [
+            latency
+            for _, _, token_latencies in TOKEN_LATENCY
+            for latency in token_latencies
+        ]
     )
     if args.verbose:
         print("TOKEN LATENCIES")

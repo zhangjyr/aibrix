@@ -29,7 +29,7 @@ class GPUProfile:
     | RPS | # OUTs 1 | # OUTs 2 |
     |---|---|---|
     | # INs 1 | 2 | 1 |
-    | # INs s 2 | 5 | 2 |
+    | # INs 2 | 5 | 2 |
     """
 
     gpu: str = ""

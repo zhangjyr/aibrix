@@ -387,14 +387,14 @@ if __name__ == '__main__':
     elif args.trace_type == "bird":
 
         # Manually set context (input) and generated (output) tokens
-        context_tokens = [128, 256, 512, 1024, 2048, 4096, 8192]
-        generated_tokens = [20, 30, 40, 50, 60, 70, 80, 90, 100]
+        context_tokens = [2048, 4096]
+        generated_tokens = [32, 64]
         
         # Generate trace
         trace_df = generate_bird_trace_csv(
             context_tokens=context_tokens,
             generated_tokens=generated_tokens,
-            rows_per_combination=2,
+            rows_per_combination=100,
             time_delta_ms=1000
         )
         

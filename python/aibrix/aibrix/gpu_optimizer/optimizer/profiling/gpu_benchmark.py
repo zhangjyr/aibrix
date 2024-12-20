@@ -41,34 +41,80 @@ def sample_requests(
     num_requests: int,
     config_input_len: int,
     config_output_len: int,
+    workload_dataset_file: str = None,
 ) -> List[Tuple[str, int, int]]:
-    return [
-        ("hi " * config_input_len, config_input_len, config_output_len)
-        for _ in range(num_requests)
-    ]
-
+    """Sample requests from prompt dataset or generate synthetic ones."""
+    if workload_dataset_file:
+        try:
+            with open(workload_dataset_file) as f:
+                data = json.load(f)
+                # Return timestamp and request tuples
+                previous_timestamp = 0
+                requests = []
+                for i, entry in enumerate(data):
+                    # print(f"Request {i}: {entry}")
+                    timestamp = entry["Timestamp"]
+                    interval = (timestamp - previous_timestamp) / 1000.0
+                    previous_timestamp = timestamp
+                    for i, req in enumerate(entry["Requests"]):
+                        requests.append((
+                            req["Prompt"],
+                            req["Prompt Length"],
+                            req["Output Length"],
+                            interval
+                        ))
+                # print('total requests: ', len(requests))
+                # print('the least requests: ', requests[len(requests) - 1])
+                return requests 
+        except Exception as e:
+            print(f"Warning: Failed to load prompt dataset ({e}), falling back to synthetic prompts")
+    
+    # Original synthetic prompt generation
+    requests = []
+    for _ in range(num_requests):
+        synthetic_prompt = "hi " * config_input_len
+        # assign timestamp to -1 for all requests
+        requests.append((synthetic_prompt, config_input_len, config_output_len, -1))
+    return requests
 
 async def get_request(
     input_requests: List[Tuple[str, int, int]],
     request_rate: float,
     num_requests: int,
+    log_error: bool,
+    use_workload_interval: bool = False,
 ) -> AsyncGenerator[Tuple[str, int, int, float], None]:
     requests = iter(input_requests)
-    for i, request in enumerate(requests):
-        interval = 0.0
-        if i < num_requests - 1 and request_rate != float("inf"):
-            # Sample the request interval from the exponential distribution.
-            interval = np.random.exponential(1.0 / request_rate)
+    start_time = time.perf_counter()
+    
+    for i, (prompt, prompt_len, output_len, interval) in enumerate(requests):
+        current_time = time.perf_counter() - start_time
+        if use_workload_interval:
+            if log_error:
+                print(f"Request {i}: Sending at {current_time:.3f}s with interval {interval:.3f}s")
+            yield (prompt, prompt_len, output_len, interval)
 
-        request_with_next = (request[0], request[1], request[2], interval)
-        yield request_with_next
-
-        if request_rate == float("inf"):
-            # If the request rate is infinity, then we don't need to wait.
+            if interval > 0:
+                await asyncio.sleep(interval)
             continue
+        else:
+            interval = 0.0
+            if i < num_requests - 1 and request_rate != float("inf"):
+                # Sample the request interval from the exponential distribution.
+                interval = np.random.exponential(1.0 / request_rate)
+                print(f"Request {i}: Generated exponential interval of {interval:.3f}s")
 
-        # The next request will be sent after the interval.
-        await asyncio.sleep(interval)
+            request_with_next = (prompt, prompt_len, output_len, interval)
+            if log_error:
+                print(f"Request {i}: Sending at {current_time:.3f}s")
+            yield request_with_next
+
+            if request_rate == float("inf"):
+                # If the request rate is infinity, then we don't need to wait.
+                continue
+
+            # The next request will be sent after the interval.
+            await asyncio.sleep(interval)
 
 
 async def send_request(
@@ -184,10 +230,11 @@ async def benchmark(
     num_requests: int,
     stream: bool,
     log_error: bool,
+    use_workload_interval: bool = False,
 ) -> None:
     tasks: List[asyncio.Task] = []
 
-    async for request in get_request(input_requests, request_rate, num_requests):
+    async for request in get_request(input_requests, request_rate, num_requests, log_error, use_workload_interval):
         prompt, prompt_len, output_len, next_in = request
         task = asyncio.create_task(
             send_request(
@@ -227,7 +274,7 @@ def main(args: argparse.Namespace):
     np.random.seed(args.seed)
 
     api_url = f"http://{args.host}:{args.port}/v1/completions"
-    input_requests = sample_requests(args.num_prompts, args.input_len, args.output_len)
+    input_requests = sample_requests(args.num_prompts, args.input_len, args.output_len,args.workload_dataset_file)
 
     benchmark_start_time = time.perf_counter()
     asyncio.run(
@@ -243,6 +290,7 @@ def main(args: argparse.Namespace):
             args.num_prompts,
             args.stream,
             args.verbose,
+            args.use_workload_interval
         )
     )
     benchmark_end_time = time.perf_counter()
@@ -373,5 +421,7 @@ if __name__ == "__main__":
     parser.add_argument("--api-key", type=str, default=None)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--stream", action="store_true")
+    parser.add_argument("--workload_dataset_file", type=str, default=None, help="Path to a JSON file containing prompts")
+    parser.add_argument("--use-workload-interval", action="store_true")
     args = parser.parse_args()
     main(args)

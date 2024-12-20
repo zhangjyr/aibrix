@@ -29,7 +29,7 @@ from starlette.middleware.wsgi import WSGIMiddleware
 from starlette.routing import Mount
 
 from .load_reader import DatasetLoadReader, LoadReader
-from .monitor import ModelMonitor
+from .monitor import ModelMonitor, DeploymentStates
 from .profile_reader import FileProfileReader, ProfileReader, RedisProfileReader
 
 canvas_size = 1000
@@ -89,7 +89,7 @@ logger = logging.getLogger("aibrix.gpu_optimizer.load_monitor.visualizer")
 def get_debug_model_montior(
     path: Optional[str],
     scale: float = 1.0,
-    profile: Optional[str] = None,
+    profiles: Optional[List[str]] = None,
     redisprofile: Optional[str] = None,
 ) -> Optional[ModelMonitor]:
     global debug_monitor
@@ -103,16 +103,18 @@ def get_debug_model_montior(
         )
 
         profile_reader: Optional[ProfileReader] = None
-        if profile is not None:
-            profile_reader = FileProfileReader(profile)
+        if profiles is not None:
+            profile_reader = FileProfileReader(profiles)
         elif redisprofile is not None:
             profile_reader = RedisProfileReader(
                 *parse_redis_connection_str(redisprofile)
             )
 
         debug_monitor = ModelMonitor(
-            "sharegpt", "0", loadReader, profile_reader=profile_reader, debug=True
+            "model", "0", loadReader, profile_reader=profile_reader, debug=True
         )
+        for _, profile in enumerate(profile_reader.read()):
+            debug_monitor.add_deployment("0", profile.gpu, None, DeploymentStates(profile.gpu, 0))
 
     return debug_monitor
 
@@ -170,8 +172,8 @@ def update_graph(n, model_name):
                 "data": [],
                 "layout": go.Layout(
                     title=f"Live data update of {model_name} is unavailable: model not monitored",
-                    xaxis=dict(range=[0, scale], title="input_tokens(log2)"),
-                    yaxis=dict(range=[0, scale], title="output_tokens(log2)"),
+                    xaxis=dict(range=[0, scale], title="output_tokens(log2)"),
+                    yaxis=dict(range=[0, scale], title="input_tokens(log2)"),
                 ),
             }
             return figure.last
@@ -191,8 +193,8 @@ def update_graph(n, model_name):
                 "data": [],
                 "layout": go.Layout(
                     title=f"Live data update of {model_name} is unavailable: insufficient data",
-                    xaxis=dict(range=[0, scale], title="input_tokens(log2)"),
-                    yaxis=dict(range=[0, scale], title="output_tokens(log2)"),
+                    xaxis=dict(range=[0, scale], title="output_tokens(log2)"),
+                    yaxis=dict(range=[0, scale], title="input_tokens(log2)"),
                 ),
             }
             return figure.last
@@ -246,7 +248,7 @@ def update_graph(n, model_name):
         if len(centers) > 0:
             center_df = pd.DataFrame(
                 data=np.array([center.to_array() for center in centers]),
-                columns=["x", "y", "radius", "size"],
+                columns=["y", "x", "radius", "size"],
             )
             # assign color to center_df
             center_colors = [
@@ -357,6 +359,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default=None, help="Dataset path.")
     parser.add_argument("--scaledata", type=float, default=1, help="Dataset path.")
     parser.add_argument("--profile", type=str, default=None, help="Profile path.")
+    parser.add_argument("--profiles", nargs="+", type=str, default=None, help="Profile path.")
     parser.add_argument(
         "--redisprofile",
         type=str,
@@ -368,7 +371,7 @@ if __name__ == "__main__":
         figure.datasource = lambda _: get_debug_model_montior(
             args.dataset,
             args.scaledata,
-            profile=args.profile,
+            profiles=args.profiles if args.profiles is not None else [args.profile] if args.profile is not None else None,
             redisprofile=args.redisprofile,
         )
     init().run_server(debug=True)

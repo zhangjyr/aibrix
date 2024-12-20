@@ -13,13 +13,14 @@
 # limitations under the License.
 import logging
 from functools import reduce
-from typing import Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple, List
 
 import numpy as np
 
 from .solver.melange import Config as MelangConfig
 from .solver.melange import SolverRunner
 from .types import GPUProfile, WorkloadProfile
+from aibrix.gpu_optimizer.utils import DelayedLog
 
 logger = logging.getLogger("aibrix.gpuoptimizer.optimizer")
 
@@ -29,6 +30,7 @@ class Optimizer:
         self._config = MelangConfig()
         self._workload_distribution_template: Optional[np.ndarray] = None
         self._indexes: Optional[list] = None  # Values ticks of tputs columns and rows
+        self._log_indexes: Optional[list] = None # Cache the log2 value of index
         if profiles is not None:
             for profile in profiles:
                 self.set_profile(profile)
@@ -37,6 +39,8 @@ class Optimizer:
         if self._workload_distribution_template is None:
             self._workload_distribution_template = np.zeros_like(profile.tputs)
             self._indexes = profile.indexes
+            if profile.indexes is not None:
+                self._log_indexes = [np.log2(index).tolist() for index in profile.indexes]
         elif (
             self._workload_distribution_template.shape != np.shape(profile.tputs)
             or self._indexes != profile.indexes
@@ -63,6 +67,7 @@ class Optimizer:
         """Update workload distribution and return success or failure."""
         if self._workload_distribution_template is None:
             return False
+        self._workload_distribution_template.fill(0)
 
         # Maintain the overall request scale disregard some request are not covered.
         self._config.total_request_rate = total_request_rate
@@ -73,9 +78,9 @@ class Optimizer:
         success = True
         for profile in profiles:
             try:
-                self._workload_distribution_template[
-                    self._validate_workload_signature(profile)
-                ] = profile.rate / covered_request_rate  # type: ignore
+                signature = self._validate_workload_signature(profile)
+                self._workload_distribution_template[signature] = profile.rate / covered_request_rate  # type: ignore
+                logger.debug(f"Resolved {profile} to signature={signature}, output-input={DelayedLog(lambda: self._log_signature_expr(signature))}, modified-rps={self._workload_distribution_template[signature]*total_request_rate}, capacity={DelayedLog(lambda: self._log_capacity(signature))}")
             except Exception as e:
                 logger.error(
                     f"Fail to set workload distribution: {profile.signature}: {e}"
@@ -112,7 +117,7 @@ class Optimizer:
         if self._workload_distribution_template is None or self._indexes is None:
             raise Exception("Load profile not set.")
 
-        signature = profile.get_signature(self._indexes, self._log_signature_error)
+        signature = profile.get_signature(self._log_indexes, self._log_signature_error)
         if len(signature) != self._workload_distribution_template.ndim:
             raise Exception(
                 f"Unmatch workload profile, expected a signature of length {self._workload_distribution_template.ndim} , got {len(signature)}."
@@ -125,3 +130,12 @@ class Optimizer:
         logger.warning(
             f"Signature item {dimeansion}:{value} is out of range, counted as{index_value} (reference offset: {offset})"
         )
+
+    def _log_signature_expr(self, signature: Tuple[int]) -> str:
+        values = list(signature)
+        for i, value in enumerate(values):
+            values[i] = self._indexes[i][value]
+        return str(tuple(values))
+    
+    def _log_capacity(self, signature: Tuple[int]) -> str:
+        return str(tuple((np.array(gpu_info["tputs"])[signature] for gpu_info in self._config.gpu_info.values())))

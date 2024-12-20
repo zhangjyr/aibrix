@@ -58,3 +58,4 @@ debug-workload:
 .PHONY: visualizer
 visualizer:
 	python -m load_monitor.visualizer --dataset $(DATASET) --redisprofile "redis://localhost:6379/?model=llama2-7b"
+# python -m aibrix.gpu_optimizer.load_monitor.visualizer --dataset [path to dataset] --profiles [path to profile 1] [path to profile 2]

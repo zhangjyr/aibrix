@@ -404,7 +404,7 @@ class ModelMonitor:
 
             if len(centers) > 0:
                 # Optimize
-                self._optimize(centers, self._data.len)
+                self._optimize(centers, self._data.len / movingCluster.window)
             elif self._data.len == 0:
                 self._minimize()
             else:
@@ -434,7 +434,7 @@ class ModelMonitor:
         for record in records:
             for i in range(record.freq):
                 yield DataPoint(
-                    record.input_tokens, record.output_tokens, age=record.ts
+                    record.output_tokens, record.input_tokens, age=record.ts
                 )
 
     def _deployment_entry_point(self, deployment_name: str, namespace: Optional[str]):
@@ -519,7 +519,7 @@ class ModelMonitor:
 
         df = pd.DataFrame(
             data=np.array([self._data.x, self._data.y, self._labels]).transpose(),
-            columns=["input_tokens", "output_tokens", "label"],
+            columns=["output_tokens", "input_tokens", "label"],
         )
         return df
 

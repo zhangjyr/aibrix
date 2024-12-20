@@ -43,6 +43,10 @@ class Clusterer(Protocol):
     def length(self):
         """Get the number of data points in the clusterer"""
 
+    @property
+    def window(self):
+        """Get the time window the data points covers"""
+
 
 class DBSCANClusterer:
     def __init__(self, eps: float, min_pts: int):
@@ -53,9 +57,14 @@ class DBSCANClusterer:
     def insert(self, points: DataPoints):
         self.clusterer.insert(points.signatures)
         self._length += len(points)
+        ages = tuple(points.datapoint(i).age for i in range(len(points)))
+        self._pt_start = min(self._pt_start, *ages)
+        self._pt_end = max(self._pt_end, *ages)
 
     def reset(self):
         self.clusterer = IncrementalDBSCAN(eps=self.eps, min_pts=self.min_pts)
+        self._pt_start = math.inf
+        self._pt_end = 1.0
         self._length = 0
         self.created = datetime.now().timestamp()
 
@@ -77,7 +86,7 @@ class DBSCANClusterer:
                 continue
             start_label = min(start_label, label)
             if label not in centers:
-                centers[label] = Centeroid()
+                centers[label] = Centeroid(span=self.window)
             if len(centers) > 10:
                 print(f"unepxected label:{label}")
             centers[label].add(points.datapoint(i))
@@ -93,7 +102,10 @@ class DBSCANClusterer:
     @property
     def length(self):
         return self._length
-
+    
+    @property
+    def window(self):
+        return 1.0 if self._pt_end == 0.0 or self._pt_end == self._pt_start else self._pt_end - self._pt_start
 
 class MovingDBSCANClusterer:
     """MovingCluster uses extra buffer space to store a moving DBSCAN cluster"""
@@ -162,6 +174,10 @@ class MovingDBSCANClusterer:
     @property
     def length(self):
         return self.clusterer.length
+    
+    @property
+    def window(self):
+        return self.clusterer.window
 
     @property
     def clusterer(self):

@@ -152,13 +152,14 @@ class DataBuffer:
 
 
 class Centeroid:
-    def __init__(self):
+    def __init__(self, span = 0):
         """Centeroid calculates the mass center, radius, and size of data points."""
         self._sum_center = None
         self._range_max = None
         self._range_min = None
         self._span_max = 0
         self._span_min = 0
+        self._span = span # Used to override span if set
         self._size = 0
         self._signature = None
         self._up_to_date = False  # Whether the signature is up to date.
@@ -247,7 +248,7 @@ class Centeroid:
                 if not found:
                     self._signature[i] = (
                         left
-                        if value < (indexes[i][left] + indexes[i][left]) / 2
+                        if value < (indexes[i][left] + indexes[i][right]) / 2
                         else right
                     )
 
@@ -270,7 +271,11 @@ class Centeroid:
 
     @property
     def span(self):
-        return self._span_max - self._span_min + 1
+        return self._span if self._span > 0 else 1.0 if self._span_max == self._span_min else self._span_max - self._span_min
+    
+    @span.setter
+    def span(self, value):
+        self._span = value
 
     @property
     def signature(self) -> Tuple[int]:
@@ -289,4 +294,4 @@ class Centeroid:
         return ret
 
     def __str__(self) -> str:
-        return f"Centeroid(center={self.center}, rps={self.rate})"
+        return f"Centeroid[center={self.center}, rps={self.rate}]"

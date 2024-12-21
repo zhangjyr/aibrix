@@ -13,14 +13,15 @@
 # limitations under the License.
 import logging
 from functools import reduce
-from typing import Iterable, Optional, Tuple, List
+from typing import Iterable, Optional, Tuple
 
 import numpy as np
+
+from aibrix.gpu_optimizer.utils import DelayedLog
 
 from .solver.melange import Config as MelangConfig
 from .solver.melange import SolverRunner
 from .types import GPUProfile, WorkloadProfile
-from aibrix.gpu_optimizer.utils import DelayedLog
 
 logger = logging.getLogger("aibrix.gpuoptimizer.optimizer")
 
@@ -30,7 +31,7 @@ class Optimizer:
         self._config = MelangConfig()
         self._workload_distribution_template: Optional[np.ndarray] = None
         self._indexes: Optional[list] = None  # Values ticks of tputs columns and rows
-        self._log_indexes: Optional[list] = None # Cache the log2 value of index
+        self._log_indexes: Optional[list] = None  # Cache the log2 value of index
         if profiles is not None:
             for profile in profiles:
                 self.set_profile(profile)
@@ -40,7 +41,9 @@ class Optimizer:
             self._workload_distribution_template = np.zeros_like(profile.tputs)
             self._indexes = profile.indexes
             if profile.indexes is not None:
-                self._log_indexes = [np.log2(index).tolist() for index in profile.indexes]
+                self._log_indexes = [
+                    np.log2(index).tolist() for index in profile.indexes
+                ]
         elif (
             self._workload_distribution_template.shape != np.shape(profile.tputs)
             or self._indexes != profile.indexes
@@ -79,8 +82,12 @@ class Optimizer:
         for profile in profiles:
             try:
                 signature = self._validate_workload_signature(profile)
-                self._workload_distribution_template[signature] = profile.rate / covered_request_rate  # type: ignore
-                logger.debug(f"Resolved {profile} to signature={signature}, output-input={DelayedLog(lambda: self._log_signature_expr(signature))}, modified-rps={self._workload_distribution_template[signature]*total_request_rate}, capacity={DelayedLog(lambda: self._log_capacity(signature))}")
+                self._workload_distribution_template[signature] = (
+                    profile.rate / covered_request_rate
+                )  # type: ignore
+                logger.debug(
+                    f"Resolved {profile} to signature={signature}, output-input={DelayedLog(lambda: self._log_signature_expr(signature))}, modified-rps={self._workload_distribution_template[signature]*total_request_rate}, capacity={DelayedLog(lambda: self._log_capacity(signature))}"
+                )
             except Exception as e:
                 logger.error(
                     f"Fail to set workload distribution: {profile.signature}: {e}"
@@ -114,7 +121,11 @@ class Optimizer:
     def _validate_workload_signature(self, profile: WorkloadProfile) -> Tuple[int]:
         """Validate workload's signature by regard each element in signature tuple a index.
         return valid index tuple for accessing  self._workload_distribution_template"""
-        if self._workload_distribution_template is None or self._indexes is None:
+        if (
+            self._workload_distribution_template is None
+            or self._indexes is None
+            or self._log_indexes is None
+        ):
             raise Exception("Load profile not set.")
 
         signature = profile.get_signature(self._log_indexes, self._log_signature_error)
@@ -132,10 +143,20 @@ class Optimizer:
         )
 
     def _log_signature_expr(self, signature: Tuple[int]) -> str:
+        if self._indexes is None:
+            return "_index not set"
+
         values = list(signature)
         for i, value in enumerate(values):
             values[i] = self._indexes[i][value]
         return str(tuple(values))
-    
+
     def _log_capacity(self, signature: Tuple[int]) -> str:
-        return str(tuple((np.array(gpu_info["tputs"])[signature] for gpu_info in self._config.gpu_info.values())))
+        return str(
+            tuple(
+                (
+                    np.array(gpu_info["tputs"])[signature]
+                    for gpu_info in self._config.gpu_info.values()
+                )
+            )
+        )

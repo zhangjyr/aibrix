@@ -152,14 +152,14 @@ class DataBuffer:
 
 
 class Centeroid:
-    def __init__(self, span = 0):
+    def __init__(self, span=0):
         """Centeroid calculates the mass center, radius, and size of data points."""
         self._sum_center = None
         self._range_max = None
         self._range_min = None
         self._span_max = 0
         self._span_min = 0
-        self._span = span # Used to override span if set
+        self._span = span  # Used to override span if set
         self._size = 0
         self._signature = None
         self._up_to_date = False  # Whether the signature is up to date.
@@ -271,8 +271,14 @@ class Centeroid:
 
     @property
     def span(self):
-        return self._span if self._span > 0 else 1.0 if self._span_max == self._span_min else self._span_max - self._span_min
-    
+        return (
+            self._span
+            if self._span > 0
+            else 1.0
+            if self._span_max == self._span_min
+            else self._span_max - self._span_min
+        )
+
     @span.setter
     def span(self, value):
         self._span = value

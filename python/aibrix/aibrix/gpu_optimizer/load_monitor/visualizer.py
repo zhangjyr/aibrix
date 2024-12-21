@@ -29,7 +29,7 @@ from starlette.middleware.wsgi import WSGIMiddleware
 from starlette.routing import Mount
 
 from .load_reader import DatasetLoadReader, LoadReader
-from .monitor import ModelMonitor, DeploymentStates
+from .monitor import DeploymentStates, ModelMonitor
 from .profile_reader import FileProfileReader, ProfileReader, RedisProfileReader
 
 canvas_size = 1000
@@ -113,8 +113,11 @@ def get_debug_model_montior(
         debug_monitor = ModelMonitor(
             "model", "0", loadReader, profile_reader=profile_reader, debug=True
         )
-        for _, profile in enumerate(profile_reader.read()):
-            debug_monitor.add_deployment("0", profile.gpu, None, DeploymentStates(profile.gpu, 0))
+        if profile_reader is not None:
+            for _, profile in enumerate(profile_reader.read()):
+                debug_monitor.add_deployment(
+                    "0", profile.gpu, None, DeploymentStates(profile.gpu, 0)
+                )
 
     return debug_monitor
 
@@ -359,7 +362,9 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default=None, help="Dataset path.")
     parser.add_argument("--scaledata", type=float, default=1, help="Dataset path.")
     parser.add_argument("--profile", type=str, default=None, help="Profile path.")
-    parser.add_argument("--profiles", nargs="+", type=str, default=None, help="Profile path.")
+    parser.add_argument(
+        "--profiles", nargs="+", type=str, default=None, help="Profile path."
+    )
     parser.add_argument(
         "--redisprofile",
         type=str,
@@ -371,7 +376,11 @@ if __name__ == "__main__":
         figure.datasource = lambda _: get_debug_model_montior(
             args.dataset,
             args.scaledata,
-            profiles=args.profiles if args.profiles is not None else [args.profile] if args.profile is not None else None,
+            profiles=args.profiles
+            if args.profiles is not None
+            else [args.profile]
+            if args.profile is not None
+            else None,
             redisprofile=args.redisprofile,
         )
     init().run_server(debug=True)

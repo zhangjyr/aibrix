@@ -52,6 +52,8 @@ class DBSCANClusterer:
     def __init__(self, eps: float, min_pts: int):
         self.eps = eps
         self.min_pts = min_pts
+        self._pt_start: float = math.inf
+        self._pt_end: float = 1.0
         self.reset()
 
     def insert(self, points: DataPoints):
@@ -102,10 +104,15 @@ class DBSCANClusterer:
     @property
     def length(self):
         return self._length
-    
+
     @property
     def window(self):
-        return 1.0 if self._pt_end == 0.0 or self._pt_end == self._pt_start else self._pt_end - self._pt_start
+        return (
+            1.0
+            if self._pt_end == 0.0 or self._pt_end == self._pt_start
+            else self._pt_end - self._pt_start
+        )
+
 
 class MovingDBSCANClusterer:
     """MovingCluster uses extra buffer space to store a moving DBSCAN cluster"""
@@ -174,7 +181,7 @@ class MovingDBSCANClusterer:
     @property
     def length(self):
         return self.clusterer.length
-    
+
     @property
     def window(self):
         return self.clusterer.window

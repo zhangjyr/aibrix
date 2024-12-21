@@ -72,7 +72,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --workload)
-      workload=--workload_dataset_file $2
+      workload="--workload_dataset_file $2"
       shift 2
       ;;
     # *)

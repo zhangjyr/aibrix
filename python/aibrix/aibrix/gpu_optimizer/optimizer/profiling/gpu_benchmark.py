@@ -229,6 +229,7 @@ async def send_request(
             except Exception as e:
                 # It's ok to parse failure, santicized output could be jsonl, other format, or internal error.
                 print_err(f"Invalid response for request {idx}: {santicized}: {e}")
+                break
 
     request_end_time = time.perf_counter()
     request_latency = request_end_time - request_start_time

@@ -102,7 +102,8 @@ async def get_request(
             if i < num_requests - 1 and request_rate != float("inf"):
                 # Sample the request interval from the exponential distribution.
                 interval = np.random.exponential(1.0 / request_rate)
-                print(f"Request {i}: Generated exponential interval of {interval:.3f}s")
+                if log_error:
+                    print(f"Request {i}: Generated exponential interval of {interval:.3f}s")
 
             request_with_next = (prompt, prompt_len, output_len, interval)
             if log_error:

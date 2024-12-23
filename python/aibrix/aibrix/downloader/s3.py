@@ -25,6 +25,7 @@ from tqdm import tqdm
 
 from aibrix import envs
 from aibrix.downloader.base import BaseDownloader
+from aibrix.downloader.entity import RemoteSource, get_local_download_paths
 from aibrix.downloader.utils import (
     infer_model_name,
     meta_file,
@@ -44,6 +45,8 @@ def _parse_bucket_info_from_uri(uri: str, scheme: str = "s3") -> Tuple[str, str]
 
 
 class S3BaseDownloader(BaseDownloader):
+    _source: RemoteSource = RemoteSource.S3
+
     def __init__(
         self,
         scheme: str,
@@ -144,7 +147,9 @@ class S3BaseDownloader(BaseDownloader):
         # check if file exist
         etag = meta_data.get("ETag", "")
         file_size = meta_data.get("ContentLength", 0)
-        meta_data_file = meta_file(local_path=local_path, file_name=_file_name)
+        meta_data_file = meta_file(
+            local_path=local_path, file_name=_file_name, source=self._source.value
+        )
 
         if not need_to_download(local_file, meta_data_file, file_size, etag):
             return
@@ -172,19 +177,25 @@ class S3BaseDownloader(BaseDownloader):
             def download_progress(bytes_transferred):
                 pbar.update(bytes_transferred)
 
-            self.client.download_file(
-                Bucket=bucket_name,
-                Key=bucket_path,
-                Filename=str(
-                    local_file
-                ),  # S3 client does not support Path, convert it to str
-                Config=config,
-                Callback=download_progress if self.enable_progress_bar else None,
+            download_file = get_local_download_paths(
+                local_path, _file_name, self._source
             )
-            save_meta_data(meta_data_file, etag)
+            with download_file.download_lock():
+                self.client.download_file(
+                    Bucket=bucket_name,
+                    Key=bucket_path,
+                    Filename=str(
+                        local_file
+                    ),  # S3 client does not support Path, convert it to str
+                    Config=config,
+                    Callback=download_progress if self.enable_progress_bar else None,
+                )
+                save_meta_data(meta_data_file, etag)
 
 
 class S3Downloader(S3BaseDownloader):
+    _source: RemoteSource = RemoteSource.S3
+
     def __init__(
         self,
         model_uri,

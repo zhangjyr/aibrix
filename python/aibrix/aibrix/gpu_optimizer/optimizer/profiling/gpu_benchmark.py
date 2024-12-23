@@ -59,23 +59,22 @@ def sample_requests(
             with open(workload_dataset_file) as f:
                 data = json.load(f)
                 # Return timestamp and request tuples
-                previous_timestamp = 0
                 requests = []
                 for i, entry in enumerate(data):
                     # Limit the number of requests read from workload
                     if i >= num_requests:
                         break
                     # print(f"Request {i}: {entry}")
-                    timestamp = entry["Timestamp"]
-                    interval = (timestamp - previous_timestamp) / 1000.0
-                    previous_timestamp = timestamp
+                    cur_timestamp = entry["Timestamp"]
+                    next_timestamp = data[i + 1]["Timestamp"] if i < len(data) - 1 else cur_timestamp 
+                    interval = (next_timestamp - cur_timestamp) / 1000.0
                     for i, req in enumerate(entry["Requests"]):
                         requests.append(
                             (
                                 req["Prompt"],
                                 req["Prompt Length"],
                                 req["Output Length"],
-                                interval,
+                                interval if i == len(entry["Requests"]) - 1 else 0,
                             )
                         )
                 # print('total requests: ', len(requests))
@@ -105,16 +104,17 @@ async def get_request(
     requests = iter(input_requests)
     start_time = time.perf_counter()
 
+    batch = 0
     for i, (prompt, prompt_len, output_len, interval) in enumerate(requests):
         current_time = time.perf_counter() - start_time
         if use_workload_interval:
             if verbose:
                 print(
-                    f"Request {i}: Sending at {current_time:.3f}s with interval {interval:.3f}s"
+                    f"Batch {batch}, Request {i}: Sending at {current_time:.3f}s with interval {interval:.3f}s"
                 )
             yield (prompt, prompt_len, output_len, interval)
-
             if interval > 0:
+                batch += 1
                 await asyncio.sleep(interval)
             continue
         else:

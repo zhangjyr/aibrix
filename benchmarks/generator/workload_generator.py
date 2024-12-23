@@ -8,7 +8,7 @@ import csv
 from typing import Tuple, List, Any
 from transformers import PreTrainedTokenizerBase
 from datetime import datetime, timedelta
-from sample_request import (load_bird_requests,load_sharegpt_requests, sample_sharegpt_requests, sample_sharegpt_requests_len_range,sample_bird_requests_len_range)
+from sample_request import (load_bird_requests,load_sharegpt_requests, sample_sharegpt_requests, sample_sharegpt_requests_len_range,sample_bird_requests_len_range,sample_bird_requests_no_len_range)
 from utils import (get_tokenizer, plot_workload, make_serializable, save_workload)
 
 def generate_from_internal_csv(file_path: str,
@@ -175,12 +175,12 @@ def generate_from_azure_csv(file_path: str,
         for _, row in group.iterrows():
             input_lens.append(int(row['ContextTokens']))
             output_lens.append(int(row['GeneratedTokens']))
-        sampled_requests = sample_sharegpt_requests_len_range(
+        sampled_requests = sample_bird_requests_len_range(
                 df = sharegpt_df,
                 num_requests = len(input_lens),
                 input_lens = input_lens, 
                 output_lens = output_lens,
-                initial_err_perc = 0.5,
+                initial_err_perc = 0.2,
                 err_step = 0.05
                 )
         
@@ -200,6 +200,67 @@ def generate_from_azure_csv(file_path: str,
     return grouped_requests
 
 
+def generate_from_azure_csv_and_bird_prompts(file_path: str,
+                            prompt_file_path: str,
+                            duration_ms: int,
+                            tokenizer: PreTrainedTokenizerBase,
+                            interval_ms: int,
+                            output_file: str = 'output/output.json',
+                            to_jsonl: bool = False,
+                        ) -> List[List[Any]]:
+    # Load the CSV file
+    df = pd.read_csv(file_path)
+
+    # Ensure TIMESTAMP is a datetime object
+    df['TIMESTAMP'] = pd.to_datetime(df['TIMESTAMP'])
+
+    # Define the grouping time range (e.g., 1 second)
+    time_range = timedelta(milliseconds=interval_ms)
+
+    # Initialize a list to hold the grouped requests
+    grouped_requests = []
+
+    # Group requests by the time range
+    df.set_index('TIMESTAMP', inplace=True)
+    current_time = df.index.min()
+    end_time = df.index.max()
+    logging.warn(f"Start generation from time {current_time} to {end_time}")
+   
+    sharegpt_df = load_bird_requests(dataset_path = prompt_file_path, tokenizer = tokenizer)
+    
+    ts = 0
+    while current_time <= end_time:
+        # Select requests within the current time range
+        mask = (df.index >= current_time) & (df.index < current_time + time_range)
+        group = df.loc[mask]
+        input_lens = []
+        output_lens = []
+        for _, row in group.iterrows():
+            input_lens.append(int(row['ContextTokens']))
+            output_lens.append(int(row['GeneratedTokens']))
+        sampled_requests = sample_bird_requests_no_len_range(
+                df = sharegpt_df,
+                num_requests = len(input_lens),
+                )
+        
+        if sampled_requests:  # Only add non-empty groups
+            grouped_requests.append({"Timestamp": ts, "Requests": sampled_requests})
+        ts += interval_ms
+        if ts > duration_ms:
+            break
+        # Move to the next time range
+        current_time += time_range
+
+    # Print or process grouped_requests as needed
+    # Save to file
+    grouped_requests = make_serializable(grouped_requests)
+    save_workload(grouped_requests, output_file, use_jsonl = to_jsonl)
+    
+    return grouped_requests
+
+
+
+
 def generate_from_bird_csv(file_path: str,
                             prompt_file_path: str,
                             duration_ms: int,
@@ -207,6 +268,7 @@ def generate_from_bird_csv(file_path: str,
                             interval_ms: int,
                             output_file: str = 'output/output.json',
                             to_jsonl: bool = False,
+                            error_perc: float = 0.2,
                         ) -> List[List[Any]]:
     # Load the CSV file
     df = pd.read_csv(file_path)
@@ -253,7 +315,7 @@ def generate_from_bird_csv(file_path: str,
                 num_requests = len(input_lens),
                 input_lens = input_lens, 
                 output_lens = output_lens,
-                initial_err_perc = 0.2,
+                initial_err_perc = error_perc,
                 used_indices = used_indices  
                 )
         
@@ -349,7 +411,7 @@ if __name__ == '__main__':
         prompts = sample_sharegpt_requests(dataset_path = args.prompt_file, num_requests = args.num_prompts, tokenizer = tokenizer)
         # Generate workloads with different parameters
         scenarios = {
-            'Quick Rising': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'period': 5, 'only_rise': True},
+            'Quick Rising': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 15, 'period': 5, 'only_rise': True},
             'Slow Rising': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'period': 0.25, 'only_rise': True},
             'Slight Fluctuation': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'B': 5, 'period': 1, 'only_rise': False},
             'Severe Fluctuation': {'duration_ms': args.duration_ms, 'interval_ms': args.interval_ms, 'A': 5, 'B': 10, 'period': 12, 'only_rise': False},
@@ -386,10 +448,13 @@ if __name__ == '__main__':
         workload_dict["azure"] = generated_workload
     elif args.trace_type == "bird":
 
-        # Manually set context (input) and generated (output) tokens
-        context_tokens = [2048, 4096]
-        generated_tokens = [32, 64]
+        # # Manually set context (input) and generated (output) tokens
+        # context_tokens = [2048, 4096]
+        # generated_tokens = [32, 64]
         
+        context_tokens = [4096]
+        generated_tokens = [32]
+
         # Generate trace
         trace_df = generate_bird_trace_csv(
             context_tokens=context_tokens,
@@ -405,8 +470,25 @@ if __name__ == '__main__':
                                                      duration_ms = args.duration_ms, 
                                                      tokenizer = tokenizer, 
                                                      interval_ms = args.interval_ms, 
-                                                     output_file = f"{args.output}/bird",
+                                                     error_perc = 0.2,
+                                                     output_file = f"{args.output}/bird_4096_32",
                                                      to_jsonl = args.to_jsonl)
         workload_dict["bird"] = generated_workload
+    elif args.trace_type == "bird_aruze_time":
+
+        # # Manually set context (input) and generated (output) tokens
+        # context_tokens = [2048, 4096]
+        # generated_tokens = [32, 64]
+        
+        # Generate trace
+        generated_workload = generate_from_azure_csv_and_bird_prompts(file_path=args.trace_file, 
+                                                     prompt_file_path = args.prompt_file, 
+                                                     duration_ms = args.duration_ms, 
+                                                     tokenizer = tokenizer, 
+                                                     interval_ms = args.interval_ms, 
+                                                     output_file = f"{args.output}/bird_aruze_time",
+                                                     to_jsonl = args.to_jsonl)
+
+        workload_dict["bird_aruze_time"] = generated_workload
         # Plot the workloads
-        plot_workload(workload_dict, interval_ms=args.interval_ms, output_file=f"plot/bird.pdf")
+        plot_workload(workload_dict, interval_ms=args.interval_ms, output_file=f"plot/bird_aruze_time.pdf")

@@ -35,8 +35,6 @@ def load_bird_requests(
     df_raw = pd.read_json(dataset_path, lines=True)
      # Print number of rows
     logging.warn(f"Number of rows in df_raw: {len(df_raw)}")
-    # Print first row
-    logging.warn(f"First row of df_raw:\n{df_raw.iloc[0]}")
 
     # Extract prompt and completion into new DataFrame
     dataset = []
@@ -54,7 +52,7 @@ def load_bird_requests(
     df["prompt_len"] = df["prompt"].apply(lambda x: len(tokenizer(x).input_ids))
     df["completion_len"] = df["completion"].apply(lambda x: len(tokenizer(x).input_ids))
     logging.warning(f"DataFrame size: {len(df)}")  # Add this line
-    logging.warning(f"First row: {df.iloc[0] if len(df) > 0 else 'Empty DataFrame'}")
+    # logging.warning(f"First row: {df.iloc[0] if len(df) > 0 else 'Empty DataFrame'}")
     logging.warn(f"...Complete dataframe transformation")
     return df
 
@@ -204,5 +202,50 @@ def sample_bird_requests_len_range(
         if err_perc < 0:
             logging.error(f"No match found for request {i + 1} even after relaxing err_perc to 0")
             raise Exception(f"No match found for request {i + 1} even after relaxing err_perc to 0")
+
+    return filtered_results
+
+def sample_bird_requests_no_len_range(
+    df: pd.DataFrame,
+    num_requests: int,
+    used_indices: Optional[set] = None
+) -> List[Tuple[str, int, int, None]]:
+    """
+    Sample bird requests based on input and output length ranges, 
+    with deduplication logic to ensure no duplicate rows are selected, if possible. There will be duplicates if availabe rows are fewer than num_requests. 
+    """
+    filtered_results = []
+    used_indices = used_indices if used_indices is not None else set()  # Use provided set or create new
+
+
+    for i in range(num_requests):
+
+        while True:
+            # Use all prompts in df 
+            filtered = df
+            if len(filtered) == 0:
+                logging.warn(f"Error, 0 prompts found under this input_output_range")
+                break
+
+            # Exclude already used rows
+            unused_filtered = filtered.loc[~filtered.index.isin(used_indices)]
+
+            if len(unused_filtered) > 0:
+                #  randomly sample one from unused prompts
+                idx = unused_filtered.sample(n=1).index[0] 
+                sample = unused_filtered.loc[idx]
+                used_indices.add(idx)
+            else:
+                # If no unused rows, randomly reuse an existing row
+                logging.warn(f" Reusing an existing row as no unused rows found within error threshold")
+                idx = filtered.sample(n=1).index[0]  
+                sample = filtered.loc[idx]
+
+            filtered_results.append({
+                    "Prompt": sample["prompt"], 
+                    "Prompt Length": sample["prompt_len"], 
+                    "Output Length": sample["completion_len"]
+                })
+            break  # Found a match, move to next request
 
     return filtered_results

@@ -208,6 +208,7 @@ def sample_bird_requests_len_range(
 def sample_bird_requests_no_len_range(
     df: pd.DataFrame,
     num_requests: int,
+    current_index: int,
     used_indices: Optional[set] = None
 ) -> List[Tuple[str, int, int, None]]:
     """
@@ -218,34 +219,23 @@ def sample_bird_requests_no_len_range(
     used_indices = used_indices if used_indices is not None else set()  # Use provided set or create new
 
 
+
+    total_rows = len(df)
+
     for i in range(num_requests):
+        if current_index >= total_rows:
+            # Shuffle the DataFrame when we've used all rows
+            df = df.sample(frac=1).reset_index(drop=True)
+            current_index = 0
+            logging.warn("Reached end of dataset, shuffling and starting over")
 
-        while True:
-            # Use all prompts in df 
-            filtered = df
-            if len(filtered) == 0:
-                logging.warn(f"Error, 0 prompts found under this input_output_range")
-                break
+        sample = df.iloc[current_index]
+        filtered_results.append({
+            "Prompt": sample["prompt"],
+            "Prompt Length": sample["prompt_len"],
+            "Output Length": sample["completion_len"]
+        })
+        current_index += 1
 
-            # Exclude already used rows
-            unused_filtered = filtered.loc[~filtered.index.isin(used_indices)]
+    return filtered_results, current_index
 
-            if len(unused_filtered) > 0:
-                #  randomly sample one from unused prompts
-                idx = unused_filtered.sample(n=1).index[0] 
-                sample = unused_filtered.loc[idx]
-                used_indices.add(idx)
-            else:
-                # If no unused rows, randomly reuse an existing row
-                logging.warn(f" Reusing an existing row as no unused rows found within error threshold")
-                idx = filtered.sample(n=1).index[0]  
-                sample = filtered.loc[idx]
-
-            filtered_results.append({
-                    "Prompt": sample["prompt"], 
-                    "Prompt Length": sample["prompt_len"], 
-                    "Output Length": sample["completion_len"]
-                })
-            break  # Found a match, move to next request
-
-    return filtered_results

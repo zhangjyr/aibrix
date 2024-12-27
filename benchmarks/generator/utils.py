@@ -38,21 +38,38 @@ def plot_workload(workload_dict, interval_ms, output_file: str = None):
         workload_dict (dict): A dictionary where the keys are workload names (labels) and the values are lists of lists representing the workload.
         interval_ms (int): Interval in milliseconds. 
     """
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
     for workload_name, workload in workload_dict.items():
-        concurrency_values = [len(item) for (_, item) in workload]
-        ax.plot(np.arange(len(concurrency_values)) * interval_ms, concurrency_values, label=workload_name)
+        # Filter out timestamps with zero requests
+        non_zero_workload = [item for item in workload if len(item["Requests"]) > 0]
+        
+        timestamps = [item["Timestamp"]/1000 for item in non_zero_workload]  # Convert to seconds
+        concurrency = [len(item["Requests"]) for item in non_zero_workload]
+        
+        # Plot line with markers
+        ax.plot(timestamps, concurrency, 
+                label=workload_name,
+                marker='o',        # Add markers at data points
+                markersize=4,      # Smaller markers
+                linestyle='-',     # Solid line
+                linewidth=1.5,     # Slightly thicker line
+                alpha=0.8)         # Slight transparency
 
     ax.set_ylim(0,)
-    plt.xlabel('Time (ms)')
-    plt.ylabel('Concurrency')
-    plt.title('Workload Concurrency')
+    ax.grid(True, linestyle='--', alpha=0.7)
+    ax.set_xlabel('Time (seconds)')
+    ax.set_ylabel('Number of Concurrent Requests')
+    ax.set_title('Workload Concurrency Over Time')
+    
     plt.legend()
+    plt.tight_layout()
+    
     if output_file is None:
         plt.show()
     else:
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        plt.savefig(output_file)
+        plt.savefig(output_file, dpi=300)  # Higher DPI for better quality
         logging.warn(f'Saved workload plot to {output_file}')
         
 def save_workload(load_struct: List[Any], 

@@ -28,7 +28,7 @@ from dash.dependencies import Input, Output
 from starlette.middleware.wsgi import WSGIMiddleware
 from starlette.routing import Mount
 
-from .load_reader import DatasetLoadReader, LoadReader
+from .load_reader import DatasetLoadReader, LoadReader, WorkloadReader
 from .monitor import DeploymentStates, ModelMonitor
 from .profile_reader import FileProfileReader, ProfileReader, RedisProfileReader
 
@@ -88,6 +88,7 @@ logger = logging.getLogger("aibrix.gpu_optimizer.load_monitor.visualizer")
 
 def get_debug_model_montior(
     path: Optional[str],
+    is_workload: bool = True,
     scale: float = 1.0,
     profiles: Optional[List[str]] = None,
     redisprofile: Optional[str] = None,
@@ -98,9 +99,14 @@ def get_debug_model_montior(
         if path is None:
             directory = os.path.dirname(os.path.abspath(__file__))
             path = directory + "/data/sharegpt.csv"
-        loadReader: LoadReader = DatasetLoadReader(
-            path, rps=10, scale=scale, interval=reader_interval
-        )
+
+        loadReader: Optional[LoadReader] = None
+        if is_workload:
+            loadReader = WorkloadReader(path, scale=scale, interval=reader_interval)
+        else:
+            loadReader = DatasetLoadReader(
+                path, rps=10, scale=scale, interval=reader_interval
+            )
 
         profile_reader: Optional[ProfileReader] = None
         if profiles is not None:
@@ -358,9 +364,22 @@ if __name__ == "__main__":
 
     import argparse
 
-    parser = argparse.ArgumentParser(description="Please provide dataset path:")
-    parser.add_argument("--dataset", type=str, default=None, help="Dataset path.")
-    parser.add_argument("--scaledata", type=float, default=1, help="Dataset path.")
+    parser = argparse.ArgumentParser(
+        description="Please provide dataset or workload path:"
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        help="Dataset path. A Dataset has no timestamp info.",
+    )
+    parser.add_argument("--workload", type=str, default=None, help="Workload path.")
+    parser.add_argument(
+        "--scaledata",
+        type=float,
+        default=1,
+        help="A factor to scale the number of input/output tokens.",
+    )
     parser.add_argument("--profile", type=str, default=None, help="Profile path.")
     parser.add_argument(
         "--profiles", nargs="+", type=str, default=None, help="Profile path."
@@ -372,9 +391,13 @@ if __name__ == "__main__":
         help="Redis connection string for profiles.",
     )
     args = parser.parse_args()
-    if args.dataset is not None:
+    filepath, is_workload = (
+        (args.workload, True) if args.workload is not None else (args.dataset, False)
+    )
+    if filepath is not None:
         figure.datasource = lambda _: get_debug_model_montior(
-            args.dataset,
+            filepath,
+            is_workload,
             args.scaledata,
             profiles=args.profiles
             if args.profiles is not None

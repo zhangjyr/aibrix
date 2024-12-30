@@ -83,7 +83,7 @@ class DatasetLoadReader:
             # self.df['output_tokens'] = self.stair_aggregate(self.df['output_tokens'] * scale)
 
         self.rps = rps
-        self.interval = 10
+        self.interval = interval
         self.n_read = 0
         self.n = 0
 
@@ -134,6 +134,78 @@ class DatasetLoadReader:
 
     def next_available(self) -> float:
         """Dataset is available to read anytime."""
+        return datetime.now().timestamp()
+
+
+class WorkloadReader:
+    """WorkloadReader reads the load records from a timestamped workload trace.
+    To match the behavior of the gateway, the input and output tokens are rounded to the nearest integer of log2.
+    """
+
+    def __init__(self, filepath, scale: float = 1.0, interval: int = 10) -> None:
+        if filepath != unittest_filepath:
+            self.df = pd.read_json(filepath)
+
+        self.scale = scale
+        self.interval = interval
+        self.n_read = 0  # the number that track df reading progress
+        self.n = 0  # the number of batch
+        self.tick, self.tick_df = self._read_next_tick()
+        self.start = self.tick
+
+    def log2_aggregate(self, series: pd.Series, precision: int = 0) -> List:
+        return np.round(np.log2(series), precision)
+
+    def read(self, ts: float = 0.0) -> List[LoadRecord]:
+        """Read the next batch of records from the data source.
+
+        args:
+            ts: float, ignored.
+        """
+        if self.tick_df is None:
+            return []
+
+        records = []
+        # Simulate the arrival of requests using Poisson distribution
+        tick_start = self.start + self.n * self.interval
+        while (
+            self.tick_df is not None
+            and self.tick >= tick_start
+            and self.tick < tick_start + self.interval
+        ):
+            for input_tokens, output_tokens in zip(
+                self.log2_aggregate(self.tick_df["Prompt Length"] * self.scale, 1),
+                self.log2_aggregate(self.tick_df["Output Length"] * self.scale, 1),
+            ):
+                records.append(
+                    LoadRecord(
+                        (self.tick - self.start),
+                        input_tokens,
+                        output_tokens,
+                    )
+                )
+            self.tick, self.tick_df = self._read_next_tick()
+
+        self.n += 1
+        # if self.tick_df is None:
+        #     print(f"read {len(records)} records for {self.interval}s, no more available records")
+        # else:
+        #     print(f"read {len(records)} records for {self.interval}s, next avaialbe at {self.tick}({len(self.df)} records)")
+        return records
+
+    def _read_next_tick(self):
+        if self.n_read >= len(self.df):
+            return 0, None
+
+        record = self.df.iloc[self.n_read]
+        self.n_read += 1
+        return record["Timestamp"] / 1000, pd.DataFrame(record["Requests"])
+
+    def progress(self) -> str:
+        return ""
+
+    def next_available(self) -> float:
+        """Workload is available to read anytime."""
         return datetime.now().timestamp()
 
 

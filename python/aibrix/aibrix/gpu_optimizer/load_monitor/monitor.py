@@ -112,7 +112,7 @@ class ModelMonitor:
             namespace: (optional) The Kubernetes namespace where the model deployment resides.
             replicas: (optional) The initial number of replicas for the model deployment.
             interval: (optional) The interval (in seconds) at which to monitor the model. Defaults to 10 seconds.
-            window: (optional) The window (in seconds) to consider for clustering. Defaults to 300 seconds.
+            window: (optional) The window (in seconds) to consider for clustering. Defaults to 240 seconds.
             debug: (optional) Whether to enable debugging behavior. Defaults to False.
         """
         self.model_name = model_name

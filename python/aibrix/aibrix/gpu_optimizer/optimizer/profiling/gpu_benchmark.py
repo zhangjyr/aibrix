@@ -66,7 +66,9 @@ def sample_requests(
                         break
                     # print(f"Request {i}: {entry}")
                     cur_timestamp = entry["Timestamp"]
-                    next_timestamp = data[i + 1]["Timestamp"] if i < len(data) - 1 else cur_timestamp 
+                    next_timestamp = (
+                        data[i + 1]["Timestamp"] if i < len(data) - 1 else cur_timestamp
+                    )
                     interval = (next_timestamp - cur_timestamp) / 1000.0
                     for i, req in enumerate(entry["Requests"]):
                         requests.append(

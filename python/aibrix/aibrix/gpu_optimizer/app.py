@@ -348,7 +348,10 @@ if __name__ == "__main__":
         debug = True
 
     # Setup default logger
-    logging.basicConfig(level=logging.DEBUG if debug else logging.INFO, format='{"time": "%(asctime)s", "level": "%(levelname)s", "message": "%(message)s"}')
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.INFO,
+        format='{"time": "%(asctime)s", "level": "%(levelname)s", "message": "%(message)s"}',
+    )
     logging.getLogger("kubernetes.client.rest").setLevel(
         logging.ERROR
     )  # Suppress kubenetes logs

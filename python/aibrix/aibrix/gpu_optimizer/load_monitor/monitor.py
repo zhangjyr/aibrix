@@ -373,6 +373,7 @@ class ModelMonitor:
             tokens = list(
                 self._expand_records(self._load_reader.read(datetime.now().timestamp()))
             )  # read data
+            logger.debug(f"Records read from the load reader: {len(tokens)}")
             if len(tokens) > 0:
                 self._data.reconcile(
                     movingCluster.length + len(tokens)

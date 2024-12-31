@@ -141,6 +141,8 @@ async def get_request(
             # The next request will be sent after the interval.
             await asyncio.sleep(interval)
 
+def load_response(resp: str):
+    return json.loads(resp)
 
 async def send_request(
     idx: int,
@@ -222,8 +224,7 @@ async def send_request(
                     print_err(f"Failed to read response for request {idx}: {e}")
                     break
             try:
-                santicized = santicized.replace("\\", "\\\\")
-                ret = json.loads(santicized)
+                ret = load_response(santicized)
 
                 # Re-send the request if it failed.
                 if "error" not in ret:

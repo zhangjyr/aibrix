@@ -245,9 +245,7 @@ class GatewayLoadReader:
                 return []
 
             # TODO: Now profile seems to be have a interval delay. Further investigation is needed.
-            profiles = self.read_key(
-                f"{self.prefix}{int(ts)}", True
-            )
+            profiles = self.read_key(f"{self.prefix}{int(ts)}", True)
             self.last_ts = ts
 
             if profiles is None or len(profiles) == 0:
@@ -335,8 +333,11 @@ class GatewayLoadReader:
         )  # Add 1 second to tolerate possible delay
 
     def _parse_profiles(
-        self, profiles: dict, ts: float, out_records: List[LoadRecord] = []
+        self, profiles: dict, ts: float, out_records: Optional[List[LoadRecord]] = None
     ) -> List[LoadRecord]:
+        if out_records is None:
+            out_records = []
+
         # Load metainfo.
         version = profiles.get("meta_version", 1)
         precision = profiles.get("meta_precision", 1)

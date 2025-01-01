@@ -245,7 +245,9 @@ class GatewayLoadReader:
                 return []
 
             # TODO: Now profile seems to be have a interval delay. Further investigation is needed.
-            profiles = self.read_key(f"{self.prefix}{int(ts)}", True)
+            profiles = self.read_key(
+                f"{self.prefix}{int(ts - self.key_ts_alignment)}", True
+            )
             self.last_ts = ts
 
             if profiles is None or len(profiles) == 0:

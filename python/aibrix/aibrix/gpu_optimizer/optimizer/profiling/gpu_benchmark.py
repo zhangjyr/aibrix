@@ -141,8 +141,10 @@ async def get_request(
             # The next request will be sent after the interval.
             await asyncio.sleep(interval)
 
+
 def load_response(resp: str):
     return json.loads(resp)
+
 
 async def send_request(
     idx: int,

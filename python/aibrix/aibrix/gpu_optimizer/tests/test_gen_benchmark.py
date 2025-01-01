@@ -15,9 +15,7 @@ import unittest
 
 import numpy as np
 
-from aibrix.gpu_optimizer.optimizer.profiling.gpu_benchmark import (
-    load_response
-)
+from aibrix.gpu_optimizer.optimizer.profiling.gpu_benchmark import load_response
 
 
 class TestGenBenchmark(unittest.TestCase):
@@ -26,13 +24,9 @@ class TestGenBenchmark(unittest.TestCase):
 
     def test_stair_agggregate(self):
         resp = '{"message": "\\n\\"test\\""}'
-        expected = {
-            "message": '\n\"test\"'
-        }
+        expected = {"message": '\n"test"'}
 
-        np.testing.assert_equal(
-            load_response(resp), expected
-        )
+        np.testing.assert_equal(load_response(resp), expected)
 
 
 if __name__ == "__main__":

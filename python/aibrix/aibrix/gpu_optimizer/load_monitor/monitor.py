@@ -406,7 +406,8 @@ class ModelMonitor:
                 # Optimize, we use the larger of average request rate in window and current request rate to get sufficient resources.
                 self._optimize(
                     centers,
-                    8.0,  # max(self._data.len / movingCluster.window, cur_rate) * 1.1 # Add 110% request rate.
+                    max(self._data.len / movingCluster.window, cur_rate)
+                    * 1.1,  # Add 110% request rate.
                 )
             elif self._data.len == 0:
                 self._minimize()

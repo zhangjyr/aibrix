@@ -255,7 +255,9 @@ class GatewayLoadReader:
                 return [], 0.0
 
             records = self._parse_profiles(profiles, ts)
-            return records, float(len(records)) / float(self.key_ts_alignment)
+            return records, float(np.sum([record.freq for record in records])) / float(
+                self.key_ts_alignment
+            )
 
         except Exception as e:
             logger.warning(f"Failed to read from Redis: {e}")
@@ -302,7 +304,7 @@ class GatewayLoadReader:
                 logger.warning(f"Failed to parse {key[0].decode()} from Redis: {e}")
                 continue
 
-        return records, float(len(records)) / float(
+        return records, float(np.sum([record.freq for record in records])) / float(
             len(matching_keys) * self.key_ts_alignment
         )
 

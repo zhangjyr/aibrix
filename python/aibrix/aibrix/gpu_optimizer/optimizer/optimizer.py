@@ -65,7 +65,7 @@ class Optimizer:
             del self._config.gpu_info[gpu]
 
     def set_workload_distribution(
-        self, profiles: Iterable[WorkloadProfile], total_request_rate: int
+        self, profiles: Iterable[WorkloadProfile], total_request_rate: float
     ) -> bool:
         """Update workload distribution and return success or failure."""
         if self._workload_distribution_template is None:

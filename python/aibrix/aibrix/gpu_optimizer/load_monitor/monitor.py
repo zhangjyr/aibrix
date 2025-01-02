@@ -370,9 +370,8 @@ class ModelMonitor:
                 self._data.trim_head(-movingCluster.length)
 
             # Read new tokens
-            tokens = list(
-                self._expand_records(self._load_reader.read(datetime.now().timestamp()))
-            )  # read data
+            records, cur_rate = self._load_reader.read(datetime.now().timestamp())
+            tokens = list(self._expand_records(records))  # read data
             logger.debug(f"Records read from the load reader: {len(tokens)}")
             if len(tokens) > 0:
                 self._data.reconcile(
@@ -404,8 +403,10 @@ class ModelMonitor:
             )
 
             if len(centers) > 0:
-                # Optimize
-                self._optimize(centers, self._data.len / movingCluster.window)
+                # Optimize, we use the larger of average request rate in window and current request rate to get sufficient resources.
+                self._optimize(
+                    centers, max(self._data.len / movingCluster.window, cur_rate)
+                )
             elif self._data.len == 0:
                 self._minimize()
             else:

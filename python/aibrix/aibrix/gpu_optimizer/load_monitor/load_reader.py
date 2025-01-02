@@ -16,7 +16,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import Any, List, Optional, Protocol, Union
+from typing import Any, List, Optional, Protocol, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -53,8 +53,8 @@ class LoadRecord(tuple):
 
 
 class LoadReader(Protocol):
-    def read(self, ts: float = 0.0) -> List[LoadRecord]:
-        """Read the next batch of records from the data source."""
+    def read(self, ts: float = 0.0) -> Tuple[List[LoadRecord], float]:
+        """Read the next batch of records from the data source. Returns records and rate"""
 
     def progress(self) -> str:
         """Return the progress description of the data source."""
@@ -103,7 +103,7 @@ class DatasetLoadReader:
         aggregated = np.maximum(series - np.mod(series, 2**bucketbits), 1)
         return aggregated if skip_log2 else np.log2(aggregated)
 
-    def read(self, ts: float = 0.0) -> List[LoadRecord]:
+    def read(self, ts: float = 0.0) -> Tuple[List[LoadRecord], float]:
         """Read the next batch of records from the data source.
 
         args:
@@ -127,7 +127,10 @@ class DatasetLoadReader:
             )
         self.n += 1
 
-        return records
+        if len(records) == 0:
+            return records, 0.0
+
+        return records, self.rps
 
     def progress(self) -> str:
         return f"{round(self.n_read / len(self.df) * 100, 2)}%"
@@ -156,14 +159,14 @@ class WorkloadReader:
     def log2_aggregate(self, series: pd.Series, precision: int = 0) -> List:
         return np.round(np.log2(series), precision)
 
-    def read(self, ts: float = 0.0) -> List[LoadRecord]:
+    def read(self, ts: float = 0.0) -> Tuple[List[LoadRecord], float]:
         """Read the next batch of records from the data source.
 
         args:
             ts: float, ignored.
         """
         if self.tick_df is None:
-            return []
+            return [], 0.0
 
         records = []
         # Simulate the arrival of requests using Poisson distribution
@@ -191,7 +194,7 @@ class WorkloadReader:
         #     print(f"read {len(records)} records for {self.interval}s, no more available records")
         # else:
         #     print(f"read {len(records)} records for {self.interval}s, next avaialbe at {self.tick}({len(self.df)} records)")
-        return records
+        return records, float(len(records)) / float(self.interval)
 
     def _read_next_tick(self):
         if self.n_read >= len(self.df):
@@ -231,7 +234,7 @@ class GatewayLoadReader:
         self.prefix = f"aibrix:{model_name}_request_trace_"
         self.key_ts_alignment = key_ts_alignment
 
-    def read(self, ts: float = 0.0) -> List[LoadRecord]:
+    def read(self, ts: float = 0.0) -> Tuple[List[LoadRecord], float]:
         """Read the next batch of records from the data source."""
         try:
             if self.start == 0:
@@ -242,24 +245,23 @@ class GatewayLoadReader:
             ts = ts - ts % self.key_ts_alignment
             if ts <= self.last_ts:
                 # Seen
-                return []
+                return [], 0.0
 
             # TODO: Now profile seems to be have a interval delay. Further investigation is needed.
-            profiles = self.read_key(
-                f"{self.prefix}{int(ts - self.key_ts_alignment)}", True
-            )
+            profiles = self.read_key(f"{self.prefix}{int(ts)}", True)
             self.last_ts = ts
 
             if profiles is None or len(profiles) == 0:
-                return []
+                return [], 0.0
 
-            return self._parse_profiles(profiles, ts)
+            records = self._parse_profiles(profiles, ts)
+            return records, float(len(records)) / float(self.key_ts_alignment)
 
         except Exception as e:
             logger.warning(f"Failed to read from Redis: {e}")
-            return []
+            return [], 0.0
 
-    def read_first(self) -> List[LoadRecord]:
+    def read_first(self) -> Tuple[List[LoadRecord], float]:
         """Read the first batch of records from the data source."""
         cursor = 0
         matching_keys = []
@@ -280,7 +282,7 @@ class GatewayLoadReader:
             logger.info(
                 f"No pre-existed load profile matching {self.prefix}* found in Redis"
             )
-            return []
+            return [], 0.0
 
         # Sort by ts to ensure profiles are processed by time order.
         matching_keys = sorted(matching_keys, key=lambda k: k[1])
@@ -300,7 +302,9 @@ class GatewayLoadReader:
                 logger.warning(f"Failed to parse {key[0].decode()} from Redis: {e}")
                 continue
 
-        return records
+        return records, float(len(records)) / float(
+            len(matching_keys) * self.key_ts_alignment
+        )
 
     def read_key(self, key: Union[str, bytes], optional: bool) -> Optional[dict]:
         logging_key = key.decode() if isinstance(key, bytes) else key
@@ -331,8 +335,8 @@ class GatewayLoadReader:
     def next_available(self) -> float:
         """Dataset is available to read anytime."""
         return (
-            self.last_ts + self.key_ts_alignment + 2
-        )  # Add 1 second to tolerate possible delay
+            self.last_ts + self.key_ts_alignment + 5
+        )  # Add 5 seconds to tolerate possible delay
 
     def _parse_profiles(
         self, profiles: dict, ts: float, out_records: Optional[List[LoadRecord]] = None

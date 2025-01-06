@@ -243,6 +243,15 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			fmt.Sprintf("model %s does not exist", model)), targetPodIP, stream
 	}
 
+	// early reject if no pods are ready to accept request for a model
+	pods, err := s.cache.GetPodsForModel(model)
+	if len(pods) == 0 || len(utils.FilterReadyPods(pods)) == 0 || err != nil {
+		return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+				Key: "x-no-model-deployment", RawValue: []byte("true")}}},
+			fmt.Sprintf("error on getting pods for model %s", model)), targetPodIP, stream
+	}
+
 	stream, ok = jsonMap["stream"].(bool)
 	if stream && ok {
 		streamOptions, ok := jsonMap["stream_options"].(map[string]interface{})
@@ -271,31 +280,22 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		})
 		klog.InfoS("request start", "requestID", requestID, "model", model)
 	} else {
-		pods, err := s.cache.GetPodsForModel(model)
-		if len(pods) == 0 || err != nil {
-			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
-				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-no-model-deployment", RawValue: []byte("true")}}},
-				fmt.Sprintf("error on getting pods for model %s", model)), targetPodIP, stream
-		}
-
-		klog.InfoS("debug", "pods", pods)
 		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods, model)
-		klog.InfoS("debug", "targetPodIP", targetPodIP)
-		if err != nil {
+		if targetPodIP == "" || err != nil {
 			return generateErrorResponse(
-				envoyTypePb.StatusCode_InternalServerError,
+				envoyTypePb.StatusCode_ServiceUnavailable,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-error-routing", RawValue: []byte("true")}}},
 				"error on selecting target pod"), targetPodIP, stream
 		}
 
-		headers = append(headers, &configPb.HeaderValueOption{
-			Header: &configPb.HeaderValue{
-				Key:      "routing-strategy",
-				RawValue: []byte(routingStrategy),
+		headers = append(headers,
+			&configPb.HeaderValueOption{
+				Header: &configPb.HeaderValue{
+					Key:      "routing-strategy",
+					RawValue: []byte(routingStrategy),
+				},
 			},
-		},
 			&configPb.HeaderValueOption{
 				Header: &configPb.HeaderValue{
 					Key:      "target-pod",

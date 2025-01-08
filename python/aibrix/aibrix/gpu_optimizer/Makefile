@@ -4,6 +4,10 @@ DP ?= profiling
 DATASET ?= [set your DATASET path]
 COST ?= 1.0
 
+.PHONY: unittest
+unittest:
+	python -m unittest tests
+
 .PHONY: benchmark
 benchmark:
 	optimizer/profiling/benchmark.sh -o $(DP) --input-start 128

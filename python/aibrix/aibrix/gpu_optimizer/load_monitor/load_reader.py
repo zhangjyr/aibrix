@@ -233,6 +233,7 @@ class GatewayLoadReader:
         self.last_ts = 0.0
         self.prefix = f"aibrix:{model_name}_request_trace_"
         self.key_ts_alignment = key_ts_alignment
+        self.ver = 3  # Change here or negotiate with Redis to be legacy compatible
 
     def read(self, ts: float = 0.0) -> Tuple[List[LoadRecord], float]:
         """Read the next batch of records from the data source."""
@@ -248,18 +249,18 @@ class GatewayLoadReader:
                 return [], 0.0
 
             # TODO: Now profile seems to be have a interval delay. Further investigation is needed.
-            profiles = self.read_key(
-                f"{self.prefix}{int(ts - self.key_ts_alignment)}", True
-            )
+            key = f"{self.prefix}{int(ts)}"
+            if self.ver < 3:
+                # Legacy version has guarentee on the time of profile creation time, use one window before to make sure the profile is available.
+                key = f"{self.prefix}{int(ts-self.key_ts_alignment)}"
+            profiles = self.read_key(key, True)
             self.last_ts = ts
 
             if profiles is None or len(profiles) == 0:
                 return [], 0.0
 
-            records = self._parse_profiles(profiles, ts)
-            return records, float(np.sum([record.freq for record in records])) / float(
-                self.key_ts_alignment
-            )
+            records, total, pending = self._parse_profiles(profiles, ts)
+            return records, self._get_rate(total, pending)
 
         except Exception as e:
             logger.warning(f"Failed to read from Redis: {e}")
@@ -293,6 +294,8 @@ class GatewayLoadReader:
 
         # Retrieve the objects associated with the keys
         records: List[LoadRecord] = []
+        last_total = 0.0
+        last_pending = 0.0
         for key in matching_keys:
             try:
                 # Deserialize by json: dict[string]int
@@ -301,14 +304,14 @@ class GatewayLoadReader:
                 if profiles is None or len(profiles) == 0:
                     continue
 
-                self._parse_profiles(profiles, key[1], records)
+                records, last_total, last_pending = self._parse_profiles(
+                    profiles, key[1], records
+                )
             except Exception as e:
                 logger.warning(f"Failed to parse {key[0].decode()} from Redis: {e}")
                 continue
 
-        return records, float(np.sum([record.freq for record in records])) / float(
-            len(matching_keys) * self.key_ts_alignment
-        )
+        return records, self._get_rate(last_total, last_pending)
 
     def read_key(self, key: Union[str, bytes], optional: bool) -> Optional[dict]:
         logging_key = key.decode() if isinstance(key, bytes) else key
@@ -339,22 +342,39 @@ class GatewayLoadReader:
     def next_available(self) -> float:
         """Dataset is available to read anytime."""
         return (
-            self.last_ts + self.key_ts_alignment + 5
-        )  # Add 5 seconds to tolerate possible delay
+            self.last_ts + self.key_ts_alignment + 2
+        )  # Add 2 seconds to tolerate possible delay
+
+    def _get_rate(self, total, pending) -> float:
+        return float(total) / self.key_ts_alignment + pending
 
     def _parse_profiles(
         self, profiles: dict, ts: float, out_records: Optional[List[LoadRecord]] = None
-    ) -> List[LoadRecord]:
+    ) -> Tuple[List[LoadRecord], int, int]:
+        """Parse profile dictionary and return records, total requests, and pending requests
+
+        Return:
+        records: load profile of completed requests that contains input and output tokens. Records can be accumulated if out_records is specified.
+        total requests: total incoming requests in the reporting window. total requests may not equals to sum(records.freq).
+        pending requests: total unfinished requests that issued before the reporing window.
+        """
         if out_records is None:
             out_records = []
+        total_reqs = 0
+        pending_reqs = 0
 
         # Load metainfo.
-        version = profiles.get("meta_version", 1)
+        version = profiles.get("meta_v", 1)
         precision = profiles.get("meta_precision", 1)
         if version >= 2:
             self.key_ts_alignment = profiles.get("meta_interval_sec", 10)
+        # Using gateway reported total requests if meta_v >= 3
+        if version >= 3:
+            total_reqs = profiles.get("meta_total_reqs", 0)
+            pending_reqs = profiles.get("meta_pending_reqs", 0)
 
         # Parse load profile entries.
+        total = 0
         for k, v in profiles.items():
             # skip metainfos.
             if re.match(r"^meta_", k):
@@ -371,6 +391,11 @@ class GatewayLoadReader:
 
             input_tokens = int(match.group(1)) / precision
             output_tokens = int(match.group(2)) / precision
+            total += value
             out_records.append(LoadRecord(ts, input_tokens, output_tokens, value))
 
-        return out_records
+        # Using total completed requests if meta_v < 3
+        if version < 3:
+            total_reqs = total
+
+        return out_records, total_reqs, pending_reqs

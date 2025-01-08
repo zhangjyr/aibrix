@@ -11,3 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from .test_datasetloadreader import TestDatasetLoadReader as TestDatasetLoadReader
+from .test_gatewayloadreader import TestGatewayLoadReader as TestGatewayLoadReader
+from .test_gen_benchmark import TestGenBenchmark as TestGenBenchmark

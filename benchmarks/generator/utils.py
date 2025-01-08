@@ -6,8 +6,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from typing import List, Union, Any, Optional
-from transformers import (AutoTokenizer, PreTrainedTokenizer, 
+from transformers import (AutoTokenizer, PreTrainedTokenizer,
                           PreTrainedTokenizerFast)
+
 
 def make_serializable(data):
     """Recursively convert data into JSON serializable types."""
@@ -23,13 +24,15 @@ def make_serializable(data):
         return float(data)
     else:
         return data
-    
+
+
 def get_tokenizer(
-    pretrained_model_name_or_path: str, trust_remote_code: bool
+        pretrained_model_name_or_path: str, trust_remote_code: bool
 ) -> Union[PreTrainedTokenizer, PreTrainedTokenizerFast]:
     return AutoTokenizer.from_pretrained(pretrained_model_name_or_path,
                                          trust_remote_code=trust_remote_code)
-    
+
+
 def plot_workload(workload_dict, interval_ms, output_file: str = None):
     """
     Plots the concurrency (item length) of the generated workload.
@@ -56,12 +59,10 @@ def plot_workload(workload_dict, interval_ms, output_file: str = None):
                 linewidth=1.5,     # Slightly thicker line
                 alpha=0.8)         # Slight transparency
 
-    ax.set_ylim(0,)
-    ax.grid(True, linestyle='--', alpha=0.7)
-    ax.set_xlabel('Time (seconds)')
-    ax.set_ylabel('Number of Concurrent Requests')
-    ax.set_title('Workload Concurrency Over Time')
-    
+    ax.set_ylim(0, )
+    plt.xlabel('Time (ms)')
+    plt.ylabel('Concurrency')
+    plt.title('Workload Concurrency')
     plt.legend()
     plt.tight_layout()
     
@@ -69,12 +70,16 @@ def plot_workload(workload_dict, interval_ms, output_file: str = None):
         plt.show()
     else:
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        plt.savefig(output_file, dpi=300)  # Higher DPI for better quality
-        logging.warn(f'Saved workload plot to {output_file}')
-        
-def save_workload(load_struct: List[Any], 
-                  output_path: str, 
+        plt.savefig(output_file)
+        logging.info(f'Saved workload plot to {output_file}')
+
+
+def save_workload(load_struct: List[Any],
+                  output_path: str,
                   use_jsonl: Optional[bool] = False):
+    # create the path if it doesn't exist
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
     if use_jsonl:
         with open(output_path + ".jsonl", "w") as file:
             for row in load_struct:
@@ -85,7 +90,8 @@ def save_workload(load_struct: List[Any],
         with open(output_path + ".json", 'w') as file:
             json.dump(load_struct, file, indent=4)
         logging.warn(f'Saved workload file to {output_path + ".json"}')
-            
+
+
 def load_workload(input_path: str) -> List[Any]:
     load_struct = None
     if input_path.endswith(".jsonl"):
@@ -95,6 +101,7 @@ def load_workload(input_path: str) -> List[Any]:
         with open(input_path, "r") as file:
             load_struct = json.load(file)
     return load_struct
+
 
 # Function to wrap the prompt into OpenAI's chat completion message format.
 def wrap_prompt_as_chat_message(prompt: str):

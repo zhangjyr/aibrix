@@ -38,6 +38,7 @@ const (
 	APALabelPrefix                = "apa." + scalingcontext.AutoscalingLabelPrefix
 	upFluctuationToleranceLabel   = APALabelPrefix + "up-fluctuation-tolerance"
 	downFluctuationToleranceLabel = APALabelPrefix + "down-fluctuation-tolerance"
+	windowLabel                   = APALabelPrefix + "window"
 )
 
 // ApaScalingContext defines parameters for scaling decisions.
@@ -82,8 +83,6 @@ type ApaAutoscaler struct {
 	metricClient metrics.MetricClient
 	k8sClient    client.Client
 
-	panicTime      time.Time
-	maxPanicPods   int32
 	Status         ScaleResult
 	scalingContext *ApaScalingContext
 	algorithm      algorithm.ScalingAlgorithm
@@ -98,7 +97,7 @@ func NewApaAutoscaler(readyPodsCount int, pa *autoscalingv1alpha1.PodAutoscaler)
 		return nil, err
 	}
 
-	metricsFetcher := &metrics.RestMetricsFetcher{}
+	metricsFetcher := metrics.NewRestMetricsFetcher()
 	metricsClient := metrics.NewAPAMetricsClient(metricsFetcher, spec.Window)
 	scalingAlgorithm := algorithm.ApaScalingAlgorithm{}
 
@@ -107,6 +106,14 @@ func NewApaAutoscaler(readyPodsCount int, pa *autoscalingv1alpha1.PodAutoscaler)
 		algorithm:      &scalingAlgorithm,
 		scalingContext: spec,
 	}, nil
+}
+
+func (a *ApaScalingContext) GetUpFluctuationTolerance() float64 {
+	return a.UpFluctuationTolerance
+}
+
+func (a *ApaScalingContext) GetDownFluctuationTolerance() float64 {
+	return a.DownFluctuationTolerance
 }
 
 func (a *ApaScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscaler) error {
@@ -128,7 +135,14 @@ func (a *ApaScalingContext) UpdateByPaTypes(pa *autoscalingv1alpha1.PodAutoscale
 				return err
 			}
 			a.DownFluctuationTolerance = v
+		case windowLabel:
+			v, err := time.ParseDuration(value)
+			if err != nil {
+				return err
+			}
+			a.Window = v
 		}
+
 	}
 	return nil
 }

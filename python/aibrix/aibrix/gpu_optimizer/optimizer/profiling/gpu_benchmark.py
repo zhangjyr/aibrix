@@ -167,7 +167,7 @@ async def send_request(
     }
     if api_key is not None or api_key != "":
         headers["Authorization"] = f"Bearer {api_key}"
-    streaming = True
+    streaming = stream
     if backend == "vllm":
         pload = {
             "model": model,
@@ -239,8 +239,6 @@ async def send_request(
 
     request_end_time = time.perf_counter()
     request_latency = request_end_time - request_start_time
-    if len(token_latencies) == 0:
-        token_latencies = [0]
 
     if trace:
         request_trace = {
@@ -258,7 +256,8 @@ async def send_request(
         }
         print(json.dumps(request_trace))
     REQUEST_LATENCY.append((prompt_len, output_len, request_latency))
-    TOKEN_LATENCY.append((prompt_len, output_len, token_latencies))
+    if len(token_latencies) > 0:
+        TOKEN_LATENCY.append((prompt_len, output_len, token_latencies))
     TIME_TO_FIRST_TOKEN.append(time_to_first)
 
 
@@ -404,13 +403,16 @@ def main(args: argparse.Namespace):
         )
         print(json.dumps(result))
 
-    all_token_latencies = np.array(
-        [
-            latency
-            for _, _, token_latencies in TOKEN_LATENCY
-            for latency in token_latencies
-        ]
-    )
+    if len(TOKEN_LATENCY) == 0:
+        all_token_latencies = np.array([0.0])
+    else:
+        all_token_latencies = np.array(
+            [
+                latency
+                for _, _, token_latencies in TOKEN_LATENCY
+                for latency in token_latencies
+            ]
+        )
     if args.verbose:
         print("TOKEN LATENCIES")
         print("TTFT")

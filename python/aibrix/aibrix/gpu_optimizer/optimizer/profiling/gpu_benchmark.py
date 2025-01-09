@@ -160,6 +160,7 @@ async def send_request(
     use_beam_search: bool,
     stream: bool,
     verbose: bool,
+    trace: bool,
 ) -> None:
     headers = {
         "User-Agent": "Benchmark Client",
@@ -235,11 +236,25 @@ async def send_request(
                 # It's ok to parse failure, santicized output could be jsonl, other format, or internal error.
                 print_err(f"Invalid response for request {idx}: {santicized}: {e}")
                 break
-
+    
     request_end_time = time.perf_counter()
     request_latency = request_end_time - request_start_time
     if len(token_latencies) == 0:
         token_latencies = [0]
+
+    if trace:
+        request_trace = {
+            "input_tokens": prompt_len,
+            "output_tokens": output_len if len(token_latencies) == 0 else len(token_latencies) + 1,
+            "timestamp": request_start_time,
+            "E2E": request_latency,
+            "TTFT": time_to_first,
+            "TPOT_mean": np.mean(token_latencies),
+            "TPOT_P50": np.percentile(token_latencies, 50),
+            "TPOT_P90": np.percentile(token_latencies, 90),
+            "TPOT_P99": np.percentile(token_latencies, 99),
+        }
+        print(json.dumps(request_trace))
     REQUEST_LATENCY.append((prompt_len, output_len, request_latency))
     TOKEN_LATENCY.append((prompt_len, output_len, token_latencies))
     TIME_TO_FIRST_TOKEN.append(time_to_first)
@@ -257,6 +272,7 @@ async def benchmark(
     num_requests: int,
     stream: bool,
     verbose: bool,
+    trace: bool,
     use_workload_interval: bool = False,
 ) -> None:
     tasks: List[asyncio.Task] = []
@@ -280,6 +296,7 @@ async def benchmark(
                 use_beam_search,
                 stream,
                 verbose,
+                trace,
             )
         )
         tasks.append(task)
@@ -322,6 +339,7 @@ def main(args: argparse.Namespace):
                 len(input_requests),
                 args.stream,
                 args.verbose,
+                args.trace,
                 args.use_workload_interval,
             )
         )
@@ -345,7 +363,7 @@ def main(args: argparse.Namespace):
             f"Output Token Throughput: {sum([output for _, output, _ in REQUEST_LATENCY]) / benchmark_time:.2f} tokens/s"
         )
         print()
-    else:
+    elif not args.trace:
         result["metric"] = "TPUT"  # Throughput
         result["mean"] = len(REQUEST_LATENCY) / benchmark_time
         print(json.dumps(result))
@@ -370,7 +388,7 @@ def main(args: argparse.Namespace):
             f"99p: {np.percentile([latency for _, _, latency in REQUEST_LATENCY], 99)} s"
         )
         print()
-    else:
+    elif not args.trace:
         result["metric"] = "E2E"  # Request latency
         result["mean"] = avg_latency
         result["P50"] = np.percentile(
@@ -404,7 +422,7 @@ def main(args: argparse.Namespace):
         print(f"90p: {np.percentile(all_token_latencies, 90)}")
         print(f"99p: {np.percentile(all_token_latencies, 99)}")
         print()
-    else:
+    elif not args.trace:
         result["metric"] = "TTFT"  # Time to first token
         result["mean"] = np.mean(TIME_TO_FIRST_TOKEN)
         result["P50"] = np.percentile(TIME_TO_FIRST_TOKEN, 50)
@@ -455,8 +473,9 @@ if __name__ == "__main__":
     parser.add_argument("--input-len", type=int, default=0)
     parser.add_argument("--output-len", type=int, default=0)
     parser.add_argument("--api-key", type=str, default=None)
-    parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--stream", action="store_true")
+    parser.add_argument("--verbose", action="store_true", help="Print human readable info to stdout")
+    parser.add_argument("--trace", action="store_true", help="Print request trace to stdout instead of statistics")
+    parser.add_argument("--stream", action="store_true", help="Enable stream request.")
     parser.add_argument(
         "--workload_dataset_file",
         type=str,

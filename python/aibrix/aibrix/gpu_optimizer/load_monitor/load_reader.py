@@ -346,7 +346,7 @@ class GatewayLoadReader:
         )  # Add 2 seconds to tolerate possible delay
 
     def _get_rate(self, total, pending) -> float:
-        return float(total) / self.key_ts_alignment + pending
+        return float(total) / self.key_ts_alignment
 
     def _parse_profiles(
         self, profiles: dict, ts: float, out_records: Optional[List[LoadRecord]] = None

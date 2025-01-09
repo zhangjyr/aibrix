@@ -236,7 +236,7 @@ async def send_request(
                 # It's ok to parse failure, santicized output could be jsonl, other format, or internal error.
                 print_err(f"Invalid response for request {idx}: {santicized}: {e}")
                 break
-    
+
     request_end_time = time.perf_counter()
     request_latency = request_end_time - request_start_time
     if len(token_latencies) == 0:
@@ -245,7 +245,9 @@ async def send_request(
     if trace:
         request_trace = {
             "input_tokens": prompt_len,
-            "output_tokens": output_len if len(token_latencies) == 0 else len(token_latencies) + 1,
+            "output_tokens": output_len
+            if len(token_latencies) == 0
+            else len(token_latencies) + 1,
             "timestamp": request_start_time,
             "E2E": request_latency,
             "TTFT": time_to_first,
@@ -473,8 +475,14 @@ if __name__ == "__main__":
     parser.add_argument("--input-len", type=int, default=0)
     parser.add_argument("--output-len", type=int, default=0)
     parser.add_argument("--api-key", type=str, default=None)
-    parser.add_argument("--verbose", action="store_true", help="Print human readable info to stdout")
-    parser.add_argument("--trace", action="store_true", help="Print request trace to stdout instead of statistics")
+    parser.add_argument(
+        "--verbose", action="store_true", help="Print human readable info to stdout"
+    )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="Print request trace to stdout instead of statistics",
+    )
     parser.add_argument("--stream", action="store_true", help="Enable stream request.")
     parser.add_argument(
         "--workload_dataset_file",

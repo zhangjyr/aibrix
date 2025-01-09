@@ -98,7 +98,7 @@ class Optimizer:
         )
         return success
 
-    def run(self) -> Optional[dict]:
+    def run(self, round_num=None) -> Optional[dict]:
         """Run the solver and return the result.
         Return None if no profiles are added.
         The result is a dict with the following format:
@@ -115,7 +115,8 @@ class Optimizer:
 
         runner = SolverRunner(self._config)
         ret = runner.run()
-        logger.debug(f"Done solver: {ret}")
+        round_info = f"Round: {round_num} " if round_num is not None else ""
+        logger.debug(f"{round_info} - Done solver: {ret}")
         return ret
 
     def _validate_workload_signature(self, profile: WorkloadProfile) -> Tuple[int]:

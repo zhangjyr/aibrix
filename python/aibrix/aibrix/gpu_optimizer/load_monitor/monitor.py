@@ -15,7 +15,7 @@
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import reduce
 from typing import Callable, Dict, Iterable, List, Optional, Union
 
@@ -124,6 +124,7 @@ class ModelMonitor:
         self.done = False
         self.window = float(window)
         self._lock = threading.Lock()
+        self._optimization_round = 0  # Initialize round counter
 
         # Load reader
         self._load_reader: LoadReader = load_reader
@@ -458,43 +459,95 @@ class ModelMonitor:
         return None
 
     def _optimize(self, centers: Iterable[Centeroid], total_request_rate: float):
+
+        self._optimization_round += 1
+        round_num = self._optimization_round  
+
         # Update profiles.
         self.load_profiles()
+        # Add debug logging for current cost before optimization
+        logger.info(
+            f"Round: {round_num} - Start {self.model_name} current cost before optimization: ${self._cost}, deployments: {list(self.deployments.values())}"
+        )
 
         if not self._optimizer.set_workload_distribution(centers, total_request_rate):
             return
 
         start = datetime.now().timestamp()
-        result = self._optimizer.run()
+        result = self._optimizer.run(round_num=round_num)
+
         duration = (datetime.now().timestamp() - start) * 1000
         if result is None:
             logger.info(
-                f"{self.model_name} optimization took {duration} ms, unexpected void rsult, skip."
+                f"{self.model_name} optimization took {duration} ms, unexpected void result, skip."
             )
             return
 
         cost = result["cost"]
         del result["cost"]
 
-        # Update deployment
+        # Store scale-in operations for delayed execution
+        scale_in_ops = {}
+        
+        # Update deployment with immediate scale-out operations
         self._lock.acquire(blocking=True)
-        # Insure all deployments are up to date.
-        for key, replicas in result.items():
-            if key not in self.deployments and replicas > 0:
-                logger.warning(
-                    f"Not all deployments in optimization result available: {key}, discard result"
-                )
-                self._lock.release()
-                return
-        # Reset replicas of all deployments.
-        for key, states in self.deployments.items():
-            states.replicas = result[key] if key in result else 0
-        self._cost = cost
-        self._lock.release()
+        try:
+            # Validate deployments first
+            for key, replicas in result.items():
+                if key not in self.deployments and replicas > 0:
+                    logger.warning(
+                        f"Not all deployments in optimization result available: {key}, discard result"
+                    )
+                    return
 
-        logger.info(
-            f"{self.model_name} optimization took {duration} ms, cost ${self._cost}, coverage: {self.coverage}%: {list(self.deployments.values())}"
-        )
+            # Apply immediate scale-out operations
+            has_scale_in = False
+            for key, new_replicas in result.items():
+                current_replicas = self.deployments[key].replicas
+                if new_replicas >= current_replicas:
+                    self.deployments[key].replicas = new_replicas
+                else:
+                    has_scale_in = True
+                    scale_in_ops[key] = new_replicas
+            
+            # Update cost after scale-out
+            self._cost = sum(self.deployments[key].cost for key in self.deployments)
+        finally:
+            self._lock.release()
+
+        if has_scale_in:
+            # Schedule scale-in changes with delay, set to 60s currently and should be configed in the test
+            target_time = datetime.now() + timedelta(seconds=60)
+            
+            def apply_scale_in():
+                while datetime.now() < target_time:
+                    time.sleep(1)
+                
+                self._lock.acquire(blocking=True)
+                try:
+                    # Verify deployments still exist and apply scale-in
+                    for key, new_replicas in scale_in_ops.items():
+                        if key in self.deployments:  # Check if deployment still exists
+                            self.deployments[key].replicas = new_replicas
+                    
+                    # Update final cost
+                    self._cost = sum(self.deployments[key].cost for key in self.deployments)
+                    
+                    logger.info(
+                        f" Round: {round_num}, {self.model_name} delayed scale-in completed after {duration} ms, final cost ${self._cost}, deployments: {list(self.deployments.values())}"
+                    )
+                finally:
+                    self._lock.release()
+
+            # Start delayed scale-in in a separate thread
+            threading.Thread(target=apply_scale_in, daemon=True).start()
+            logger.info(
+                f"Round: {round_num} - Delay scale-in,{self.model_name} optimization took {duration} ms, scheduled scale-in in 60s, current cost ${self._cost}, deployments: {list(self.deployments.values())}"
+            )
+        else:
+            logger.info(
+                f"Round: {round_num} - {self.model_name} optimization took {duration} ms, stable or immediately scale-out, cost ${self._cost}, coverage: {self.coverage}%: {list(self.deployments.values())}"
+            )
 
     def _minimize(self):
         # Update deployment

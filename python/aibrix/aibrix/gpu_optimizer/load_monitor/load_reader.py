@@ -234,6 +234,8 @@ class GatewayLoadReader:
         self.prefix = f"aibrix:{model_name}_request_trace_"
         self.key_ts_alignment = key_ts_alignment
         self.ver = 3  # Change here or negotiate with Redis to be legacy compatible
+        self.accumulated_total = 0.0
+        self.accumulated_pending = 0.0
 
     def read(self, ts: float = 0.0) -> Tuple[List[LoadRecord], float]:
         """Read the next batch of records from the data source."""
@@ -294,8 +296,7 @@ class GatewayLoadReader:
 
         # Retrieve the objects associated with the keys
         records: List[LoadRecord] = []
-        last_total = 0.0
-        last_pending = 0.0
+        last_rate = 0.0
         for key in matching_keys:
             try:
                 # Deserialize by json: dict[string]int
@@ -304,14 +305,16 @@ class GatewayLoadReader:
                 if profiles is None or len(profiles) == 0:
                     continue
 
-                records, last_total, last_pending = self._parse_profiles(
+                records, total, pending = self._parse_profiles(
                     profiles, key[1], records
                 )
+                # We need to call _get_rate for each profile to accumulate history value.
+                last_rate = self._get_rate(total, pending)
             except Exception as e:
                 logger.warning(f"Failed to parse {key[0].decode()} from Redis: {e}")
                 continue
 
-        return records, self._get_rate(last_total, last_pending)
+        return records, last_rate
 
     def read_key(self, key: Union[str, bytes], optional: bool) -> Optional[dict]:
         logging_key = key.decode() if isinstance(key, bytes) else key
@@ -346,7 +349,26 @@ class GatewayLoadReader:
         )  # Add 2 seconds to tolerate possible delay
 
     def _get_rate(self, total, pending) -> float:
-        return float(total) / self.key_ts_alignment
+        # Pending requests includes in window pending and out of window pending.
+        # Most of pending requests are in window pending
+        # We add pending to total proportionally to request more resources.
+        if pending == 0.0:
+            # reset accumulated
+            self.accumulated_pending = 0.0
+            self.accumulated_total = 0.0
+            return float(total) / self.key_ts_alignment
+
+        self.accumulated_pending += pending
+        self.accumulated_total += total
+        if self.accumulated_pending < self.accumulated_total:
+            # gap_ratio = pending(gap)/completed(real)
+            gap_ratio = self.accumulated_pending / (
+                self.accumulated_total - self.accumulated_pending
+            )
+            return (gap_ratio + 1) * total / self.key_ts_alignment
+        else:
+            # Abnormal, simply compensate for 2 times.
+            return 2.0 * total / self.key_ts_alignment
 
     def _parse_profiles(
         self, profiles: dict, ts: float, out_records: Optional[List[LoadRecord]] = None

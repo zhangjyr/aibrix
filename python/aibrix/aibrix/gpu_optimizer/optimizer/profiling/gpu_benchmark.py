@@ -247,14 +247,14 @@ async def send_request(
             if len(token_latencies) == 0
             else len(token_latencies) + 1,
             "timestamp": request_start_time,
-            "E2E": request_latency
+            "E2E": request_latency,
         }
         if len(token_latencies) > 0:
             request_trace["TTFT"] = time_to_first
-            request_trace["TPOT_mean"] = np.mean(token_latencies)
-            request_trace["TPOT_P50"] = np.percentile(token_latencies, 50)
-            request_trace["TPOT_P90"] = np.percentile(token_latencies, 90)
-            request_trace["TPOT_P99"] = np.percentile(token_latencies, 99)
+            request_trace["TPOT_mean"] = np.mean(token_latencies)  # type: ignore
+            request_trace["TPOT_P50"] = np.percentile(token_latencies, 50)  # type: ignore
+            request_trace["TPOT_P90"] = np.percentile(token_latencies, 90)  # type: ignore
+            request_trace["TPOT_P99"] = np.percentile(token_latencies, 99)  # type: ignore
         print(json.dumps(request_trace))
     REQUEST_LATENCY.append((prompt_len, output_len, request_latency))
     if len(token_latencies) > 0:

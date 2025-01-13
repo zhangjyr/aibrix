@@ -26,6 +26,7 @@ import random
 import sys
 import time
 from typing import AsyncGenerator, List, Literal, Optional, Tuple
+from datetime import datetime, timezone
 
 import aiohttp
 import numpy as np
@@ -189,6 +190,7 @@ async def send_request(
         raise ValueError(f"Unknown backend: {backend}")
 
     request_start_time = time.perf_counter()
+    ts = datetime.now(timezone.utc)
     timeout = aiohttp.ClientTimeout(total=3 * 3600)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         while True:
@@ -246,7 +248,7 @@ async def send_request(
             "output_tokens": output_len
             if len(token_latencies) == 0
             else len(token_latencies) + 1,
-            "timestamp": request_start_time,
+            "timestamp": ts.strftime("%Y-%m-%d %H:%M:%S %Z%z"),
             "E2E": request_latency,
         }
         if len(token_latencies) > 0:

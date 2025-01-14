@@ -25,8 +25,8 @@ import json
 import random
 import sys
 import time
-from typing import AsyncGenerator, List, Literal, Optional, Tuple
 from datetime import datetime, timezone
+from typing import AsyncGenerator, List, Literal, Optional, Tuple
 
 import aiohttp
 import numpy as np

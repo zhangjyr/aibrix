@@ -262,6 +262,7 @@ class GatewayLoadReader:
                 return [], 0.0
 
             records, total, pending = self._parse_profiles(profiles, ts)
+            logger.debug(f"TotalRequests={total},PendingRequests={pending}")
             return records, self._get_rate(total, pending)
 
         except Exception as e:
@@ -309,6 +310,7 @@ class GatewayLoadReader:
                     profiles, key[1], records
                 )
                 # We need to call _get_rate for each profile to accumulate history value.
+                logger.debug(f"TotalRequests={total},PendingRequests={pending}")
                 last_rate = self._get_rate(total, pending)
             except Exception as e:
                 logger.warning(f"Failed to parse {key[0].decode()} from Redis: {e}")

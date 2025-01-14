@@ -350,7 +350,7 @@ if __name__ == "__main__":
     # Setup default logger
     logging.basicConfig(
         level=logging.DEBUG if debug else logging.INFO,
-        format='{"time": "%(asctime)s", "level": "%(levelname)s", "message": "%(message)s"}',
+        format='{"time": "%(asctime)s", "level": "%(levelname)s", "logger": "%(name)s", "message": "%(message)s"}',
     )
     logging.getLogger("kubernetes.client.rest").setLevel(
         logging.ERROR

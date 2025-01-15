@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 REDIS_PROFILE_KEY = "aibrix:profile_%s_%s"
+TPUT_TOLERANCE = 0.9
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("aibrix.gpu_optimizer.profiling")
@@ -86,9 +87,9 @@ def main(args):
                 & (benchmark_df["output_tokens"] == output_tokens[i])
             ]
 
-            # Filter the bencmarks by throughput SLO
+            # Filter the bencmarks by throughput SLO. Besides, we arbitarily filter out instable throughput as TPUT < request_rate * TPUT_TOLERANCE
             tput_df = filtered_df.loc[
-                (filtered_df["metric"] == "TPUT") & (filtered_df["mean"] >= args.tput)
+                (filtered_df["metric"] == "TPUT") & (filtered_df["mean"] >= args.tput) & (filtered_df["mean"] >= filtered_df["request_rate"] * TPUT_TOLERANCE)
             ]
             if len(tput_df) == 0:
                 continue

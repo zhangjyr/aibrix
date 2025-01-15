@@ -89,7 +89,9 @@ def main(args):
 
             # Filter the bencmarks by throughput SLO. Besides, we arbitarily filter out instable throughput as TPUT < request_rate * TPUT_TOLERANCE
             tput_df = filtered_df.loc[
-                (filtered_df["metric"] == "TPUT") & (filtered_df["mean"] >= args.tput) & (filtered_df["mean"] >= filtered_df["request_rate"] * TPUT_TOLERANCE)
+                (filtered_df["metric"] == "TPUT")
+                & (filtered_df["mean"] >= args.tput)
+                & (filtered_df["mean"] >= filtered_df["request_rate"] * TPUT_TOLERANCE)
             ]
             if len(tput_df) == 0:
                 continue
@@ -164,9 +166,8 @@ def main(args):
             )
 
     # Print the matrix
-    filename = os.path.splitext(os.path.basename(benchmark))[0]
     result = {
-        "gpu": filename,
+        "gpu": args.deployment,
         "cost": args.cost,
         "tputs": slo_tputs.tolist(),
         "indexes": [output_tokens.tolist(), input_tokens.tolist()],

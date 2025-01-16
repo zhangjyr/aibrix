@@ -63,8 +63,7 @@ def sample_requests(
                 requests = []
                 for i, entry in enumerate(data):
                     # Limit the number of requests read from workload
-                    if i >= num_requests:
-                        break
+
                     # print(f"Request {i}: {entry}")
                     cur_timestamp = entry["Timestamp"]
                     next_timestamp = (
@@ -80,6 +79,8 @@ def sample_requests(
                                 interval if i == len(entry["Requests"]) - 1 else 0,
                             )
                         )
+                        if num_requests > 0 and len(requests) >= num_requests:
+                            return requests
                 # print('total requests: ', len(requests))
                 # print('the least requests: ', requests[len(requests) - 1])
                 return requests
@@ -327,6 +328,7 @@ def main(args: argparse.Namespace):
     input_requests = sample_requests(
         args.num_prompts, args.input_len, args.output_len, args.workload_dataset_file
     )
+    result["samples"] = len(input_requests)  # Update number of samples
 
     benchmark_start_time = time.perf_counter()
     try:
@@ -460,7 +462,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--use-beam-search", action="store_true")
     parser.add_argument(
-        "--num-prompts", type=int, default=1000, help="Number of prompts to process."
+        "--num-prompts", type=int, default=0, help="Number of prompts to process."
     )
     parser.add_argument(
         "--request-rate",

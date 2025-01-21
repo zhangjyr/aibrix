@@ -10,6 +10,7 @@ import uvicorn
 from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.datastructures import State
 from fastapi.responses import JSONResponse
+from httpx import Headers
 from prometheus_client import make_asgi_app, multiprocess
 from starlette.routing import Mount
 
@@ -56,8 +57,28 @@ def initial_prometheus_multiproc_dir():
     os.environ["PROMETHEUS_MULTIPROC_DIR"] = envs.PROMETHEUS_MULTIPROC_DIR
 
 
+# filter_and_set_headers only keeps necessary headers
+def filter_and_set_headers(request_headers):
+    # Create a new Headers object to ensure proper case-insensitive handling
+    filtered_headers = Headers()
+
+    # List of headers to retain
+    headers_to_keep = ["content-type", "authorization"]
+
+    # the httpx library internally normalizes all header keys to lower case for consistent access and comparison.
+    # However, we lowercase the headers for comparison just in case we may switch libraries.
+    for header, value in request_headers.items():
+        if header.lower() in headers_to_keep:
+            filtered_headers[header] = value
+
+    return filtered_headers
+
+
 def inference_engine(request: Request) -> InferenceEngine:
-    return request.app.state.inference_engine
+    # header are dynamic for each request, allocate headers in runtime
+    engine = request.app.state.inference_engine
+    engine.headers = filter_and_set_headers(request.headers)
+    return engine
 
 
 def mount_metrics(app: FastAPI):
@@ -122,6 +143,17 @@ async def unload_lora_adapter(request: UnloadLoraAdapterRequest, raw_request: Re
         return JSONResponse(content=response.model_dump(), status_code=response.code)
 
     return Response(status_code=200, content=response)
+
+
+# /v1/models is a query to inference engine, this is different from following
+# /v1/model/list which is used to fetch runtime managed models locally.
+@router.get("/v1/models")
+async def list_engine_models(raw_request: Request):
+    response = await inference_engine(raw_request).list_models()
+    if isinstance(response, ErrorResponse):
+        return JSONResponse(content=response.model_dump(), status_code=response.code)
+
+    return JSONResponse(status_code=200, content=response)
 
 
 @router.post("/v1/model/download")

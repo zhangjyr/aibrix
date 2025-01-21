@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,6 +52,8 @@ var (
 	defaultRPM           = 100
 	defaultTPMMultiplier = 1000
 	routingStrategies    = []string{"random", "least-request", "throughput", "least-kv-cache", "least-busy-time", "least-latency"}
+
+	ErrorUnknownResponse = errors.New("unknown response")
 )
 
 type Server struct {
@@ -99,11 +102,12 @@ func (s *HealthServer) Watch(in *healthPb.HealthCheckRequest, srv healthPb.Healt
 
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var user utils.User
-	var rpm int64
-	var routingStrategy, targetPodIP string
+	var rpm, traceTerm int64
+	var model, routingStrategy, targetPodIP string
 	var stream bool
 	ctx := srv.Context()
 	requestID := uuid.New().String()
+	completed := false
 
 	for {
 		select {
@@ -127,13 +131,13 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			resp, user, rpm, routingStrategy = s.HandleRequestHeaders(ctx, requestID, req)
 
 		case *extProcPb.ProcessingRequest_RequestBody:
-			resp, targetPodIP, stream = s.HandleRequestBody(ctx, requestID, req, user, routingStrategy)
+			resp, model, targetPodIP, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user, routingStrategy)
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
 			resp = s.HandleResponseHeaders(ctx, requestID, req, targetPodIP)
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
-			resp = s.HandleResponseBody(ctx, requestID, req, user, rpm, targetPodIP, stream)
+			resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, targetPodIP, stream, traceTerm, completed)
 
 		default:
 			klog.Infof("Unknown Request type %+v\n", v)
@@ -210,10 +214,11 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 	}, user, rpm, routingStrategy
 }
 
-func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingStrategy string) (*extProcPb.ProcessingResponse, string, bool) {
+func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingStrategy string) (*extProcPb.ProcessingResponse, string, string, bool, int64) {
 	klog.InfoS("-- In RequestBody processing ...", "requestID", requestID)
 	var model, targetPodIP string
 	var ok, stream bool
+	var term int64 // Identify the trace window
 
 	var jsonMap map[string]interface{}
 
@@ -223,7 +228,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-request-body-processing-error", RawValue: []byte("true")}}},
-			"error processing request body"), targetPodIP, stream
+			"error processing request body"), model, targetPodIP, stream, term
 	}
 
 	if model, ok = jsonMap["model"].(string); !ok || model == "" {
@@ -231,42 +236,45 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-no-model", RawValue: []byte(model)}}},
-			fmt.Sprintf("no model in request body or model %s does not exist", model)), targetPodIP, stream
+			"no model in request body"), model, targetPodIP, stream, term
 	}
 
 	// early reject the request if model doesn't exist.
 	if !s.cache.CheckModelExists(model) {
-		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "jsonMap", jsonMap)
+		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
 		return generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-no-model", RawValue: []byte(model)}}},
-			fmt.Sprintf("model %s does not exist", model)), targetPodIP, stream
+			fmt.Sprintf("model %s does not exist", model)), model, targetPodIP, stream, term
 	}
 
 	// early reject if no pods are ready to accept request for a model
 	pods, err := s.cache.GetPodsForModel(model)
 	if len(pods) == 0 || len(utils.FilterReadyPods(pods)) == 0 || err != nil {
+		klog.ErrorS(err, "no ready pod available", "requestID", requestID, "model", model)
 		return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: "x-no-model-deployment", RawValue: []byte("true")}}},
-			fmt.Sprintf("error on getting pods for model %s", model)), targetPodIP, stream
+			fmt.Sprintf("error on getting pods for model %s", model)), model, targetPodIP, stream, term
 	}
 
 	stream, ok = jsonMap["stream"].(bool)
 	if stream && ok {
 		streamOptions, ok := jsonMap["stream_options"].(map[string]interface{})
 		if !ok {
+			klog.ErrorS(nil, "no stream option available", "requestID", requestID, "jsonMap", jsonMap)
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-stream-options", RawValue: []byte("stream options not set")}}},
-				"error processing request body"), targetPodIP, stream
+				"no stream option available"), model, targetPodIP, stream, term
 		}
 		includeUsage, ok := streamOptions["include_usage"].(bool)
 		if !includeUsage || !ok {
+			klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID, "jsonMap", jsonMap)
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-stream-options-include-usage", RawValue: []byte("include usage for stream options not set")}}},
-				"error processing request body"), targetPodIP, stream
+				"no stream with usage option available"), model, targetPodIP, stream, term
 		}
 	}
 
@@ -282,11 +290,12 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	} else {
 		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods, model)
 		if targetPodIP == "" || err != nil {
+			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingStrategy, "model", model)
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_ServiceUnavailable,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-error-routing", RawValue: []byte("true")}}},
-				"error on selecting target pod"), targetPodIP, stream
+				"error on selecting target pod"), model, targetPodIP, stream, term
 		}
 
 		headers = append(headers,
@@ -305,6 +314,8 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.InfoS("request start", "requestID", requestID, "model", model, "routingStrategy", routingStrategy, "targetPodIP", targetPodIP)
 	}
 
+	term = s.cache.AddRequestCount(requestID, model)
+
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestBody{
 			RequestBody: &extProcPb.BodyResponse{
@@ -315,7 +326,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 				},
 			},
 		},
-	}, targetPodIP, stream
+	}, model, targetPodIP, stream, term
 }
 
 func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
@@ -350,14 +361,22 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 	}
 }
 
-func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, targetPodIP string, stream bool) *extProcPb.ProcessingResponse {
+func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, targetPodIP string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
 	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID)
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
 
 	var res openai.ChatCompletion
-	var model string
 	var usage openai.CompletionUsage
+	var promptTokens, completionTokens int64
 	headers := []*configPb.HeaderValueOption{}
+	complete := false || hasCompleted
+
+	defer func() {
+		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
+		if !hasCompleted && complete {
+			s.cache.DoneRequestTrace(requestID, model, promptTokens, completionTokens, traceTerm)
+		}
+	}()
 
 	if stream {
 		t := &http.Response{
@@ -367,40 +386,52 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 		for streaming.Next() {
 			evt := streaming.Current()
 			if len(evt.Choices) == 0 {
-				model = evt.Model
+				// Do not overwrite model, res can be empty.
 				usage = evt.Usage
 			}
 		}
 		if err := streaming.Err(); err != nil {
 			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			complete = true
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-streaming-error", RawValue: []byte("true"),
 				}}},
-				err.Error())
+				err.Error()), complete
 		}
 	} else {
 		if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
 			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			complete = true
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: "x-error-response-unmarshal", RawValue: []byte("true"),
 				}}},
-				err.Error())
+				err.Error()), complete
+		} else if res.Model != model {
+			err = ErrorUnknownResponse
+			klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			complete = true
+			return generateErrorResponse(
+				envoyTypePb.StatusCode_InternalServerError,
+				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
+					Key: "x-error-response-unknown", RawValue: []byte("true"),
+				}}},
+				err.Error()), complete
 		}
-		model = res.Model
+		// Do not overwrite model, res can be empty.
 		usage = res.Usage
 	}
+
 	var requestEnd string
 	if usage.TotalTokens != 0 {
-		defer func() {
-			go func() {
-				s.cache.AddRequestTrace(model, usage.PromptTokens, usage.CompletionTokens)
-			}()
-		}()
-
+		complete = true
+		// Update promptTokens and completeTokens
+		promptTokens = usage.PromptTokens
+		completionTokens = usage.CompletionTokens
+		// Count token per user.
 		if user.Name != "" {
 			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user), res.Usage.TotalTokens)
 			if err != nil {
@@ -409,7 +440,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 						Key: "x-error-update-tpm", RawValue: []byte("true"),
 					}}},
-					err.Error())
+					err.Error()), complete
 			}
 
 			headers = append(headers,
@@ -428,6 +459,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			)
 			requestEnd = fmt.Sprintf(requestEnd+"rpm: %s, tpm: %s", rpm, tpm)
 		}
+
 		if targetPodIP != "" {
 			headers = append(headers,
 				&configPb.HeaderValueOption{
@@ -439,6 +471,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			)
 			requestEnd = fmt.Sprintf(requestEnd+", targetPod: %s", targetPodIP)
 		}
+
 		klog.Infof("request end, requestID: %s - %s", requestID, requestEnd)
 	}
 
@@ -452,7 +485,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				},
 			},
 		},
-	}
+	}, complete
 }
 
 func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extProcPb.ProcessingResponse, error) {

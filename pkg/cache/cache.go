@@ -25,6 +25,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aibrix/aibrix/pkg/utils"
@@ -64,7 +65,9 @@ type Cache struct {
 	PodModelMetrics   map[string]map[string]map[string]metrics.MetricValue // pod_name: map[model_name]map[metric_name]metric_val
 	PodToModelMapping map[string]map[string]struct{}                       // pod_name: map[model_name]struct{}
 	ModelToPodMapping map[string]map[string]*v1.Pod                        // model_name: map[pod_name]*v1.Pod
-	requestTrace      map[string]map[string]int                            // model_name: map[Log2(input_token)-Log2(output_token)]request_count
+	requestTrace      *sync.Map                                            // model_name: RequestTrace
+	numRequestsTraces int32                                                // counter for requestTrace
+	pendingRequests   *sync.Map                                            // model_name: *int32
 }
 
 const (
@@ -72,12 +75,6 @@ const (
 	podPort                               = 8000
 	defaultPodMetricRefreshIntervalInMS   = 50
 	expireWriteRequestTraceIntervalInMins = 10
-	keyWriteRequestTraceIntervalInSeconds = "meta_interval_sec"
-	writeRequestTraceIntervalInSeconds    = 10
-	keyPrecisionRequestTrace              = "meta_precision"
-	precisionRequestTrace                 = 0.1
-	keyVersionRequestTrace                = "meta_v"
-	versionRequestTrace                   = 2
 )
 
 var (
@@ -125,7 +122,7 @@ var (
 		metrics.RunningLoraAdapters,
 	}
 
-	podMetricRefreshIntervalInMilliseconds = getPodMetricRefreshInterval()
+	podMetricRefreshInterval = getPodMetricRefreshInterval()
 )
 
 func getPodMetricRefreshInterval() time.Duration {
@@ -140,7 +137,7 @@ func getPodMetricRefreshInterval() time.Duration {
 		}
 	}
 	klog.V(4).Infof("Using default refresh interval: %d ms", defaultPodMetricRefreshIntervalInMS)
-	return time.Duration(defaultPodMetricRefreshIntervalInMS)
+	return defaultPodMetricRefreshIntervalInMS * time.Millisecond
 }
 
 func GetCache() (*Cache, error) {
@@ -217,9 +214,9 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			PodModelMetrics:   map[string]map[string]map[string]metrics.MetricValue{},
 			PodToModelMapping: map[string]map[string]struct{}{},
 			ModelToPodMapping: map[string]map[string]*v1.Pod{},
-			requestTrace:      map[string]map[string]int{},
+			requestTrace:      &sync.Map{},
+			pendingRequests:   &sync.Map{},
 		}
-
 		if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc:    instance.addPod,
 			UpdateFunc: instance.updatePod,
@@ -236,7 +233,7 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			panic(err)
 		}
 
-		ticker := time.NewTicker(podMetricRefreshIntervalInMilliseconds * time.Millisecond)
+		ticker := time.NewTicker(podMetricRefreshInterval)
 		go func() {
 			for {
 				select {
@@ -250,22 +247,43 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 			}
 		}()
 
-		traceTicker := time.NewTicker(writeRequestTraceIntervalInSeconds * time.Second)
+		tickerOffset := time.Duration(time.Now().UnixNano()) % RequestTraceWriteInterval
+		var traceAlignmentTimer *time.Timer
+		// TODO: Using ticker may be a problem if writeRequestTraceToStorage takes too long.
+		var traceTicker *time.Ticker
+		// To limit the offset of each tick, we align the ticker by waiting for a round
+		// Very small offset usually will not be a problem, because it take some time to write to the Redis.
+		if tickerOffset > MaxRequestTraceIntervalOffset {
+			traceAlignmentTimer = time.NewTimer(RequestTraceWriteInterval - tickerOffset)
+		} else {
+			traceTicker = time.NewTicker(RequestTraceWriteInterval)
+		}
 		go func() {
 			if redisClient == nil {
 				return
 			}
+			if traceAlignmentTimer != nil {
+				// Wait for alignment
+				<-traceAlignmentTimer.C
+				traceAlignmentTimer = nil
+
+				// TODO: Clean up data if necessary.
+
+				// Start ticker
+				traceTicker = time.NewTicker(RequestTraceWriteInterval)
+			}
+			klog.Infof("Trace ticker start at %s", time.Now())
 			for {
 				select {
 				case <-traceTicker.C:
-					if len(instance.requestTrace) == 0 {
+					if atomic.LoadInt32(&instance.numRequestsTraces) == 0 {
 						continue
 					}
 					t := time.Now().Unix()
-					roundT := t - t%writeRequestTraceIntervalInSeconds
+					roundT := t - t%int64(RequestTraceWriteInterval/time.Second)
 					instance.writeRequestTraceToStorage(roundT)
 				case <-stopCh:
-					ticker.Stop()
+					traceTicker.Stop()
 					return
 				}
 			}
@@ -287,9 +305,9 @@ func (c *Cache) addPod(obj interface{}) {
 	}
 
 	c.Pods[pod.Name] = pod
-	c.addPodAndModelMapping(pod.Name, modelName)
+	c.addPodAndModelMappingLocked(pod.Name, modelName)
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
-	c.debugInfo()
+	c.debugInfoLocked()
 }
 
 func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
@@ -315,11 +333,11 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 	// Add new mappings if present
 	if newOk {
 		c.Pods[newPod.Name] = newPod
-		c.addPodAndModelMapping(newPod.Name, newModelName)
+		c.addPodAndModelMappingLocked(newPod.Name, newModelName)
 	}
 
 	klog.V(4).Infof("POD UPDATED: %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
-	c.debugInfo()
+	c.debugInfoLocked()
 }
 
 func (c *Cache) deletePod(obj interface{}) {
@@ -343,7 +361,7 @@ func (c *Cache) deletePod(obj interface{}) {
 	delete(c.PodModelMetrics, pod.Name)
 
 	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
-	c.debugInfo()
+	c.debugInfoLocked()
 }
 
 func (c *Cache) addModelAdapter(obj interface{}) {
@@ -352,11 +370,11 @@ func (c *Cache) addModelAdapter(obj interface{}) {
 
 	model := obj.(*modelv1alpha1.ModelAdapter)
 	for _, pod := range model.Status.Instances {
-		c.addPodAndModelMapping(pod, model.Name)
+		c.addPodAndModelMappingLocked(pod, model.Name)
 	}
 
 	klog.V(4).Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
-	c.debugInfo()
+	c.debugInfoLocked()
 }
 
 func (c *Cache) updateModelAdapter(oldObj interface{}, newObj interface{}) {
@@ -371,11 +389,11 @@ func (c *Cache) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 	}
 
 	for _, pod := range newModel.Status.Instances {
-		c.addPodAndModelMapping(pod, newModel.Name)
+		c.addPodAndModelMappingLocked(pod, newModel.Name)
 	}
 
 	klog.V(4).Infof("MODELADAPTER UPDATED. %s/%s %s", oldModel.Namespace, oldModel.Name, newModel.Status.Phase)
-	c.debugInfo()
+	c.debugInfoLocked()
 }
 
 func (c *Cache) deleteModelAdapter(obj interface{}) {
@@ -388,10 +406,10 @@ func (c *Cache) deleteModelAdapter(obj interface{}) {
 	}
 
 	klog.V(4).Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
-	c.debugInfo()
+	c.debugInfoLocked()
 }
 
-func (c *Cache) addPodAndModelMapping(podName, modelName string) {
+func (c *Cache) addPodAndModelMappingLocked(podName, modelName string) {
 	pod, ok := c.Pods[podName]
 	if !ok {
 		klog.Errorf("pod %s does not exist in internal-cache", podName)
@@ -440,6 +458,13 @@ func (c *Cache) deletePodAndModelMapping(podName, modelName string) {
 }
 
 func (c *Cache) debugInfo() {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	c.debugInfoLocked()
+}
+
+func (c *Cache) debugInfoLocked() {
 	for _, pod := range c.Pods {
 		klog.V(4).Infof("pod: %s, podIP: %v", pod.Name, pod.Status.PodIP)
 	}
@@ -460,11 +485,6 @@ func (c *Cache) debugInfo() {
 	for podName, metrics := range c.PodMetrics {
 		for metricName, metricVal := range metrics {
 			klog.V(5).Infof("%v_%v_%v", podName, metricName, metricVal)
-		}
-	}
-	for inputIndex, output := range c.requestTrace {
-		for outputIndex, requestCount := range output {
-			klog.V(5).Infof("inputIndex: %v, outputIndex: %v, requestCount: %v", inputIndex, outputIndex, requestCount)
 		}
 	}
 }
@@ -588,7 +608,7 @@ func (c *Cache) queryUpdatePromQLMetrics(metric metrics.Metric, queryLabels map[
 	result, warnings, err := c.prometheusApi.Query(context.Background(), query, time.Now())
 	if err != nil {
 		// Skip this model fetching if an error is thrown
-		return fmt.Errorf("Error executing query: %v", err)
+		return fmt.Errorf("error executing query: %v", err)
 	}
 	if len(warnings) > 0 {
 		klog.Warningf("Warnings: %v\n", warnings)
@@ -599,7 +619,7 @@ func (c *Cache) queryUpdatePromQLMetrics(metric metrics.Metric, queryLabels map[
 	metricValue := &metrics.PrometheusMetricValue{Result: &result}
 	err = c.updatePodRecord(podName, modelName, metricName, scope, metricValue)
 	if err != nil {
-		return fmt.Errorf("Failed to update metrics %s from prometheus %s: %v", metricName, podName, err)
+		return fmt.Errorf("failed to update metrics %s from prometheus %s: %v", metricName, podName, err)
 	}
 	klog.V(5).InfoS("Successfully parsed metrics from prometheus", "metric", metricName, "model", modelName, "PodName", podName, "Port", podPort, "metricValue", metricValue)
 	return nil
@@ -803,47 +823,124 @@ func (c *Cache) updateModelMetrics() {
 	}
 }
 
-func (c *Cache) AddRequestTrace(modelName string, inputTokens, outputTokens int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	inputIndex := int64(math.Round(math.Log2(float64(inputTokens)) / precisionRequestTrace)) // Round to the nearest precision and convert to int
-	outputIndex := int64(math.Round(math.Log2(float64(outputTokens)) / precisionRequestTrace))
-
-	klog.V(5).Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
-		inputTokens, inputIndex, outputTokens, outputIndex)
-
-	if len(c.requestTrace[modelName]) == 0 {
-		c.requestTrace[modelName] = map[string]int{}
-		c.requestTrace[modelName][keyWriteRequestTraceIntervalInSeconds] = writeRequestTraceIntervalInSeconds
-		c.requestTrace[modelName][keyPrecisionRequestTrace] = int(1 / precisionRequestTrace)
-		c.requestTrace[modelName][keyVersionRequestTrace] = versionRequestTrace
+func (c *Cache) AddRequestCount(requestID string, modelName string) (traceTerm int64) {
+	success := false
+	for {
+		trace := c.getRequestTrace(modelName)
+		// TODO: use non-empty key if we have output prediction to decide buckets early.
+		if traceTerm, success = trace.AddRequest(requestID, ""); success {
+			break
+		}
+		// In case AddRequest return false, it has been recycled and we want to retry.
 	}
 
-	c.requestTrace[modelName][fmt.Sprintf("%v:%v", inputIndex, outputIndex)] += 1
+	newPendingCounter := int32(0)
+	pPendingCounter, _ := c.pendingRequests.LoadOrStore(modelName, &newPendingCounter)
+	atomic.AddInt32(pPendingCounter.(*int32), 1)
+	return
+}
+
+func (c *Cache) DoneRequestCount(requestID string, modelName string, traceTerm int64) {
+	pPendingCounter, ok := c.pendingRequests.Load(modelName)
+	if ok {
+		atomic.AddInt32(pPendingCounter.(*int32), -1)
+	}
+
+	// DoneRequest only works for current term, no need to retry.
+	c.getRequestTrace(modelName).DoneRequest(requestID, traceTerm)
+}
+
+func (c *Cache) AddRequestTrace(requestID string, modelName string, inputTokens, outputTokens int64) {
+	traceKey := c.getTraceKey(inputTokens, outputTokens)
+	for {
+		trace := c.getRequestTrace(modelName)
+		if trace.AddRequestTrace(requestID, traceKey) {
+			break
+		}
+		// In case DoneRequest return false, it has been recycled and we want to retry.
+	}
+}
+
+func (c *Cache) DoneRequestTrace(requestID string, modelName string, inputTokens, outputTokens, traceTerm int64) {
+	pPendingCounter, ok := c.pendingRequests.Load(modelName)
+	if ok {
+		atomic.AddInt32(pPendingCounter.(*int32), -1)
+	}
+
+	traceKey := c.getTraceKey(inputTokens, outputTokens)
+	for {
+		trace := c.getRequestTrace(modelName)
+		if trace.DoneRequestTrace(requestID, traceKey, traceTerm) {
+			break
+		}
+		// In case DoneRequest return false, it has been recycled and we want to retry.
+	}
+}
+
+func (c *Cache) getRequestTrace(modelName string) *RequestTrace {
+	trace := NewRequestTrace(time.Now().UnixNano())
+	newer, loaded := c.requestTrace.LoadOrStore(modelName, trace)
+	if loaded {
+		trace.Recycle()
+	} else {
+		atomic.AddInt32(&c.numRequestsTraces, 1)
+	}
+	return newer.(*RequestTrace)
+}
+
+func (c *Cache) getTraceKey(inputTokens, outputTokens int64) (traceKey string) {
+	if inputTokens > 0 && outputTokens > 0 {
+		inputIndex := int64(math.Round(math.Log2(float64(inputTokens)) / RequestTracePrecision)) // Round to the nearest precision and convert to int
+		outputIndex := int64(math.Round(math.Log2(float64(outputTokens)) / RequestTracePrecision))
+		traceKey = fmt.Sprintf("%v:%v", inputIndex, outputIndex)
+
+		klog.V(5).Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
+			inputTokens, inputIndex, outputTokens, outputIndex)
+	}
+	return
 }
 
 func (c *Cache) writeRequestTraceToStorage(roundT int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Save and reset trace context, atomicity is guaranteed.
+	var requestTrace *sync.Map
+	numTraces := atomic.LoadInt32(&c.numRequestsTraces)
+	requestTrace, c.requestTrace = c.requestTrace, &sync.Map{}
+	numResetTo := int32(0)
+	// TODO: Adding a unit test here.
+	for !atomic.CompareAndSwapInt32(&c.numRequestsTraces, numTraces, numResetTo) {
+		// If new traces added to reset map, assert updatedNumTraces >= numTraces regardless duplication.
+		updatedNumTraces := atomic.LoadInt32(&c.numRequestsTraces)
+		numTraces, numResetTo = updatedNumTraces, updatedNumTraces-numTraces
+	}
 
-	defer func() {
-		klog.V(5).Infof("writeRequestTraceWithKey: %v", roundT)
-		c.requestTrace = map[string]map[string]int{}
-	}()
+	requestTrace.Range(func(iModelName, iTrace any) bool {
+		modelName := iModelName.(string)
+		trace := iTrace.(*RequestTrace)
+		requestTrace.Store(modelName, nil) // Simply assign nil instead of delete
 
-	for modelName, trace := range c.requestTrace {
-		key := fmt.Sprintf("aibrix:%v_request_trace_%v", modelName, roundT)
-		value, err := json.Marshal(trace)
+		trace.Lock()
+		pending := int32(0)
+		if pCounter, loaded := c.pendingRequests.Load(modelName); loaded {
+			pending = atomic.LoadInt32(pCounter.(*int32))
+		}
+		traceMap := trace.ToMapLocked(pending)
+		trace.RecycleLocked()
+		trace.Unlock()
+
+		value, err := json.Marshal(traceMap)
 		if err != nil {
 			klog.ErrorS(err, "error to marshall request trace for redis set")
-			continue
+			return true
 		}
 
+		key := fmt.Sprintf("aibrix:%v_request_trace_%v", modelName, roundT)
 		if _, err = c.redisClient.Set(context.Background(), key, value, expireWriteRequestTraceIntervalInMins*time.Minute).Result(); err != nil {
 			klog.Error(err)
 		}
-	}
+		return true
+	})
+
+	klog.V(5).Infof("writeRequestTraceWithKey: %v", roundT)
 }
 
 func (c *Cache) AddSubscriber(subscriber metrics.MetricSubscriber) {

@@ -49,7 +49,7 @@ class WorkloadProfile(Protocol):
     def get_signature(
         self,
         indexes: List[List[float]],
-        error_suppressor: Optional[WorkloadSignatureErrorHandler] = None,
+        error_suppressor: Optional[WorkloadSignatureErrorHandler] = bool,
     ) -> Tuple[int]:
         """Generate the index signature of the WorkloadProfile within the indexes' range.
 

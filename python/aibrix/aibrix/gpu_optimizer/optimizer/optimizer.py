@@ -137,10 +137,13 @@ class Optimizer:
         # No validation on the shape. Leave set function to throw error
         return signature
 
-    def _log_signature_error(self, dimeansion, value, index, index_value, offset):
+    def _log_signature_error(
+        self, dimeansion, value, index, index_value, offset
+    ) -> bool:
         logger.warning(
             f"Signature item {dimeansion}:{value} is out of range, counted as{index_value} (reference offset: {offset})"
         )
+        return True
 
     def _log_signature_expr(self, signature: Tuple[int]) -> str:
         if self._indexes is None:

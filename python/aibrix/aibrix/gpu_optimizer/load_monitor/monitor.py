@@ -186,7 +186,7 @@ class ModelMonitor:
             old_cost = self.deployments[key].cost
             # Update deployment changes
             self.deployments[key].min_replicas = dp.min_replicas
-            
+
         # Update newly matched profiles if any
         self.deployments[key].profile = profile
         # Update watch_ver

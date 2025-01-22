@@ -326,7 +326,7 @@ def main(signal, timeout):
                     return
                 try:
                     deployment = event["object"]
-                    if event["type"] == "ADDED":
+                    if event["type"] == "ADDED" or event["type"] == "UPDATED":
                         start_serving_thread(watch_version, deployment, True)
                     elif event["type"] == "DELETED":
                         remove_deployment(deployment)

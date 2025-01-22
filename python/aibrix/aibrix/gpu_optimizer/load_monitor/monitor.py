@@ -176,13 +176,18 @@ class ModelMonitor:
             )
 
         # add to deployment registry
+        dp = deployment() if callable(deployment) else deployment
         self._lock.acquire(blocking=True)
-        if key not in self.deployments:
-            self.deployments[key] = deployment() if callable(deployment) else deployment
+        old_cost = 0.0
+        if key in self.deployments:
+            self.deployments[key] = dp
+        else:
+            old_cost = self.deployments[key].cost
 
-        old_cost = self.deployments[key].cost
+        self.deployments[key].min_replicas = dp.min_replicas
         self.deployments[key].profile = profile
         self.deployments[key].watch_ver = watch_ver
+        # With profile set, now we can adjust cost
         self._cost += self.deployments[key].cost - old_cost
         self.last_resource_version = watch_ver
         self._lock.release()

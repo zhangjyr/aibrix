@@ -180,13 +180,13 @@ class ModelMonitor:
         self._lock.acquire(blocking=True)
         # Save previously calcuated cost before possible change.
         old_cost = 0.0
-        if key in self.deployments:
+        if key not in self.deployments:
             self.deployments[key] = dp
         else:
             old_cost = self.deployments[key].cost
-        
-        # Update deployment changes
-        self.deployments[key].min_replicas = dp.min_replicas
+            # Update deployment changes
+            self.deployments[key].min_replicas = dp.min_replicas
+            
         # Update newly matched profiles if any
         self.deployments[key].profile = profile
         # Update watch_ver

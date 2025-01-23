@@ -348,10 +348,7 @@ def main(signal, timeout):
                         start_serving_thread(watch_version, deployment, True)
                     elif event["type"] == "DELETED":
                         remove_deployment(deployment)
-                    elif (
-                        event["type"] == "Normal"
-                        and event["reason"] == "ScalingReplicaSet"
-                    ):
+                    elif event["type"] == "MODIFIED":
                         update_deployment(watch_version, deployment)
                 except Exception as e:
                     logger.warning(

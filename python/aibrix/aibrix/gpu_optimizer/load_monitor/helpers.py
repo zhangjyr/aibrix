@@ -163,7 +163,7 @@ class Centeroid:
         self._size = 0
         self._signature = None
         self._up_to_date = False  # Whether the signature is up to date.
-        self._signature_tolerance = 0.25
+        self._signature_tolerance = 0.5
         """Assuming indexes are of equal distances, the signature_tolerance 
         control how a value in the middle of two indexes should aligned to a 
         certain index. While 0.5 indicate neutual preference. 0.25 set 

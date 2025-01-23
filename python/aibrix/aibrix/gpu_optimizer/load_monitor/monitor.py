@@ -83,6 +83,12 @@ class DeploymentStates:
         """Set replica to minimum mode."""
         self.replicas = max(0, self.min_replicas)
 
+    def is_modified(self, another) -> bool:
+        return self.min_replicas != another.min_replicas
+
+    def update(self, newer):
+        self.min_replicas = newer.min_replicas
+
     def __repr__(self):
         if self.overriden:
             return f"overriden {self.name}: {self.replicas}(${self.cost}), should be {self._replicas}"
@@ -158,7 +164,7 @@ class ModelMonitor:
         deployment_name: str,
         namespace: Optional[str],
         deployment: Union[DeploymentStates, Callable[[], DeploymentStates]],
-    ):
+    ) -> bool:
         # Update optimizer
         key = self._deployment_entry_point(deployment_name, namespace)
         profile = self._match_profile(key, deployment_name)
@@ -182,10 +188,14 @@ class ModelMonitor:
         old_cost = 0.0
         if key not in self.deployments:
             self.deployments[key] = dp
-        else:
+        elif self.deployments[key].is_modified(dp):
             old_cost = self.deployments[key].cost
             # Update deployment changes
-            self.deployments[key].min_replicas = dp.min_replicas
+            self.deployments[key].update(dp)
+        else:
+            # Abandon
+            self._lock.release()
+            return False
 
         # Update newly matched profiles if any
         self.deployments[key].profile = profile
@@ -196,6 +206,7 @@ class ModelMonitor:
         # Update global watch_ver
         self.last_resource_version = watch_ver
         self._lock.release()
+        return True
 
     def remove_deployment(self, deployment_name: str, namespace: str) -> int:
         """remove deployment from monitor, return the number of deployments left."""

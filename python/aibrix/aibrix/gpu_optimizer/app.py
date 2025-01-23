@@ -138,10 +138,12 @@ def update_deployment(watch_ver, deployment):
         )
         return
 
-    model_monitor.add_deployment(
+    if model_monitor.add_deployment(
         watch_ver, deployment_name, namespace, lambda: new_deployment(deployment)
-    )
-    logger.info(f'Updated "{deployment_name}" in the model monitor for "{model_name}".')
+    ):
+        logger.info(
+            f'Updated "{deployment_name}" in the model monitor for "{model_name}".'
+        )
 
 
 def remove_deployment(deployment):

@@ -126,6 +126,24 @@ def start_serving_thread(watch_ver, deployment, watch_event: bool) -> bool:
     return True
 
 
+def update_deployment(watch_ver, deployment):
+    """Update deployment in model monitor"""
+    model_name, model_monitor = validate_model(deployment)
+
+    deployment_name = deployment.metadata.name
+    namespace = deployment.metadata.namespace
+    if model_monitor is None:
+        logger.warning(
+            f'Updating "{deployment_name}" in the model monitor, but "{model_name}" has not monitored.'
+        )
+        return
+
+    model_monitor.add_deployment(
+        watch_ver, deployment_name, namespace, lambda: new_deployment(deployment)
+    )
+    logger.info(f'Updated "{deployment_name}" in the model monitor for "{model_name}".')
+
+
 def remove_deployment(deployment):
     """Remove deployment from model monitor"""
     model_name, model_monitor = validate_model(deployment)
@@ -326,10 +344,15 @@ def main(signal, timeout):
                     return
                 try:
                     deployment = event["object"]
-                    if event["type"] == "ADDED" or event["type"] == "UPDATED":
+                    if event["type"] == "ADDED":
                         start_serving_thread(watch_version, deployment, True)
                     elif event["type"] == "DELETED":
                         remove_deployment(deployment)
+                    elif (
+                        event["type"] == "Normal"
+                        and event["reason"] == "ScalingReplicaSet"
+                    ):
+                        update_deployment(watch_version, deployment)
                 except Exception as e:
                     logger.warning(
                         f"Error on handle event {event['type']} {deployment.metadata.name}: {e}"

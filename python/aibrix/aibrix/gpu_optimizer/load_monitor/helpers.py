@@ -192,8 +192,8 @@ class Centeroid:
         self,
         indexes: List[List[float]],
         error_suppressor: Optional[
-            Callable[[int, float, float, float, float], None]
-        ] = bool,
+            Callable[[int, float, float, float, float], bool]
+        ] = None,
     ) -> Tuple[int]:
         """Generate the index signature of the centroid within the indexes' range.
 

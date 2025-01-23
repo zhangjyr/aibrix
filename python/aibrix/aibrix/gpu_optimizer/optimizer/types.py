@@ -39,7 +39,7 @@ class GPUProfile:
     created: float = 0.0
 
 
-WorkloadSignatureErrorHandler = Callable[[int, float, float, float, float], None]
+WorkloadSignatureErrorHandler = Callable[[int, float, float, float, float], bool]
 """A function to handle the error with parameters(dimension, value, index assigned, value of index, value offset)."""
 
 
@@ -49,7 +49,7 @@ class WorkloadProfile(Protocol):
     def get_signature(
         self,
         indexes: List[List[float]],
-        error_suppressor: Optional[WorkloadSignatureErrorHandler] = bool,
+        error_suppressor: Optional[WorkloadSignatureErrorHandler] = None,
     ) -> Tuple[int]:
         """Generate the index signature of the WorkloadProfile within the indexes' range.
 

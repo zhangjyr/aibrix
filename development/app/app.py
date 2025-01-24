@@ -1,4 +1,6 @@
 from flask import Flask, request, Response, jsonify
+from flask_httpauth import HTTPTokenAuth
+from functools import wraps
 from werkzeug import serving
 import random
 import re
@@ -23,8 +25,8 @@ from vidur.entities import Request
 # Global storage for overridden values
 overrides = {}
 
-MODEL_NAME = os.getenv('MODEL_NAME', 'llama2-70b')
-DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-70b')
+MODEL_NAME = os.getenv('MODEL_NAME', 'llama2-7b')
+DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'llama2-7b')
 NAMESPACE = os.getenv('POD_NAMESPACE', 'default')
 DEFAULT_REPLICAS = int(os.getenv('DEFAULT_REPLICAS', '1'))
 SIMULATION = os.getenv('SIMULATION', 'disabled')
@@ -44,6 +46,30 @@ if "--replica_config_model_name" not in sys.argv:
 
 tokenizer = None
 simulator: Optional[Simulator] = None
+
+# Extract the api_key argument and prepare for authentication
+api_key = None
+try:
+    index = sys.argv.index("--api_key")
+    if index + 1 < len(sys.argv):
+        api_key = sys.argv[index + 1]
+except ValueError:
+    pass
+
+auth = HTTPTokenAuth(scheme='Bearer')
+
+
+@auth.verify_token
+def verify_token(token):
+    if api_key is None:
+        return True
+    return token == api_key
+
+
+@auth.error_handler
+def auth_error(status):
+    return jsonify({"error": "Unauthorized"}), 401
+
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +177,7 @@ disable_endpoint_logs()
 
 
 @app.route('/v1/models', methods=['GET'])
+@auth.login_required
 def get_models():
     return jsonify({
         "object": "list",
@@ -159,6 +186,7 @@ def get_models():
 
 
 @app.route('/v1/load_lora_adapter', methods=['POST'])
+@auth.login_required
 def load_model():
     lora_name = request.json.get('lora_name')
     # Check if the model already exists
@@ -179,6 +207,7 @@ def load_model():
 
 
 @app.route('/v1/unload_lora_adapter', methods=['POST'])
+@auth.login_required
 def unload_model():
     model_id = request.json.get('lora_name')
     global models
@@ -187,6 +216,7 @@ def unload_model():
 
 
 @app.route('/v1/completions', methods=['POST'])
+@auth.login_required
 def completion():
     try:
         prompt = request.json.get('prompt')
@@ -249,6 +279,7 @@ def completion():
 
 
 @app.route('/v1/chat/completions', methods=['POST'])
+@auth.login_required
 def chat_completions():
     try:
         messages = request.json.get('messages')
@@ -540,7 +571,14 @@ def metrics():
         metrics_output += generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"],
                                                         model_name, metric["value"])
         metrics_output += generate_counter_gauge_metric(metric["name"], metric["type"], metric["description"],
-                                                        "lora-1", metric["value"], help_header=False)
+                                                        "text2sql-lora-2", metric["value"], help_header=False)
+        
+    
+    metrics_output += """
+# HELP vllm:lora_requests_info Running stats on lora requests.
+# TYPE vllm:lora_requests_info gauge
+vllm:lora_requests_info{max_lora="1",running_lora_adapters="text2sql-lora-2",waiting_lora_adapters=""} 1
+"""
 
     histogram_metrics = [
         {
@@ -628,7 +666,7 @@ def metrics():
         histogram_metrics_output += generate_histogram_metric(
             metric_name=metric["name"],
             description=metric["description"],
-            model_name="lora-1",
+            model_name="text2sql-lora-2",
             buckets=metric["buckets"],
             new_requests=new_requests,
             help_header=False

@@ -24,10 +24,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
 	"github.com/aibrix/aibrix/pkg/cache"
+	"github.com/aibrix/aibrix/pkg/config"
 	"github.com/aibrix/aibrix/pkg/controller/modeladapter/scheduling"
 	"github.com/aibrix/aibrix/pkg/utils"
 	corev1 "k8s.io/api/core/v1"
@@ -82,6 +84,18 @@ const (
 	ModelAdapterAvailable = "ModelAdapterAvailable"
 	// ModelAdapterUnavailable is added in a ModelAdapter when it doesn't have any pod hosting it.
 	ModelAdapterUnavailable = "ModelAdapterUnavailable"
+
+	// Inference Service path and ports
+	DefaultInferenceEnginePort      = "8000"
+	DefaultDebugInferenceEnginePort = "30081"
+	DefaultRuntimeAPIPort           = "8080"
+
+	ModelListPath            = "/v1/models"
+	ModelListRuntimeAPIPath  = "/v1/models"
+	LoadLoraAdapterPath      = "/v1/load_lora_adapter"
+	LoadLoraRuntimeAPIPath   = "/v1/lora_adapter/load"
+	UnloadLoraAdapterPath    = "/v1/unload_lora_adapter"
+	UnloadLoraRuntimeAPIPath = "/v1/lora_adapter/unload"
 )
 
 var (
@@ -91,10 +105,17 @@ var (
 	defaultRequeueDuration             = 3 * time.Second
 )
 
+type URLConfig struct {
+	BaseURL          string
+	ListModelsURL    string
+	LoadAdapterURL   string
+	UnloadAdapterURL string
+}
+
 // Add creates a new ModelAdapter Controller and adds it to the Manager with default RBAC.
 // The Manager will set fields on the Controller and Start it when the Manager is Started.
-func Add(mgr manager.Manager) error {
-	r, err := newReconciler(mgr)
+func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
+	r, err := newReconciler(mgr, runtimeConfig)
 	if err != nil {
 		return err
 	}
@@ -102,7 +123,7 @@ func Add(mgr manager.Manager) error {
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
+func newReconciler(mgr manager.Manager, runtimeConfig config.RuntimeConfig) (reconcile.Reconciler, error) {
 	cacher := mgr.GetCache()
 
 	podInformer, err := cacher.GetInformer(context.TODO(), &corev1.Pod{})
@@ -145,6 +166,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 		EndpointSliceLister: endpointSliceLister,
 		Recorder:            mgr.GetEventRecorderFor(controllerName),
 		scheduler:           scheduler,
+		RuntimeConfig:       runtimeConfig,
 	}
 	return reconciler, nil
 }
@@ -226,6 +248,7 @@ type ModelAdapterReconciler struct {
 	ServiceLister corelisters.ServiceLister
 	// EndpointSliceLister is able to list/get services from a shared informer's cache store
 	EndpointSliceLister discoverylisters.EndpointSliceLister
+	RuntimeConfig       config.RuntimeConfig
 }
 
 //+kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;list;watch;create;update;patch;delete
@@ -494,7 +517,7 @@ func (r *ModelAdapterReconciler) getActivePodsForModelAdapter(ctx context.Contex
 func (r *ModelAdapterReconciler) schedulePod(ctx context.Context, instance *modelv1alpha1.ModelAdapter, activePods []corev1.Pod) (*corev1.Pod, error) {
 	// Implement your scheduling logic here to select a Pod based on the instance.Spec.PodSelector
 	// For the sake of example, we will just list the Pods matching the selector and pick the first one
-	return r.scheduler.SelectPod(ctx, activePods)
+	return r.scheduler.SelectPod(ctx, instance.Name, activePods)
 }
 
 func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance *modelv1alpha1.ModelAdapter) error {
@@ -516,17 +539,10 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 		return nil
 	}
 
-	// Define the key you want to check
-	key := "DEBUG_MODE"
-	value, exists := getEnvKey(key)
-	host := fmt.Sprintf("http://%s:8000", targetPod.Status.PodIP)
-	if exists && value == "on" {
-		// 30080 is the nodePort of the base model service.
-		host = fmt.Sprintf("http://%s:30081", "localhost")
-	}
+	urls := BuildURLs(targetPod.Status.PodIP, r.RuntimeConfig)
 
 	// Check if the model is already loaded
-	exists, err = r.modelAdapterExists(host, instance.Name)
+	exists, err := r.modelAdapterExists(urls.ListModelsURL, instance)
 	if err != nil {
 		return err
 	}
@@ -536,7 +552,7 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 	}
 
 	// Load the Model adapter
-	err = r.loadModelAdapter(host, instance)
+	err = r.loadModelAdapter(urls.LoadAdapterURL, instance)
 	if err != nil {
 		return err
 	}
@@ -545,10 +561,18 @@ func (r *ModelAdapterReconciler) reconcileLoading(ctx context.Context, instance 
 }
 
 // Separate method to check if the model already exists
-func (r *ModelAdapterReconciler) modelAdapterExists(host, modelName string) (bool, error) {
-	// TODO: /v1/models is the vllm entrypoints, let's support multiple engine in future
-	url := fmt.Sprintf("%s/v1/models", host)
-	resp, err := http.Get(url)
+func (r *ModelAdapterReconciler) modelAdapterExists(url string, instance *modelv1alpha1.ModelAdapter) (bool, error) {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return false, err
+	}
+	// Check if "api-key" exists in the map and set the Authorization header accordingly
+	if token, ok := instance.Spec.AdditionalConfig["api-key"]; ok {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
+
+	c := &http.Client{}
+	resp, err := c.Do(req)
 	if err != nil {
 		return false, err
 	}
@@ -578,7 +602,7 @@ func (r *ModelAdapterReconciler) modelAdapterExists(host, modelName string) (boo
 		if !ok {
 			continue
 		}
-		if model["id"] == modelName {
+		if model["id"] == instance.Name {
 			return true, nil
 		}
 	}
@@ -587,13 +611,18 @@ func (r *ModelAdapterReconciler) modelAdapterExists(host, modelName string) (boo
 }
 
 // Separate method to load the LoRA adapter
-func (r *ModelAdapterReconciler) loadModelAdapter(host string, instance *modelv1alpha1.ModelAdapter) error {
-	artifactURL, err := extractHuggingFacePath(instance.Spec.ArtifactURL)
-	if err != nil {
-		// Handle error, e.g., log it and return
-		klog.ErrorS(err, "Invalid artifact URL", "artifactURL", artifactURL)
-		return err
+func (r *ModelAdapterReconciler) loadModelAdapter(url string, instance *modelv1alpha1.ModelAdapter) error {
+	artifactURL := instance.Spec.ArtifactURL
+	if strings.HasPrefix(instance.Spec.ArtifactURL, "huggingface://") {
+		var err error
+		artifactURL, err = extractHuggingFacePath(instance.Spec.ArtifactURL)
+		if err != nil {
+			// Handle error, e.g., log it and return
+			klog.ErrorS(err, "Invalid artifact URL", "artifactURL", artifactURL)
+			return err
+		}
 	}
+	// TODO: extend to other artifacts
 
 	payload := map[string]string{
 		"lora_name": instance.Name,
@@ -604,12 +633,15 @@ func (r *ModelAdapterReconciler) loadModelAdapter(host string, instance *modelv1
 		return err
 	}
 
-	url := fmt.Sprintf("%s/v1/load_lora_adapter", host)
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Check if "api-key" exists in the map and set the Authorization header accordingly
+	if token, ok := instance.Spec.AdditionalConfig["api-key"]; ok {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -662,19 +694,16 @@ func (r *ModelAdapterReconciler) unloadModelAdapter(instance *modelv1alpha1.Mode
 		return err
 	}
 
-	url := fmt.Sprintf("http://%s:%d/v1/unload_lora_adapter", targetPod.Status.PodIP, 8000)
-	key := "DEBUG_MODE"
-	value, exists := getEnvKey(key)
-	if exists && value == "on" {
-		// 30080 is the nodePort of the base model service.
-		url = "http://localhost:30081/v1/unload_lora_adapter"
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(payloadBytes))
+	urls := BuildURLs(targetPod.Status.PodIP, r.RuntimeConfig)
+	req, err := http.NewRequest("POST", urls.UnloadAdapterURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Check if "api-key" exists in the map and set the Authorization header accordingly
+	if token, ok := instance.Spec.AdditionalConfig["api-key"]; ok {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
 
 	httpClient := &http.Client{}
 	resp, err := httpClient.Do(req)

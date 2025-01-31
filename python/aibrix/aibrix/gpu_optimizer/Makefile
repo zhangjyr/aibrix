@@ -10,7 +10,7 @@ unittest:
 
 .PHONY: benchmark
 benchmark:
-	optimizer/profiling/benchmark.sh -o $(DP)
+	optimizer/profiling/benchmark.sh -m $(DP)
 
 .PHONY: gen-profile
 gen-profile:

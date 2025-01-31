@@ -16,7 +16,7 @@
 
 # Result files will be added to 'PATH_PREFIX' directory.
 PATH_PREFIX=`dirname "$0"`
-FILE_NAME="result"
+OUTPUT_FILE=
 MODEL="llama2-7b"
 TOTAL=100
 # TODO: Set your preferred request sizes and rates here.
@@ -36,7 +36,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     -o|--output)
-      FILE_NAME="$2"
+      OUTPUT_FILE="$2"
       shift 2
       ;;
     --input-start)
@@ -83,7 +83,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Make sure the directory exists and clear output file
-OUTPUT_FILE="${PATH_PREFIX}/result/${FILE_NAME}.jsonl"
+if [[ -z "$OUTPUT_FILE" ]]; then
+  OUTPUT_FILE="${PATH_PREFIX}/result/${MODEL}.jsonl"
+fi
 mkdir -p `dirname "$OUTPUT_FILE"`
 
 # Print the arguments (or use them in your script logic)

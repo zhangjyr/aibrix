@@ -21,9 +21,9 @@ MODEL="llama2-7b"
 TOTAL=100
 # TODO: Set your preferred request sizes and rates here.
 input_start=4
-input_limit=$((2**11)) # 2K
+input_limit=$((2**12)) # 4K
 output_start=4
-output_limit=$((2**9)) # 512
+output_limit=$((2**12)) # 4K
 rate_start=1
 rate_limit=$((2**6)) # 64
 workload=

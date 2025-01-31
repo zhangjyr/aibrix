@@ -1,0 +1,7 @@
+[
+    {
+        "op": "replace",
+        "path": "/metadata/name",
+        "value": "podautoscaler-deepseek-coder-7b-a10"
+    }
+]

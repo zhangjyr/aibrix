@@ -22,12 +22,12 @@ Example
 -------------
 
 Step 1: Deploy the heterogeneous deployments. One deployment and corresponding PodAutoscaler should be deployed for each GPU type.
-See `sample heterogeneous configuration <https://github.com/aibrix/aibrix/tree/main/config/samples/vllm/heterogeneous>`_ for an example of heterogeneous configuration composed of two GPU types. The following codes 
+See `sample heterogeneous configuration <https://github.com/aibrix/aibrix/tree/main/samples/heterogeneous>`_ for an example of heterogeneous configuration composed of two GPU types. The following codes 
 deploy heterogeneous deployments using L20 and A10 GPU.
 
 .. code-block:: bash
 
-    kubectl apply -k config/samples/vllm/heterogeneous
+    kubectl apply -k samples/heterogeneous
 
 After deployment, you will see a inference service with two pods running on simulated L20 and A10 GPUs:
 
@@ -44,8 +44,8 @@ Incoming requests are routed through the gateway and directed to the optimal pod
 
     kubectl get pods
     NAME                               READY   STATUS        RESTARTS      AGE
-    [model_name]-l20-9bdfbb7ff-rx9r7   2/2     Running       0             46m
     [model_name]-a10-5c9576c566-jfblm  2/2     Running       0             27s
+    [model_name]-l20-9bdfbb7ff-rx9r7   2/2     Running       0             46m
 
 Step 2: Install aibrix python module:
 

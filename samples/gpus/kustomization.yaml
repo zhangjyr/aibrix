@@ -1,0 +1,4 @@
+resources:
+  - ../templates/components
+  - ../heterogeneous/a10
+

@@ -82,7 +82,8 @@ class Optimizer:
         for profile in profiles:
             try:
                 signature = self._validate_workload_signature(profile)
-                self._workload_distribution_template[signature] = (
+                # Merge possible multiple patterns (out of range patterns coinincident with border patterns)
+                self._workload_distribution_template[signature] += (
                     profile.rate / covered_request_rate
                 )  # type: ignore
                 logger.debug(

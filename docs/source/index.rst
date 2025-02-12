@@ -36,12 +36,13 @@ Documentation
    :maxdepth: 1
    :caption: User Manuals
 
-   features/autoscaling.rst
    features/lora-dynamic-loading.rst
    features/gateway-plugins.rst
    features/multi-node-inference.rst
    features/heterogeneous-gpu.rst
+   features/autoscaling.rst
    features/runtime.rst
+   features/distributed-kv-cache.rst
 
 .. toctree::
    :maxdepth: 1

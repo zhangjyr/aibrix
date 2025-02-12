@@ -48,13 +48,71 @@ import (
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
+const (
+	HeaderErrorInvalidRouting = "x-error-invalid-routing-strategy"
+
+	// General Error Headers
+	HeaderErrorUser                  = "x-error-user"
+	HeaderErrorRouting               = "x-error-routing"
+	HeaderErrorRequestBodyProcessing = "x-error-request-body-processing"
+	HeaderErrorResponseUnmarshal     = "x-error-response-unmarshal"
+	HeaderErrorResponseUnknown       = "x-error-response-unknown"
+
+	// Model & Deployment Headers
+	HeaderErrorNoModelInRequest = "x-error-no-model-in-request"
+	HeaderErrorNoModelBackends  = "x-error-no-model-backends"
+
+	// Streaming Headers
+	HeaderErrorStreaming                 = "x-error-streaming"
+	HeaderErrorNoStreamOptions           = "x-error-no-stream-options"
+	HeaderErrorStreamOptionsIncludeUsage = "x-error-no-stream-options-include-usage"
+
+	// Request & Target Headers
+	HeaderWentIntoReqHeaders = "x-went-into-req-headers"
+	HeaderTargetPod          = "target-pod"
+	HeaderRoutingStrategy    = "routing-strategy"
+
+	// RPM & TPM Update Errors
+	HeaderUpdateTPM        = "x-update-tpm"
+	HeaderUpdateRPM        = "x-update-rpm"
+	HeaderErrorRPMExceeded = "x-error-rpm-exceeded"
+	HeaderErrorTPMExceeded = "x-error-tpm-exceeded"
+	HeaderErrorIncrRPM     = "x-error-incr-rpm"
+	HeaderErrorIncrTPM     = "x-error-incr-tpm"
+
+	// Rate Limiting defaults
+	DefaultRPM           = 100
+	DefaultTPMMultiplier = 1000
+
+	// Envs
+	EnvRoutingAlgorithm = "ROUTING_ALGORITHM"
+
+	// Router names
+	RouterRandom        = "random"
+	RouterLeastRequest  = "least-request"
+	RouterThroughput    = "throughput"
+	RouterPrefixCache   = "prefix-cache"
+	RouterLeastKvCache  = "least-kv-cache"
+	RouterLeastBusyTime = "least-busy-time"
+	RouterLeastLatency  = "least-latency"
+)
+
 var (
-	defaultRPM           = 100
-	defaultTPMMultiplier = 1000
-	routingStrategies    = []string{"random", "least-request", "throughput", "least-kv-cache", "least-busy-time", "least-latency"}
+	routingStrategies = []string{"random", "least-request", "throughput", "prefix-cache", "least-kv-cache", "least-busy-time", "least-latency"}
 
 	ErrorUnknownResponse = errors.New("unknown response")
 )
+
+// routerConstructors maps router names to their initialization functions.
+var routerConstructors = map[string]func() (routing.Router, error){
+	RouterRandom:        func() (routing.Router, error) { return routing.NewRandomRouter() },
+	RouterLeastRequest:  func() (routing.Router, error) { return routing.NewLeastRequestRouter() },
+	RouterThroughput:    func() (routing.Router, error) { return routing.NewThroughputRouter() },
+	RouterPrefixCache:   func() (routing.Router, error) { return routing.NewPrefixCacheRouter() },
+	RouterLeastKvCache:  func() (routing.Router, error) { return routing.NewLeastKvCacheRouter() },
+	RouterLeastBusyTime: func() (routing.Router, error) { return routing.NewLeastBusyTimeRouter() },
+	RouterLeastLatency:  func() (routing.Router, error) { return routing.NewLeastExpectedLatencyRouter() },
+}
 
 type Server struct {
 	routers             map[string]routing.Router
@@ -65,29 +123,36 @@ type Server struct {
 	cache               *cache.Cache
 }
 
-func NewServer(redisClient *redis.Client, c kubernetes.Interface) *Server {
-	cache, err := cache.GetCache()
+func NewServer(redisClient *redis.Client, client kubernetes.Interface) *Server {
+	c, err := cache.GetCache()
 	if err != nil {
 		panic(err)
 	}
 	r := ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
-	routers := map[string]routing.Router{
-		"random":          routing.NewRandomRouter(),
-		"least-request":   routing.NewLeastRequestRouter(),
-		"throughput":      routing.NewThroughputRouter(),
-		"least-kv-cache":  routing.NewLeastKvCacheRouter(),
-		"least-busy-time": routing.NewLeastBusyTimeRouter(),
-		"least-latency":   routing.NewLeastBusyTimeRouter(),
-	}
+	routers := initializeRouters()
 
 	return &Server{
 		routers:             routers,
 		redisClient:         redisClient,
 		ratelimiter:         r,
-		client:              c,
+		client:              client,
 		requestCountTracker: map[string]int{},
-		cache:               cache,
+		cache:               c,
 	}
+}
+
+// initializeRouters initialize different routing algorithms, consider to initialize the router in lazy way
+func initializeRouters() map[string]routing.Router {
+	routers := make(map[string]routing.Router)
+	for name, constructor := range routerConstructors {
+		router, err := constructor()
+		if err != nil {
+			klog.Warningf("failed to initialize router %s: %v", name, err)
+			continue
+		}
+		routers[name] = router
+	}
+	return routers
 }
 
 type HealthServer struct{}
@@ -167,11 +232,12 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 
 	routingStrategy, routingStrategyEnabled := GetRoutingStrategy(h.RequestHeaders.Headers.Headers)
 	if routingStrategyEnabled && !validateRoutingStrategy(routingStrategy) {
+		klog.ErrorS(nil, "incorrect routing strategy", "routing-strategy", routingStrategy)
 		return generateErrorResponse(
 			envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-incorrect-routing-strategy", RawValue: []byte(routingStrategy),
-			}}}, ""), utils.User{}, rpm, routingStrategy
+				Key: HeaderErrorInvalidRouting, RawValue: []byte(routingStrategy),
+			}}}, "incorrect routing strategy"), utils.User{}, rpm, routingStrategy
 	}
 
 	if username != "" {
@@ -181,7 +247,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-user-error", RawValue: []byte("true"),
+					Key: HeaderErrorUser, RawValue: []byte("true"),
 				}}},
 				err.Error()), utils.User{}, rpm, routingStrategy
 		}
@@ -201,7 +267,7 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 						SetHeaders: []*configPb.HeaderValueOption{
 							{
 								Header: &configPb.HeaderValue{
-									Key:      "x-went-into-req-headers",
+									Key:      HeaderWentIntoReqHeaders,
 									RawValue: []byte("true"),
 								},
 							},
@@ -227,7 +293,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "requestBody", string(body.RequestBody.GetBody()))
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-request-body-processing-error", RawValue: []byte("true")}}},
+				Key: HeaderErrorRequestBodyProcessing, RawValue: []byte("true")}}},
 			"error processing request body"), model, targetPodIP, stream, term
 	}
 
@@ -235,7 +301,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.ErrorS(nil, "model error in request", "requestID", requestID, "jsonMap", jsonMap)
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-no-model", RawValue: []byte(model)}}},
+				Key: HeaderErrorNoModelInRequest, RawValue: []byte(model)}}},
 			"no model in request body"), model, targetPodIP, stream, term
 	}
 
@@ -244,7 +310,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.ErrorS(nil, "model doesn't exist in cache, probably wrong model name", "requestID", requestID, "model", model)
 		return generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-no-model", RawValue: []byte(model)}}},
+				Key: HeaderErrorNoModelBackends, RawValue: []byte(model)}}},
 			fmt.Sprintf("model %s does not exist", model)), model, targetPodIP, stream, term
 	}
 
@@ -254,7 +320,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.ErrorS(err, "no ready pod available", "requestID", requestID, "model", model)
 		return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-no-model-deployment", RawValue: []byte("true")}}},
+				Key: HeaderErrorNoModelBackends, RawValue: []byte("true")}}},
 			fmt.Sprintf("error on getting pods for model %s", model)), model, targetPodIP, stream, term
 	}
 
@@ -265,7 +331,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			klog.ErrorS(nil, "no stream option available", "requestID", requestID, "jsonMap", jsonMap)
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-stream-options", RawValue: []byte("stream options not set")}}},
+					Key: HeaderErrorNoStreamOptions, RawValue: []byte("stream options not set")}}},
 				"no stream option available"), model, targetPodIP, stream, term
 		}
 		includeUsage, ok := streamOptions["include_usage"].(bool)
@@ -273,7 +339,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			klog.ErrorS(nil, "no stream with usage option available", "requestID", requestID, "jsonMap", jsonMap)
 			return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-stream-options-include-usage", RawValue: []byte("include usage for stream options not set")}}},
+					Key: HeaderErrorStreamOptionsIncludeUsage, RawValue: []byte("include usage for stream options not set")}}},
 				"no stream with usage option available"), model, targetPodIP, stream, term
 		}
 	}
@@ -288,26 +354,31 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		})
 		klog.InfoS("request start", "requestID", requestID, "model", model)
 	} else {
-		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods, model)
+		message, extErr := getRequestMessage(jsonMap)
+		if err != nil {
+			return extErr, model, targetPodIP, stream, term
+		}
+
+		targetPodIP, err = s.selectTargetPod(ctx, routingStrategy, pods, model, message)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingStrategy, "model", model)
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_ServiceUnavailable,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-error-routing", RawValue: []byte("true")}}},
+					Key: HeaderErrorRouting, RawValue: []byte("true")}}},
 				"error on selecting target pod"), model, targetPodIP, stream, term
 		}
 
 		headers = append(headers,
 			&configPb.HeaderValueOption{
 				Header: &configPb.HeaderValue{
-					Key:      "routing-strategy",
+					Key:      HeaderRoutingStrategy,
 					RawValue: []byte(routingStrategy),
 				},
 			},
 			&configPb.HeaderValueOption{
 				Header: &configPb.HeaderValue{
-					Key:      "target-pod",
+					Key:      HeaderTargetPod,
 					RawValue: []byte(targetPodIP),
 				},
 			})
@@ -334,14 +405,14 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 
 	headers := []*configPb.HeaderValueOption{{
 		Header: &configPb.HeaderValue{
-			Key:      "x-went-into-resp-headers",
+			Key:      HeaderWentIntoReqHeaders,
 			RawValue: []byte("true"),
 		},
 	}}
 	if targetPodIP != "" {
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
-				Key:      "target-pod",
+				Key:      HeaderTargetPod,
 				RawValue: []byte(targetPodIP),
 			},
 		})
@@ -368,8 +439,8 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	var res openai.ChatCompletion
 	var usage openai.CompletionUsage
 	var promptTokens, completionTokens int64
-	headers := []*configPb.HeaderValueOption{}
-	complete := false || hasCompleted
+	var headers []*configPb.HeaderValueOption
+	complete := hasCompleted
 
 	defer func() {
 		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
@@ -396,7 +467,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-streaming-error", RawValue: []byte("true"),
+					Key: HeaderErrorStreaming, RawValue: []byte("true"),
 				}}},
 				err.Error()), complete
 		}
@@ -407,7 +478,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-error-response-unmarshal", RawValue: []byte("true"),
+					Key: HeaderErrorResponseUnmarshal, RawValue: []byte("true"),
 				}}},
 				err.Error()), complete
 		} else if len(res.Model) == 0 {
@@ -417,7 +488,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-					Key: "x-error-response-unknown", RawValue: []byte("true"),
+					Key: HeaderErrorResponseUnknown, RawValue: []byte("true"),
 				}}},
 				err.Error()), complete
 		}
@@ -438,7 +509,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				return generateErrorResponse(
 					envoyTypePb.StatusCode_InternalServerError,
 					[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-						Key: "x-error-update-tpm", RawValue: []byte("true"),
+						Key: HeaderErrorIncrTPM, RawValue: []byte("true"),
 					}}},
 					err.Error()), complete
 			}
@@ -446,13 +517,13 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			headers = append(headers,
 				&configPb.HeaderValueOption{
 					Header: &configPb.HeaderValue{
-						Key:      "x-update-rpm",
+						Key:      HeaderUpdateRPM,
 						RawValue: []byte(fmt.Sprintf("%d", rpm)),
 					},
 				},
 				&configPb.HeaderValueOption{
 					Header: &configPb.HeaderValue{
-						Key:      "x-update-tpm",
+						Key:      HeaderUpdateTPM,
 						RawValue: []byte(fmt.Sprintf("%d", tpm)),
 					},
 				},
@@ -464,7 +535,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			headers = append(headers,
 				&configPb.HeaderValueOption{
 					Header: &configPb.HeaderValue{
-						Key:      "target-pod",
+						Key:      HeaderTargetPod,
 						RawValue: []byte(targetPodIP),
 					},
 				},
@@ -490,10 +561,10 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 
 func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extProcPb.ProcessingResponse, error) {
 	if user.Rpm == 0 {
-		user.Rpm = int64(defaultRPM)
+		user.Rpm = int64(DefaultRPM)
 	}
 	if user.Tpm == 0 {
-		user.Tpm = user.Rpm * int64(defaultTPMMultiplier)
+		user.Tpm = user.Rpm * int64(DefaultTPMMultiplier)
 	}
 
 	code, err := s.checkRPM(ctx, user.Name, user.Rpm)
@@ -501,7 +572,7 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 		return 0, generateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-rpm-error", RawValue: []byte("true"),
+				Key: HeaderErrorRPMExceeded, RawValue: []byte("true"),
 			}}},
 			err.Error()), err
 	}
@@ -511,7 +582,7 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 		return 0, generateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-error-incr-rpm", RawValue: []byte("true"),
+				Key: HeaderErrorIncrRPM, RawValue: []byte("true"),
 			}}},
 			err.Error()), err
 	}
@@ -521,7 +592,7 @@ func (s *Server) checkLimits(ctx context.Context, user utils.User) (int64, *extP
 		return 0, generateErrorResponse(
 			code,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
-				Key: "x-tpm-exceeded", RawValue: []byte("true"),
+				Key: HeaderErrorTPMExceeded, RawValue: []byte("true"),
 			}}},
 			err.Error()), err
 	}
@@ -564,12 +635,14 @@ func (s *Server) checkTPM(ctx context.Context, username string, tpmLimit int64) 
 	return envoyTypePb.StatusCode_OK, nil
 }
 
-func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, pods map[string]*v1.Pod, model string) (string, error) {
+func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, pods map[string]*v1.Pod, model, message string) (string, error) {
 	var route routing.Router
 	switch routingStrategy {
 	case "least-request":
 		route = s.routers[routingStrategy]
 	case "throughput":
+		route = s.routers[routingStrategy]
+	case "prefix-cache":
 		route = s.routers[routingStrategy]
 	case "least-kv-cache":
 		route = s.routers[routingStrategy]
@@ -581,7 +654,7 @@ func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, po
 		route = s.routers["random"]
 	}
 
-	return route.Route(ctx, pods, model)
+	return route.Route(ctx, pods, model, message)
 }
 
 func validateRoutingStrategy(routingStrategy string) bool {
@@ -605,6 +678,22 @@ func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configP
 	}
 }
 
+func getRequestMessage(jsonMap map[string]interface{}) (string, *extProcPb.ProcessingResponse) {
+	messages, ok := jsonMap["messages"]
+	if !ok {
+		return "", generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderErrorRequestBodyProcessing, RawValue: []byte("true")}}},
+			"no messages in the request body")
+	}
+	messagesJSON, err := json.Marshal(messages)
+	if err != nil {
+		return "", generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
+			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{Key: HeaderErrorRequestBodyProcessing, RawValue: []byte("true")}}},
+			"unable to marshal messages from request body")
+	}
+	return string(messagesJSON), nil
+}
+
 // GetRoutingStrategy retrieves the routing strategy from the headers or environment variable
 // It returns the routing strategy value and whether custom routing strategy is enabled.
 func GetRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
@@ -613,7 +702,7 @@ func GetRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
 
 	// Check headers for routing strategy
 	for _, header := range headers {
-		if strings.ToLower(header.Key) == "routing-strategy" {
+		if strings.ToLower(header.Key) == HeaderRoutingStrategy {
 			routingStrategy = string(header.RawValue)
 			routingStrategyEnabled = true
 			break // Prioritize header value over environment variable
@@ -622,7 +711,7 @@ func GetRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
 
 	// If header not set, check environment variable
 	if !routingStrategyEnabled {
-		if value, exists := utils.CheckEnvExists("ROUTING_ALGORITHM"); exists {
+		if value, exists := utils.CheckEnvExists(EnvRoutingAlgorithm); exists {
 			routingStrategy = value
 			routingStrategyEnabled = true
 		}

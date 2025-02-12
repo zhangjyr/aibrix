@@ -4,18 +4,38 @@
 Gateway Routing
 ===============
 
-Gateway provides features such as user configuration, budgeting, dynamically routing user requests to respective model deployment and provides advanced routing strategies for heterogeneous GPU hardware.
+Gateway is developed as external processing service using envoy's gateway extension policy. Gateway is designed to serve LLM requests and provides features such as dynamic model & lora adapter discovery, user configuration for request count & token usage budgeting, streaming and advanced routing strategies such as prefix-cache aware, heterogeneous GPU hardware. 
+
+.. figure:: ../assets/images/gateway-design.png
+  :alt: gateway-design
+  :width: 70%
+  :align: center
 
 Dynamic Routing
 ---------------
 
-Gateway dynamically creates a route for each model deployment without need for manual user configuration.
-During requests, gateway uses model name from the header to route request to respective model deployment. 
-
+First, get the external ip and port for the envoy proxy to access gateway.
 
 .. code-block:: bash
 
-    curl -v http://localhost:8888/v1/chat/completions \
+    kubectl -n envoy-gateway-system get service   
+    NAME                                     TYPE           CLUSTER-IP       EXTERNAL-IP                                           PORT(S)                                   
+    envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   172.19.190.6     10.10.10.10,1000:1000:1000:1000:1000:1000:1000:1000   80:30904/TCP
+
+
+On a model or lora adapter deployment, their respective controllers create a HTTPRoute object which gateway dynamically discovers to forward input user request. Make sure to verify that httproute status as Accepted. 
+
+.. figure:: ../assets/images/httproute.png
+  :alt: httproute
+  :width: 70%
+  :align: center 
+
+
+Sample request, get external ip:port from first step and model-name from deployments label "model.aibrix.ai/name".
+
+.. code-block:: bash
+
+    curl -v http://<ip>:<port>/v1/chat/completions \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer any_key" \
     -d '{
@@ -24,6 +44,27 @@ During requests, gateway uses model name from the header to route request to res
         "temperature": 0.7
     }'
 
+Routing Strategies
+------------------
+
+Below are routing strategies gateway supports
+
+* random: routes request to a random pod.
+* least-request: routes request to a pod with least ongoing request.
+* throughput: routes request to a pod which has processed lowest tokens.
+* prefix-cache: routes request to a pod which already has KV cache for prompt.
+
+.. code-block:: bash
+
+    curl -v http://<ip>:<port>/v1/chat/completions \
+    -H "routing-strategy: least-request" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer any_key" \
+    -d '{
+        "model": "your-model-name",
+        "messages": [{"role": "user", "content": "Say this is a test!"}],
+        "temperature": 0.7
+    }'
 
 Rate Limiting
 -------------
@@ -35,7 +76,7 @@ To set up rate limiting, add the user header in the request, like this:
 
 .. code-block:: bash
 
-    curl -v http://localhost:8888/v1/chat/completions \
+    curl -v http://<ip>:<port>/v1/chat/completions \
     -H "user: your-user-id" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer any_key" \
@@ -50,23 +91,119 @@ To set up rate limiting, add the user header in the request, like this:
     If rate limit support is required, ensure this `user` header is always set in the request. if you do not need rate limit, you do not need to set this header.
 
 
-Routing Strategies
-------------------
+Headers Explanation
+--------------------
 
-Gateway supports three routing strategies right now.
+This sections describes various **custom headers** used in request processing for debugging and routing in the system.
 
-* random: routes request to a random pod.
-* least-request: routes request to a pod with least ongoing request.
-* throughput: routes request to a pod which has processed lowest tokens.
+Target Headers & General Error Headers
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. code-block:: bash
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
 
-    curl -v http://localhost:8888/v1/chat/completions \
-    -H "routing-strategy: least-request" \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer any_key" \
-    -d '{
-        "model": "your-model-name",
-        "messages": [{"role": "user", "content": "Say this is a test!"}],
-        "temperature": 0.7
-    }'
+   * - Header Name
+     - Description
+   * - ``x-went-into-req-headers``
+     - Indicates whether the request headers were processed correctly. Used for debugging header parsing issues.
+   * - ``target-pod``
+     - Specifies the destination pod selected by the routing algorithm. Useful for verifying routing decisions.
+   * - ``routing-strategy``
+     - Defines the routing strategy applied to this request. Ensures correct routing logic is followed.
+
+
+Routing & Error Debugging Headers
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Header Name
+     - Description
+   * - ``x-error-user``
+     - Identifies errors related to incorrect user input. Useful for client-side debugging.
+   * - ``x-error-routing``
+     - Indicates an issue in routing logic, such as failed to select target pod.
+   * - ``x-error-response-unmarshal``
+     - Signals that the response body could not be parsed correctly, often due to an internal issue.
+   * - ``x-error-response-unknown``
+     - Generic error header when no specific issue is identified.
+   * - ``x-error-request-body-processing``
+     - Marks an issue with request body parsing, such as invalid JSON.
+   * - ``x-error-no-model-in-request``
+     - Specifies that no model option was given for the request. Useful for model parameter validation debugging.
+   * - ``x-error-no-model-backends``
+     - Indicates that the requested model exists but has no active backends(pods).
+   * - ``x-error-invalid-routing-strategy``
+     - User passes invalid routing strategy name that AIBrix doesn't support.
+
+
+Streaming Headers
+^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Header Name
+     - Description
+   * - ``x-error-streaming``
+     - Signals an error during a streaming request, helping to diagnose streaming-related failures.
+   * - ``x-error-no-stream-options``
+     - Lists enabled streaming options for the request. Used to debug streaming feature behavior.
+   * - ``x-error-no-stream-options-include-usage``
+     - Indicates whether usage statistics were included in the streaming response.
+
+
+Rate Limiting Headers
+^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Header Name
+     - Description
+   * - ``x-update-tpm``
+     - Indicates that the RPM (requests per minute) count was updated successfully
+   * - ``x-update-rpm``
+     - Indicates that the TPM (tokens per minute) count was updated successfully
+   * - ``x-error-rpm-exceeded``
+     - Signals that the request exceeded the allowed RPM threshold.
+   * - ``x-error-tpm-exceeded``
+     - Signals that the request exceeded the allowed TPM threshold.
+   * - ``x-error-incr-rpm``
+     - Error encountered while increasing the RPM counter.
+   * - ``x-error-incr-tpm``
+     - Error encountered while increasing the TPM counter.
+
+
+Debugging Guidelines
+^^^^^^^^^^^^^^^^^^^^
+
+1. **Identify error headers**
+
+   - If an issue occurs, inspect ``x-error-user``, ``x-error-routing``, ``x-error-response-unmarshal``, and ``x-error-response-unknown`` to determine the root cause.
+   - For request processing issues, check ``x-error-request-body-processing`` and ``x-error-no-model-in-request``.
+
+2. **Verify routing and model assignment**
+
+   - Ensure ``target-pod`` is correctly set to confirm the routing algorithm selected the right backend.
+   - If ``x-error-no-model-in-request`` or ``x-error-no-model-backends`` appears, verify that the request includes a valid model and that the model has active backends.
+   - If ``x-error-invalid-routing-strategy`` is present, confirm that the routing strategy used is supported by AIBrix.
+
+3. **Diagnose streaming issues**
+
+   - If encountering problems with streamed responses, check ``x-error-streaming`` for any reported errors.
+   - Ensure that ``x-error-no-stream-options`` provides the expected streaming options.
+   - If usage statistics are missing from the streaming response, verify ``x-error-no-stream-options-include-usage``.
+
+4. **Investigate rate limiting issues**
+
+   - If the request was blocked, inspect ``x-error-rpm-exceeded`` or ``x-error-tpm-exceeded`` to confirm whether it exceeded rate limits.
+   - If rate limit updates failed, look for ``x-error-incr-rpm`` or ``x-error-incr-tpm``.
+   - Successful rate limit updates will be indicated by ``x-update-rpm`` and ``x-update-tpm``.
+
+By following these steps, you can efficiently debug request processing, routing, streaming, and rate-limiting behavior in the system.

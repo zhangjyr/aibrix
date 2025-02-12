@@ -1,4 +1,4 @@
 resources:
   - ../templates/components
-  - ../heterogeneous/a10
+  - a10
 

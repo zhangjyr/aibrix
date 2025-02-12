@@ -14,4 +14,4 @@ spec:
       endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
       path: /metrics/default/deepseek-coder-7b-a10
       targetMetric: "vllm:deployment_replicas"
-      targetValue: "1"
+      targetValue: "100" # For stable workloads. Set to a fraction to tolerate bursts.

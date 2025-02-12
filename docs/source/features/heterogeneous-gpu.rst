@@ -106,7 +106,7 @@ A simple example of PodAutoscaler spec for v100 GPU is as follows:
           endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
           path: /metrics/default/deepseek-coder-7b-v100 # replace with /metrics/default/[deployment name]
           targetMetric: "vllm:deployment_replicas"
-          targetValue: "1"
+          targetValue: "100" # For stable workloads. Set to a fraction to tolerate bursts.
       scalingStrategy: "KPA"
 
 

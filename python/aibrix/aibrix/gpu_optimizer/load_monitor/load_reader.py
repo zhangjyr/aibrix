@@ -14,6 +14,7 @@
 
 import json
 import logging
+import math
 import re
 from datetime import datetime
 from typing import Any, List, Optional, Protocol, Tuple, Union
@@ -21,7 +22,6 @@ from typing import Any, List, Optional, Protocol, Tuple, Union
 import numpy as np
 import pandas as pd
 from redis import Redis
-import math
 
 logger = logging.getLogger("aibrix.gpu_optimizer.load_reader")
 

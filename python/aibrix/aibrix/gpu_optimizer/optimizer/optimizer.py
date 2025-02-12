@@ -27,7 +27,9 @@ logger = logging.getLogger("aibrix.gpuoptimizer.optimizer")
 
 
 class Optimizer:
-    def __init__(self, gpu_fraction: float, profiles: Optional[Iterable[GPUProfile]] = None):
+    def __init__(
+        self, gpu_fraction: float, profiles: Optional[Iterable[GPUProfile]] = None
+    ):
         self._config = MelangConfig()
         self._workload_distribution_template: Optional[np.ndarray] = None
         self._indexes: Optional[list] = None  # Values ticks of tputs columns and rows

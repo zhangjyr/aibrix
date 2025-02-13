@@ -82,33 +82,8 @@ Now the GPU Optimizer is ready to work. You should observe that the number of wo
 
 A simple example of PodAutoscaler spec for v100 GPU is as follows:
 
-.. code-block:: yaml
-
-    apiVersion: autoscaling.aibrix.ai/v1alpha1
-    kind: PodAutoscaler
-    metadata:
-      name: podautoscaler-deepseek-coder-7b-v100
-      labels:
-        app.kubernetes.io/name: aibrix
-        app.kubernetes.io/managed-by: kustomize
-        kpa.autoscaling.aibrix.ai/scale-down-delay: 0s
-      namespace: default
-    spec:
-      scaleTargetRef:
-        apiVersion: apps/v1
-        kind: Deployment
-        name: deepseek-coder-7b-v100 # replace with corresponding deployment name
-      minReplicas: 0 # Note that minReplicas must be set to be 0, otherwise it will prevent the gpu optimizer to scale down to 0.
-      maxReplicas: 10 # replace with max number of nodes in the cluster
-      metricsSources: 
-        - metricSourceType: domain
-          protocolType: http
-          endpoint: aibrix-gpu-optimizer.aibrix-system.svc.cluster.local:8080
-          path: /metrics/default/deepseek-coder-7b-v100 # replace with /metrics/default/[deployment name]
-          targetMetric: "vllm:deployment_replicas"
-          targetValue: "100" # For stable workloads. Set to a fraction to tolerate bursts.
-      scalingStrategy: "KPA"
-
+.. literalinclude:: ../../../samples/heterogeneous/deepseek-coder-7b-v100-podautoscaler.yaml
+   :language: yaml
 
 Miscellaneous
 -------------

@@ -28,7 +28,7 @@ spec:
     spec:
       initContainers:
         - name: init-c
-          image: busybox:stable
+          image: busybox
           command: ['sh', '-c', 'until echo "ping" | nc aibrix-redis-master 6379 -w 1  | grep -c PONG; do echo waiting for service aibrix-redis-master; sleep 2; done']
       containers:
         - name: metadata-service
@@ -36,6 +36,13 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8090
+          resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi
           env:
             - name: REDIS_HOST
               value: aibrix-redis-master

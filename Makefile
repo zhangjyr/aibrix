@@ -52,6 +52,15 @@ help: ## Display this help.
 
 ##@ Development
 
+GINKGO_VERSION ?= $(shell go list -m -f '{{.Version}}' github.com/onsi/ginkgo/v2)
+INTEGRATION_TARGET ?= ./test/integration/...
+
+GINKGO = $(shell pwd)/bin/ginkgo
+.PHONY: ginkgo
+ginkgo: ## Download ginkgo locally if necessary.
+	test -s $(LOCALBIN)/ginkgo || \
+	GOBIN=$(LOCALBIN) go install github.com/onsi/ginkgo/v2/ginkgo@$(GINKGO_VERSION)
+
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=controller-manager-role crd:maxDescLen=0,generateEmbeddedObjectMeta=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
@@ -59,7 +68,8 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
-	
+	./hack/update-codegen.sh go $(PROJECT_DIR)/bin
+
 .PHONY: update-codegen
 update-codegen:
 	sh ./hack/update-codegen.sh
@@ -79,6 +89,11 @@ vet: ## Run go vet against code.
 .PHONY: test
 test: manifests generate fmt vet envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+
+.PHONY: test-integration
+test-integration: manifests fmt vet envtest ginkgo ## Run integration tests.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+	$(GINKGO) --junit-report=junit.xml --output-dir=$(ARTIFACTS) -v $(INTEGRATION_TARGET)
 
 # Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
 .PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.
@@ -137,7 +152,7 @@ define push_image
 endef
 
 .PHONY: docker-build-all
-docker-build-all: 
+docker-build-all:
 	make -j $(nproc) docker-build-controller-manager docker-build-gateway-plugins docker-build-runtime docker-build-metadata-service ## Build all docker images
 
 .PHONY: docker-build-controller-manager
@@ -157,7 +172,7 @@ docker-build-metadata-service: ## Build docker image with the metadata-service.
 	$(call build_and_tag,metadata-service,Dockerfile.metadata)
 
 .PHONY: docker-push-all
-docker-push-all: 
+docker-push-all:
 	make -j $(nproc) docker-push-controller-manager docker-push-gateway-plugins docker-push-runtime docker-push-metadata-service ## Push all docker images
 
 .PHONY: docker-push-controller-manager
@@ -212,9 +227,9 @@ endif
 .PHONY: install
 install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
 	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply -f -
-    ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization	
+    ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
 	$(KUBECTL) create -k config/dependency
-	
+
 .PHONY: uninstall
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -k config/dependency
@@ -231,9 +246,9 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 .PHONY: install-vke
 install-vke: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
 	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply -f -
-    ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization	
+    ## helm creates objects without aibrix prefix, hence deploying gateway components outside of kustomization
 	$(KUBECTL) create -k config/overlays/vke/dependency
-	
+
 .PHONY: uninstall-vke
 uninstall-vke: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -k config/overlays/vke/dependency
@@ -271,7 +286,7 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.3.0
-CONTROLLER_TOOLS_VERSION ?= v0.14.0
+CONTROLLER_TOOLS_VERSION ?= v0.16.1
 ENVTEST_VERSION ?= release-0.17
 GOLANGCI_LINT_VERSION ?= v1.57.2
 

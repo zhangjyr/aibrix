@@ -18,11 +18,11 @@ limitations under the License.
 package v1alpha1
 
 import (
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
 	v1 "k8s.io/api/core/v1"
 )
 
-// PodAutoscalerSpecApplyConfiguration represents an declarative configuration of the PodAutoscalerSpec type for use
+// PodAutoscalerSpecApplyConfiguration represents a declarative configuration of the PodAutoscalerSpec type for use
 // with apply.
 type PodAutoscalerSpecApplyConfiguration struct {
 	ScaleTargetRef  *v1.ObjectReference                      `json:"scaleTargetRef,omitempty"`
@@ -32,7 +32,7 @@ type PodAutoscalerSpecApplyConfiguration struct {
 	ScalingStrategy *autoscalingv1alpha1.ScalingStrategyType `json:"scalingStrategy,omitempty"`
 }
 
-// PodAutoscalerSpecApplyConfiguration constructs an declarative configuration of the PodAutoscalerSpec type for use with
+// PodAutoscalerSpecApplyConfiguration constructs a declarative configuration of the PodAutoscalerSpec type for use with
 // apply.
 func PodAutoscalerSpec() *PodAutoscalerSpecApplyConfiguration {
 	return &PodAutoscalerSpecApplyConfiguration{}

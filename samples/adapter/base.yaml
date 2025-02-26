@@ -2,20 +2,20 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
-    model.aibrix.ai/name: qwen-coder-15b-instruct # Note: The label value `model.aibrix.ai/name` here must match with the service name.
+    model.aibrix.ai/name: qwen-coder-1-5b-instruct # Note: The label value `model.aibrix.ai/name` here must match with the service name.
     model.aibrix.ai/port: "8000"
     adapter.model.aibrix.ai/enabled: "true"
-  name: qwen-coder-1.5b-instruct
+  name: qwen-coder-1-5b-instruct
   namespace: default
 spec:
   replicas: 1
   selector:
     matchLabels:
-      model.aibrix.ai/name: qwen-coder-1.5b-instruct
+      model.aibrix.ai/name: qwen-coder-1-5b-instruct
   template:
     metadata:
       labels:
-        model.aibrix.ai/name: qwen-coder-1.5b-instruct
+        model.aibrix.ai/name: qwen-coder-1-5b-instruct
     spec:
       containers:
         - command:
@@ -26,15 +26,20 @@ spec:
             - "0.0.0.0"
             - --port
             - "8000"
+            - --uvicorn-log-level
+            - warning
             - --model
             - Qwen/Qwen2.5-Coder-1.5B-Instruct
             - --served-model-name
             # Note: The `--served-model-name` argument value must also match the Service name and the Deployment label `model.aibrix.ai/name`
-            - qwen-coder-1.5b-instruct
+            - qwen-coder-1-5b-instruct
             - --enable-lora
           image: vllm/vllm-openai:v0.7.1
           imagePullPolicy: Always
           name: vllm-openai
+          env:
+            - name: VLLM_ALLOW_RUNTIME_LORA_UPDATING
+              value: "True"
           ports:
             - containerPort: 8000
               protocol: TCP
@@ -44,7 +49,7 @@ spec:
             requests:
               nvidia.com/gpu: "1"
         - name: aibrix-runtime
-          image: aibrix/runtime:v0.2.0-rc.2
+          image: aibrix/runtime:v0.2.0
           command:
             - aibrix_runtime
             - --port
@@ -69,3 +74,30 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    model.aibrix.ai/name: qwen-coder-1-5b-instruct
+    prometheus-discovery: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+  name: qwen-coder-1-5b-instruct # Note: The Service name must match the label value `model.aibrix.ai/name` in the Deployment
+  namespace: default
+spec:
+  ports:
+    - name: serve
+      port: 8000
+      protocol: TCP
+      targetPort: 8000
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    model.aibrix.ai/name: qwen-coder-1-5b-instruct
+  type: ClusterIP

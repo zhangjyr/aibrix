@@ -25,7 +25,9 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,13 +40,13 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
-	"github.com/aibrix/aibrix/pkg/cache"
-	routing "github.com/aibrix/aibrix/pkg/plugins/gateway/algorithms"
-	ratelimiter "github.com/aibrix/aibrix/pkg/plugins/gateway/ratelimiter"
-	"github.com/aibrix/aibrix/pkg/utils"
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	envoyTypePb "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	"github.com/vllm-project/aibrix/pkg/cache"
+	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
+	ratelimiter "github.com/vllm-project/aibrix/pkg/plugins/gateway/ratelimiter"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
@@ -88,30 +90,34 @@ const (
 	EnvRoutingAlgorithm = "ROUTING_ALGORITHM"
 
 	// Router names
-	RouterRandom        = "random"
-	RouterLeastRequest  = "least-request"
-	RouterThroughput    = "throughput"
-	RouterPrefixCache   = "prefix-cache"
-	RouterLeastKvCache  = "least-kv-cache"
-	RouterLeastBusyTime = "least-busy-time"
-	RouterLeastLatency  = "least-latency"
+	RouterRandom             = "random"
+	RouterLeastRequest       = "least-request"
+	RouterThroughput         = "throughput"
+	RouterPrefixCache        = "prefix-cache"
+	RouterPrefixCacheAndLoad = "prefix-cache-and-load"
+	RouterLeastKvCache       = "least-kv-cache"
+	RouterLeastBusyTime      = "least-busy-time"
+	RouterLeastLatency       = "least-latency"
 )
 
 var (
-	routingStrategies = []string{"random", "least-request", "throughput", "prefix-cache", "least-kv-cache", "least-busy-time", "least-latency"}
+	routingStrategies = []string{"random", "least-request", "throughput", "prefix-cache", "prefix-cache-and-load", "least-kv-cache", "least-busy-time", "least-latency"}
 
 	ErrorUnknownResponse = errors.New("unknown response")
+
+	requestBuffers sync.Map // Thread-safe map to track buffers per request
 )
 
 // routerConstructors maps router names to their initialization functions.
 var routerConstructors = map[string]func() (routing.Router, error){
-	RouterRandom:        func() (routing.Router, error) { return routing.NewRandomRouter() },
-	RouterLeastRequest:  func() (routing.Router, error) { return routing.NewLeastRequestRouter() },
-	RouterThroughput:    func() (routing.Router, error) { return routing.NewThroughputRouter() },
-	RouterPrefixCache:   func() (routing.Router, error) { return routing.NewPrefixCacheRouter() },
-	RouterLeastKvCache:  func() (routing.Router, error) { return routing.NewLeastKvCacheRouter() },
-	RouterLeastBusyTime: func() (routing.Router, error) { return routing.NewLeastBusyTimeRouter() },
-	RouterLeastLatency:  func() (routing.Router, error) { return routing.NewLeastExpectedLatencyRouter() },
+	RouterRandom:             func() (routing.Router, error) { return routing.NewRandomRouter() },
+	RouterLeastRequest:       func() (routing.Router, error) { return routing.NewLeastRequestRouter() },
+	RouterThroughput:         func() (routing.Router, error) { return routing.NewThroughputRouter() },
+	RouterPrefixCache:        func() (routing.Router, error) { return routing.NewPrefixCacheRouter() },
+	RouterPrefixCacheAndLoad: func() (routing.Router, error) { return routing.NewPrefixCacheAndLoadRouter() },
+	RouterLeastKvCache:       func() (routing.Router, error) { return routing.NewLeastKvCacheRouter() },
+	RouterLeastBusyTime:      func() (routing.Router, error) { return routing.NewLeastBusyTimeRouter() },
+	RouterLeastLatency:       func() (routing.Router, error) { return routing.NewLeastExpectedLatencyRouter() },
 }
 
 type Server struct {
@@ -168,11 +174,14 @@ func (s *HealthServer) Watch(in *healthPb.HealthCheckRequest, srv healthPb.Healt
 func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var user utils.User
 	var rpm, traceTerm int64
+	var respErrorCode int
 	var model, routingStrategy, targetPodIP string
-	var stream bool
+	var stream, isRespError bool
 	ctx := srv.Context()
 	requestID := uuid.New().String()
 	completed := false
+
+	klog.InfoS("Processing request", "requestID", requestID)
 
 	for {
 		select {
@@ -199,11 +208,16 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			resp, model, targetPodIP, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user, routingStrategy)
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
-			resp = s.HandleResponseHeaders(ctx, requestID, req, targetPodIP)
+			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, req, targetPodIP)
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
-			resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, targetPodIP, stream, traceTerm, completed)
-
+			respBody := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
+			if isRespError {
+				klog.ErrorS(errors.New("request end"), string(respBody.ResponseBody.GetBody()), "requestID", requestID)
+				generateErrorResponse(envoyTypePb.StatusCode(respErrorCode), nil, string(respBody.ResponseBody.GetBody()))
+			} else {
+				resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, targetPodIP, stream, traceTerm, completed)
+			}
 		default:
 			klog.Infof("Unknown Request type %+v\n", v)
 		}
@@ -215,7 +229,6 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 }
 
 func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, utils.User, int64, string) {
-	klog.Info("\n\n")
 	klog.InfoS("-- In RequestHeaders processing ...", "requestID", requestID)
 	var username string
 	var user utils.User
@@ -355,7 +368,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.InfoS("request start", "requestID", requestID, "model", model)
 	} else {
 		message, extErr := getRequestMessage(jsonMap)
-		if err != nil {
+		if extErr != nil {
 			return extErr, model, targetPodIP, stream, term
 		}
 
@@ -400,8 +413,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	}, model, targetPodIP, stream, term
 }
 
-func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, targetPodIP string) *extProcPb.ProcessingResponse {
+func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, targetPodIP string) (*extProcPb.ProcessingResponse, bool, int) {
 	klog.InfoS("-- In ResponseHeaders processing ...", "requestID", requestID)
+	b := req.Request.(*extProcPb.ProcessingRequest_ResponseHeaders)
 
 	headers := []*configPb.HeaderValueOption{{
 		Header: &configPb.HeaderValue{
@@ -418,6 +432,24 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 		})
 	}
 
+	var isProcessingError bool
+	var processingErrorCode int
+	for _, headerValue := range b.ResponseHeaders.Headers.Headers {
+		if headerValue.Key == ":status" {
+			code, _ := strconv.Atoi(string(headerValue.RawValue))
+			if code != 200 {
+				isProcessingError = true
+				processingErrorCode = code
+			}
+		}
+		headers = append(headers, &configPb.HeaderValueOption{
+			Header: &configPb.HeaderValue{
+				Key:      headerValue.Key,
+				RawValue: headerValue.RawValue,
+			},
+		})
+	}
+
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ResponseHeaders{
 			ResponseHeaders: &extProcPb.HeadersResponse{
@@ -429,12 +461,12 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 				},
 			},
 		},
-	}
+	}, isProcessingError, processingErrorCode
 }
 
 func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, rpm int64, model string, targetPodIP string, stream bool, traceTerm int64, hasCompleted bool) (*extProcPb.ProcessingResponse, bool) {
-	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID)
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
+	klog.InfoS("-- In ResponseBody processing ...", "requestID", requestID, "endOfSteam", b.ResponseBody.EndOfStream)
 
 	var res openai.ChatCompletion
 	var usage openai.CompletionUsage
@@ -444,7 +476,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 
 	defer func() {
 		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
-		if !hasCompleted && complete {
+		if !hasCompleted && complete && b.ResponseBody.EndOfStream {
 			s.cache.DoneRequestTrace(requestID, model, promptTokens, completionTokens, traceTerm)
 		}
 	}()
@@ -472,7 +504,30 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				err.Error()), complete
 		}
 	} else {
-		if err := json.Unmarshal(b.ResponseBody.Body, &res); err != nil {
+		// Use request ID as a key to store per-request buffer
+		// Retrieve or create buffer
+		buf, _ := requestBuffers.LoadOrStore(requestID, &bytes.Buffer{})
+		buffer := buf.(*bytes.Buffer)
+		// Append data to per-request buffer
+		buffer.Write(b.ResponseBody.Body)
+
+		if !b.ResponseBody.EndOfStream {
+			// Partial data received, wait for more chunks, we just return a common response here.
+			return &extProcPb.ProcessingResponse{
+				Response: &extProcPb.ProcessingResponse_ResponseBody{
+					ResponseBody: &extProcPb.BodyResponse{
+						Response: &extProcPb.CommonResponse{},
+					},
+				},
+			}, complete
+		}
+
+		// Last part received, process the full response
+		finalBody := buffer.Bytes()
+		// Clean up the buffer after final processing
+		requestBuffers.Delete(requestID)
+
+		if err := json.Unmarshal(finalBody, &res); err != nil {
 			klog.ErrorS(err, "error to unmarshal response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
 			complete = true
 			return generateErrorResponse(
@@ -482,15 +537,19 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 				}}},
 				err.Error()), complete
 		} else if len(res.Model) == 0 {
-			err = ErrorUnknownResponse
-			klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", string(b.ResponseBody.GetBody()))
+			msg := ErrorUnknownResponse.Error()
+			responseBodyContent := string(b.ResponseBody.GetBody())
+			if len(responseBodyContent) != 0 {
+				msg = responseBodyContent
+			}
+			klog.ErrorS(err, "unexpected response", "requestID", requestID, "responseBody", responseBodyContent)
 			complete = true
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_InternalServerError,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: HeaderErrorResponseUnknown, RawValue: []byte("true"),
 				}}},
-				err.Error()), complete
+				msg), complete
 		}
 		// Do not overwrite model, res can be empty.
 		usage = res.Usage
@@ -644,6 +703,8 @@ func (s *Server) selectTargetPod(ctx context.Context, routingStrategy string, po
 		route = s.routers[routingStrategy]
 	case "prefix-cache":
 		route = s.routers[routingStrategy]
+	case "prefix-cache-and-load":
+		route = s.routers[routingStrategy]
 	case "least-kv-cache":
 		route = s.routers[routingStrategy]
 	case "least-busy-time":
@@ -663,6 +724,14 @@ func validateRoutingStrategy(routingStrategy string) bool {
 }
 
 func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configPb.HeaderValueOption, body string) *extProcPb.ProcessingResponse {
+	// Set the Content-Type header to application/json
+	headers = append(headers, &configPb.HeaderValueOption{
+		Header: &configPb.HeaderValue{
+			Key:   "Content-Type",
+			Value: "application/json",
+		},
+	})
+
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_ImmediateResponse{
 			ImmediateResponse: &extProcPb.ImmediateResponse{
@@ -672,7 +741,7 @@ func generateErrorResponse(statusCode envoyTypePb.StatusCode, headers []*configP
 				Headers: &extProcPb.HeaderMutation{
 					SetHeaders: headers,
 				},
-				Body: body,
+				Body: generateErrorMessage(body, int(statusCode)),
 			},
 		},
 	}
@@ -718,4 +787,16 @@ func GetRoutingStrategy(headers []*configPb.HeaderValue) (string, bool) {
 	}
 
 	return routingStrategy, routingStrategyEnabled
+}
+
+// generateErrorMessage constructs a JSON error message using fmt.Sprintf
+func generateErrorMessage(message string, code int) string {
+	errorStruct := map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": message,
+			"code":    code,
+		},
+	}
+	jsonData, _ := json.Marshal(errorStruct)
+	return string(jsonData)
 }

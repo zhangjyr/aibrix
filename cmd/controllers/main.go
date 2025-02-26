@@ -1,5 +1,5 @@
 /*
-Copyright 2024.
+Copyright 2024 The Aibrix Team.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,13 +25,14 @@ import (
 
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-	modelv1alpha1 "github.com/aibrix/aibrix/api/model/v1alpha1"
-	orchestrationv1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
-	"github.com/aibrix/aibrix/pkg/features"
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	modelv1alpha1 "github.com/vllm-project/aibrix/api/model/v1alpha1"
+	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/features"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/vllm-project/aibrix/pkg/cert"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -45,9 +46,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	"github.com/aibrix/aibrix/pkg/cache"
-	"github.com/aibrix/aibrix/pkg/config"
-	"github.com/aibrix/aibrix/pkg/controller"
+	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/controller"
+	apiwebhook "github.com/vllm-project/aibrix/pkg/webhook"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -233,15 +235,20 @@ func main() {
 		cache.NewCache(config, stopCh, nil)
 	}
 
+	certsReady := make(chan struct{})
+
+	if err = cert.CertsManager(mgr, leaderElectionNamespace, certsReady); err != nil {
+		setupLog.Error(err, "unable to setup cert rotation")
+		os.Exit(1)
+	}
+
 	// Initialize controllers
 	controller.Initialize()
 
-	// Kind controller registration is encapsulated inside the pkg/controller/controller.go
-	// So here we can use more clean registration flow and there's no need to change logics in future.
-	if err = controller.SetupWithManager(mgr, runtimeConfig); err != nil {
-		setupLog.Error(err, "unable to setup controller")
-		os.Exit(1)
-	}
+	// Cert won't be ready until manager starts, so start a goroutine here which
+	// will block until the cert is ready before setting up the controllers.
+	// Controllers who register after manager starts will start directly.
+	go setupControllers(mgr, runtimeConfig, certsReady)
 
 	//+kubebuilder:scaffold:builder
 
@@ -257,6 +264,26 @@ func main() {
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
+		os.Exit(1)
+	}
+}
+
+func setupControllers(mgr ctrl.Manager, runtimeConfig config.RuntimeConfig, certsReady chan struct{}) {
+	// The controllers won't work until the webhooks are operating,
+	// and the webhook won't work until the certs are all in places.
+	setupLog.Info("waiting for the cert generation to complete")
+	<-certsReady
+	setupLog.Info("certs ready")
+
+	// Kind controller registration is encapsulated inside the pkg/controller/controller.go
+	// So here we can use more clean registration flow and there's no need to change logics in future.
+	if err := controller.SetupWithManager(mgr, runtimeConfig); err != nil {
+		setupLog.Error(err, "unable to setup controller")
+		os.Exit(1)
+	}
+
+	if err := apiwebhook.SetupBackendRuntimeWebhook(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "Model")
 		os.Exit(1)
 	}
 }

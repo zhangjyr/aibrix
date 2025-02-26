@@ -21,13 +21,13 @@ import (
 	"fmt"
 	"time"
 
-	autoscalingv1alpha1 "github.com/aibrix/aibrix/api/autoscaling/v1alpha1"
-	"github.com/aibrix/aibrix/pkg/config"
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/metrics"
+	autoscalingv1alpha1 "github.com/vllm-project/aibrix/api/autoscaling/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/metrics"
 
-	"github.com/aibrix/aibrix/pkg/controller/podautoscaler/scaler"
-	podutil "github.com/aibrix/aibrix/pkg/utils"
-	podutils "github.com/aibrix/aibrix/pkg/utils"
+	"github.com/vllm-project/aibrix/pkg/controller/podautoscaler/scaler"
+	podutil "github.com/vllm-project/aibrix/pkg/utils"
+	podutils "github.com/vllm-project/aibrix/pkg/utils"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -114,16 +114,14 @@ func filterHPAObject(ctx context.Context, object client.Object) []reconcile.Requ
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// Build raw source for periodical requeue events from event channel
 	reconciler := r.(*PodAutoscalerReconciler)
-	src := &source.Channel{
-		Source: reconciler.eventCh,
-	}
+	src := source.Channel(reconciler.eventCh, &handler.EnqueueRequestForObject{})
 
 	// Create a new controller managed by AIBrix manager, watching for changes to PodAutoscaler objects
 	// and HorizontalPodAutoscaler objects.
 	err := ctrl.NewControllerManagedBy(mgr).
 		For(&autoscalingv1alpha1.PodAutoscaler{}).
 		Watches(&autoscalingv2.HorizontalPodAutoscaler{}, handler.EnqueueRequestsFromMapFunc(filterHPAObject)).
-		WatchesRawSource(src, &handler.EnqueueRequestForObject{}).
+		WatchesRawSource(src).
 		Complete(r)
 
 	klog.InfoS("Added AIBrix pod-autoscaler-controller successfully")

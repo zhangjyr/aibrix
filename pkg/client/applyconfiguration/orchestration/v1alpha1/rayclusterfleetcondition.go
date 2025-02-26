@@ -18,12 +18,12 @@ limitations under the License.
 package v1alpha1
 
 import (
-	v1alpha1 "github.com/aibrix/aibrix/api/orchestration/v1alpha1"
+	v1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// RayClusterFleetConditionApplyConfiguration represents an declarative configuration of the RayClusterFleetCondition type for use
+// RayClusterFleetConditionApplyConfiguration represents a declarative configuration of the RayClusterFleetCondition type for use
 // with apply.
 type RayClusterFleetConditionApplyConfiguration struct {
 	Type               *v1alpha1.RayClusterFleetConditionType `json:"type,omitempty"`
@@ -34,7 +34,7 @@ type RayClusterFleetConditionApplyConfiguration struct {
 	Message            *string                                `json:"message,omitempty"`
 }
 
-// RayClusterFleetConditionApplyConfiguration constructs an declarative configuration of the RayClusterFleetCondition type for use with
+// RayClusterFleetConditionApplyConfiguration constructs a declarative configuration of the RayClusterFleetCondition type for use with
 // apply.
 func RayClusterFleetCondition() *RayClusterFleetConditionApplyConfiguration {
 	return &RayClusterFleetConditionApplyConfiguration{}

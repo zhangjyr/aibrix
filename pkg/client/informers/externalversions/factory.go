@@ -22,11 +22,11 @@ import (
 	sync "sync"
 	time "time"
 
-	versioned "github.com/aibrix/aibrix/pkg/client/clientset/versioned"
-	autoscaling "github.com/aibrix/aibrix/pkg/client/informers/externalversions/autoscaling"
-	internalinterfaces "github.com/aibrix/aibrix/pkg/client/informers/externalversions/internalinterfaces"
-	model "github.com/aibrix/aibrix/pkg/client/informers/externalversions/model"
-	orchestration "github.com/aibrix/aibrix/pkg/client/informers/externalversions/orchestration"
+	versioned "github.com/vllm-project/aibrix/pkg/client/clientset/versioned"
+	autoscaling "github.com/vllm-project/aibrix/pkg/client/informers/externalversions/autoscaling"
+	internalinterfaces "github.com/vllm-project/aibrix/pkg/client/informers/externalversions/internalinterfaces"
+	model "github.com/vllm-project/aibrix/pkg/client/informers/externalversions/model"
+	orchestration "github.com/vllm-project/aibrix/pkg/client/informers/externalversions/orchestration"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -229,6 +229,7 @@ type SharedInformerFactory interface {
 
 	// Start initializes all requested informers. They are handled in goroutines
 	// which run until the stop channel gets closed.
+	// Warning: Start does not block. When run in a go-routine, it will race with a later WaitForCacheSync.
 	Start(stopCh <-chan struct{})
 
 	// Shutdown marks a factory as shutting down. At that point no new

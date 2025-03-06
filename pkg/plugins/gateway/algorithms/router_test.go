@@ -25,66 +25,70 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func podsFromCache(c *cache.Cache) *utils.PodArray {
+	return &utils.PodArray{Pods: c.GetPods()}
+}
 
 func TestNoPods(t *testing.T) {
 	c := cache.Cache{}
 	r1 := randomRouter{}
 	model := ""
-	targetPodIP, err := r1.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err := r1.Route(context.TODO(), podsFromCache(&c), types.NewRouterRequest(model, "", nil))
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 
 	r2 := leastRequestRouter{
 		cache: &c,
 	}
-	targetPodIP, err = r2.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err = r2.Route(context.TODO(), podsFromCache(&c), types.NewRouterRequest(model, "", nil))
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 
 	r3 := throughputRouter{
 		cache: &c,
 	}
-	targetPodIP, err = r3.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err = r3.Route(context.TODO(), podsFromCache(&c), types.NewRouterRequest(model, "", nil))
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 }
 
 func TestWithNoIPPods(t *testing.T) {
-	c := cache.Cache{
-		Pods: map[string]*v1.Pod{
-			"p1": {
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "p1",
-				},
-			},
-			"p2": {
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "p2",
-				},
+	c := cache.NewTestCacheWithPods([]*v1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "p1",
 			},
 		},
-	}
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "p2",
+			},
+		},
+	})
 	model := ""
 
 	r1 := randomRouter{}
-	targetPodIP, err := r1.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err := r1.Route(context.TODO(), podsFromCache(c), types.NewRouterRequest(model, "", nil))
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 
 	r2 := leastRequestRouter{
-		cache: &c,
+		cache: c,
 	}
-	targetPodIP, err = r2.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err = r2.Route(context.TODO(), podsFromCache(c), types.NewRouterRequest(model, "", nil))
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 
 	r3 := throughputRouter{
-		cache: &c,
+		cache: c,
 	}
-	targetPodIP, err = r3.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err = r3.Route(context.TODO(), podsFromCache(c), types.NewRouterRequest(model, "", nil))
 	assert.Empty(t, targetPodIP, "targetPodIP must be empty")
 	assert.Error(t, err, "no pod has IP")
 }
@@ -93,9 +97,9 @@ func TestWithIPPods(t *testing.T) {
 	// two case:
 	// case 1: pod ready
 	// case 2: pod ready & terminating -> we can send request at this moment.
-	c := cache.Cache{
-		Pods: map[string]*v1.Pod{
-			"p1": {
+	c := cache.NewTestCacheWithPodsMetrics(
+		[]*v1.Pod{
+			{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "p1",
 				},
@@ -109,7 +113,7 @@ func TestWithIPPods(t *testing.T) {
 					},
 				},
 			},
-			"p2": {
+			{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:              "p2",
 					DeletionTimestamp: &metav1.Time{Time: time.Now()},
@@ -125,7 +129,7 @@ func TestWithIPPods(t *testing.T) {
 				},
 			},
 		},
-		PodMetrics: map[string]map[string]metrics.MetricValue{
+		map[string]map[string]metrics.MetricValue{
 			"p1": {
 				metrics.NumRequestsRunning:              &metrics.SimpleMetricValue{Value: 5},
 				metrics.NumRequestsWaiting:              &metrics.SimpleMetricValue{Value: 5},
@@ -140,26 +144,25 @@ func TestWithIPPods(t *testing.T) {
 				metrics.AvgPromptThroughputToksPerS:     &metrics.SimpleMetricValue{Value: 15},
 				metrics.AvgGenerationThroughputToksPerS: &metrics.SimpleMetricValue{Value: 2},
 			},
-		},
-	}
+		})
 	model := ""
 
 	r1 := randomRouter{}
-	targetPodIP, err := r1.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err := r1.Route(context.TODO(), podsFromCache(c), types.NewRouterRequest(model, "", nil))
 	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
 	assert.NoError(t, err)
 
 	r2 := leastRequestRouter{
-		cache: &c,
+		cache: c,
 	}
-	targetPodIP, err = r2.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err = r2.Route(context.TODO(), podsFromCache(c), types.NewRouterRequest(model, "", nil))
 	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
 	assert.NoError(t, err)
 
 	r3 := throughputRouter{
-		cache: &c,
+		cache: c,
 	}
-	targetPodIP, err = r3.Route(context.TODO(), c.Pods, model, "")
+	targetPodIP, err = r3.Route(context.TODO(), podsFromCache(c), types.NewRouterRequest(model, "", nil))
 	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
 	assert.NoError(t, err)
 }
@@ -168,13 +171,13 @@ func TestWithIPPods(t *testing.T) {
 func TestSelectRandomPod(t *testing.T) {
 	tests := []struct {
 		name      string
-		pods      map[string]*v1.Pod
+		pods      []*v1.Pod
 		expectErr bool
 	}{
 		{
 			name: "Single ready pod",
-			pods: map[string]*v1.Pod{
-				"pod1": {
+			pods: []*v1.Pod{
+				{
 					Status: v1.PodStatus{
 						PodIP: "10.0.0.1",
 						Conditions: []v1.PodCondition{
@@ -190,8 +193,8 @@ func TestSelectRandomPod(t *testing.T) {
 		},
 		{
 			name: "Multiple ready pods",
-			pods: map[string]*v1.Pod{
-				"pod1": {
+			pods: []*v1.Pod{
+				{
 					Status: v1.PodStatus{
 						PodIP: "10.0.0.1",
 						Conditions: []v1.PodCondition{
@@ -202,7 +205,7 @@ func TestSelectRandomPod(t *testing.T) {
 						},
 					},
 				},
-				"pod2": {
+				{
 					Status: v1.PodStatus{
 						PodIP: "10.0.0.2",
 						Conditions: []v1.PodCondition{
@@ -213,7 +216,7 @@ func TestSelectRandomPod(t *testing.T) {
 						},
 					},
 				},
-				"pod3": {
+				{
 					Status: v1.PodStatus{
 						PodIP: "10.0.0.3",
 						Conditions: []v1.PodCondition{
@@ -229,13 +232,13 @@ func TestSelectRandomPod(t *testing.T) {
 		},
 		{
 			name:      "No pods",
-			pods:      map[string]*v1.Pod{},
+			pods:      []*v1.Pod{},
 			expectErr: true,
 		},
 		{
 			name: "Pods without IP",
-			pods: map[string]*v1.Pod{
-				"pod1": {
+			pods: []*v1.Pod{
+				{
 					Status: v1.PodStatus{PodIP: ""},
 				},
 			},
@@ -248,7 +251,7 @@ func TestSelectRandomPod(t *testing.T) {
 			// Create a new random generator with a fixed seed for consistent test results
 			// Seed randomness for consistent results in tests
 			r := rand.New(rand.NewSource(42))
-			podIP, err := selectRandomPod(tt.pods, r.Intn)
+			chosenPod, err := selectRandomPod(tt.pods, r.Intn)
 			if tt.expectErr {
 				if err == nil {
 					t.Errorf("expected an error but got none")
@@ -257,6 +260,7 @@ func TestSelectRandomPod(t *testing.T) {
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
 				}
+				podIP := chosenPod.Status.PodIP
 				// Verify that the returned pod IP exists in the input map
 				found := false
 				for _, pod := range tt.pods {

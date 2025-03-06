@@ -21,33 +21,36 @@ import (
 	"fmt"
 	"math/rand"
 
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
 
 type randomRouter struct {
 }
 
-func NewRandomRouter() (Router, error) {
+func NewRandomRouter() (types.Router, error) {
 	return randomRouter{}, nil
 }
 
-func (r randomRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
-	var targetPodIP string
-	if len(pods) == 0 {
+func (r randomRouter) Route(ctx context.Context, pods *utils.PodArray, req *types.RouterRequest) (string, error) {
+	var targetPod *v1.Pod
+	if len(pods.Pods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
 	var err error
-	targetPodIP, err = selectRandomPod(pods, rand.Intn)
+	targetPod, err = selectRandomPod(pods.Pods, rand.Intn)
 	if err != nil {
 		return "", err
 	}
 
-	if targetPodIP == "" {
+	if targetPod == nil {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	return targetPodIP + ":" + podMetricPort, nil
+	req.SetTargetPod(targetPod)
+	return req.TargetAddress(), nil
 }
 
 func (r *randomRouter) SubscribedMetrics() []string {

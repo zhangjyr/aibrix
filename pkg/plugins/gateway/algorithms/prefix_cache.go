@@ -23,6 +23,7 @@ import (
 	"strconv"
 
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/prefixcacheindexer"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -55,30 +56,31 @@ type prefixCacheRouter struct {
 	prefixCacheIndexer prefixcacheindexer.PrefixCacheIndexer
 }
 
-func NewPrefixCacheRouter() (Router, error) {
+func NewPrefixCacheRouter() (types.Router, error) {
 	return prefixCacheRouter{
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 	}, nil
 }
 
-func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
-	readyPods := utils.FilterReadyPods(pods)
+func (p prefixCacheRouter) Route(ctx context.Context, pods *utils.PodArray, req *types.RouterRequest) (string, error) {
+	readyPods := utils.FilterRoutablePods(pods.Pods)
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 	if len(readyPods) == 1 {
-		for _, pod := range pods {
-			return getPodAddress(pod.Status.PodIP)
+		for _, pod := range pods.Pods {
+			req.SetTargetPod(pod)
+			return req.TargetAddress(), nil
 		}
 	}
 
-	tokens, err := utils.TokenizeInputText(message)
+	tokens, err := utils.TokenizeInputText(req.Message)
 	if err != nil {
 		return "", err
 	}
 
 	var targetPod *v1.Pod
-	matchedTokens, unMatchedTokens, matchedPods := p.prefixCacheIndexer.MatchPrefix(tokens, model, readyPods)
+	matchedTokens, unMatchedTokens, matchedPods := p.prefixCacheIndexer.MatchPrefix(tokens, req.Model, readyPods)
 	if len(matchedTokens)*100/len(tokens) > prefixCacheMatchThresholdPercent {
 		targetPod = matchedPods[rand.Intn(len(matchedPods))]
 	} else {
@@ -86,7 +88,7 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 		targetPod = readyPods[rand.Intn(len(readyPods))]
 	}
 	if len(unMatchedTokens) > 0 {
-		p.prefixCacheIndexer.AddPrefix(unMatchedTokens, model, targetPod.Name)
+		p.prefixCacheIndexer.AddPrefix(unMatchedTokens, req.Model, targetPod.Name)
 	}
 
 	var matchedPodNames, readyPodNames []string
@@ -97,7 +99,7 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 		readyPodNames = append(readyPodNames, p.Status.PodIP)
 	}
 	klog.InfoS("prefix cache route",
-		"message", message,
+		"message", req.Message,
 		"tokens", tokens,
 		"matched_tokens", matchedTokens,
 		"unmatched_tokens", unMatchedTokens,
@@ -105,5 +107,6 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, m
 		"ready_pods", readyPodNames,
 		"target_pod", targetPod.Status.PodIP)
 
-	return getPodAddress(targetPod.Status.PodIP)
+	req.SetTargetPod(targetPod)
+	return req.TargetAddress(), nil
 }

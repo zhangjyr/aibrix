@@ -46,6 +46,7 @@ const (
 	MaxLora                              = "max_lora"
 	WaitingLoraAdapters                  = "waiting_lora_adapters"
 	RunningLoraAdapters                  = "running_lora_adapters"
+	NormalizedPendings                   = "normalized_pendings"
 )
 
 var (

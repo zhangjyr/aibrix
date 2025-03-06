@@ -21,14 +21,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	crdinformers "github.com/vllm-project/aibrix/pkg/client/informers/externalversions"
+	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
@@ -49,23 +50,30 @@ import (
 
 var once sync.Once
 
+type ModelRouterProvider func(modelName string) (types.Router, error)
+
 // type global
 type Cache struct {
-	mu                sync.RWMutex
-	redisClient       *redis.Client
-	prometheusApi     prometheusv1.API
-	initialized       bool
-	subscribers       []metrics.MetricSubscriber
-	metrics           map[string]interface{}
-	ModelMetrics      map[string]map[string]interface{}
-	Pods              map[string]*v1.Pod
-	PodMetrics        map[string]map[string]metrics.MetricValue            // pod_name: map[metric_name]metric_val
-	PodModelMetrics   map[string]map[string]map[string]metrics.MetricValue // pod_name: map[model_name]map[metric_name]metric_val
-	PodToModelMapping map[string]map[string]struct{}                       // pod_name: map[model_name]struct{}
-	ModelToPodMapping map[string]map[string]*v1.Pod                        // model_name: map[pod_name]*v1.Pod
-	requestTrace      *sync.Map                                            // model_name: RequestTrace
-	numRequestsTraces int32                                                // counter for requestTrace
-	pendingRequests   *sync.Map                                            // model_name: *int32
+	mu            sync.RWMutex
+	redisClient   *redis.Client
+	prometheusApi prometheusv1.API
+	initialized   bool
+	subscribers   []metrics.MetricSubscriber
+	metrics       map[string]interface{}
+	// ModelMetrics        map[string]map[string]interface{}                 // reserved
+	// Pods            map[string]*v1.Pod
+	// PodMetrics      map[string]map[string]metrics.MetricValue            // pod_name: map[metric_name]metric_val
+	// PodModelMetrics map[string]map[string]map[string]metrics.MetricValue // pod_name: map[model_name]map[metric_name]metric_val
+	// PodToModelMapping   utils.SyncMap[string, *Registry[string]]             // pod_name: *Registry or map[model_name]model_name
+	pods                utils.SyncMap[string, *Pod]             // pod_name: *PodMeta
+	modelMetas          utils.SyncMap[string, *Model]           // model_name: *Model
+	requestTrace        *utils.SyncMap[string, *RequestTrace]   // model_name: *RequestTrace
+	deploymentProfiles  utils.SyncMap[string, *ModelGPUProfile] // deployment_name: *ModelGPUProfile
+	numRequestsTraces   int32                                   // counter for requestTrace
+	bufferPod           *Pod
+	bufferModel         *Model
+	modelRouterProvider ModelRouterProvider
+	pendingLoadProvider *PendingLoadProvider
 }
 
 type Block struct {
@@ -74,10 +82,16 @@ type Block struct {
 }
 
 const (
-	modelIdentifier                       = "model.aibrix.ai/name"
+	ModelIdentifier = "model.aibrix.ai/name"
+
 	podPort                               = 8000
 	defaultPodMetricRefreshIntervalInMS   = 50
 	expireWriteRequestTraceIntervalInMins = 10
+
+	// For output predictor
+	maxInputTokens  = 1024 * 1024       // 1M
+	maxOutputTokens = 1024 * 1024       // 1M
+	movingWindow    = 240 * time.Second // keep window same with window size of GPU optimizer.
 )
 
 var (
@@ -149,7 +163,32 @@ func GetCache() (*Cache, error) {
 	return &instance, nil
 }
 
-func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Cache {
+func NewTestCacheWithPods(pods []*v1.Pod) *Cache {
+	c := &Cache{}
+	for pod := range pods {
+		c.addPod(pod)
+	}
+	return c
+}
+
+func NewTestCacheWithPodsMetrics(pods []*v1.Pod, podMetrics map[string]map[string]metrics.MetricValue) *Cache {
+	c := NewTestCacheWithPods(pods)
+	c.pods.Range(func(podName string, metaPod *Pod) bool {
+		if metrics, ok := podMetrics[podName]; ok {
+			for metricName, metric := range metrics {
+				metaPod.Metrics.Store(metricName, metric)
+			}
+		}
+		return true
+	})
+	return c
+}
+
+func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
+	return NewGatewayCache(config, stopCh, nil, nil)
+}
+
+func NewGatewayCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client, modelRouterProvider ModelRouterProvider) *Cache {
 	once.Do(func() {
 		if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
 			panic(err)
@@ -198,17 +237,13 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 		}
 
 		instance = Cache{
-			initialized:       true,
-			redisClient:       redisClient,
-			prometheusApi:     prometheusApi,
-			Pods:              map[string]*v1.Pod{},
-			PodMetrics:        map[string]map[string]metrics.MetricValue{},
-			PodModelMetrics:   map[string]map[string]map[string]metrics.MetricValue{},
-			PodToModelMapping: map[string]map[string]struct{}{},
-			ModelToPodMapping: map[string]map[string]*v1.Pod{},
-			requestTrace:      &sync.Map{},
-			pendingRequests:   &sync.Map{},
+			initialized:         true,
+			redisClient:         redisClient,
+			prometheusApi:       prometheusApi,
+			requestTrace:        &utils.SyncMap[string, *RequestTrace]{},
+			modelRouterProvider: modelRouterProvider,
 		}
+		instance.pendingLoadProvider = newPendingLoadProvider(&instance)
 		if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc:    instance.addPod,
 			UpdateFunc: instance.updatePod,
@@ -270,11 +305,13 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Cl
 				select {
 				case <-traceTicker.C:
 					if atomic.LoadInt32(&instance.numRequestsTraces) == 0 {
+						instance.updateDeploymentProfiles(context.Background())
 						continue
 					}
 					t := time.Now().Unix()
 					roundT := t - t%int64(RequestTraceWriteInterval/time.Second)
 					instance.writeRequestTraceToStorage(roundT)
+					instance.updateDeploymentProfiles(context.Background())
 				case <-stopCh:
 					traceTicker.Stop()
 					return
@@ -292,15 +329,16 @@ func (c *Cache) addPod(obj interface{}) {
 
 	pod := obj.(*v1.Pod)
 	// only track pods with model deployments
-	modelName, ok := pod.Labels[modelIdentifier]
+	modelName, ok := pod.Labels[ModelIdentifier]
 	if !ok {
 		return
 	}
 
-	c.Pods[pod.Name] = pod
-	c.addPodAndModelMappingLocked(pod.Name, modelName)
+	metaPod := c.addPodLocked(pod)
+	c.addPodAndModelMappingLocked(metaPod, modelName)
+
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
-	c.debugInfoLocked()
+	c.debugInfo()
 }
 
 func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
@@ -310,27 +348,32 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
 
-	oldModelName, oldOk := oldPod.Labels[modelIdentifier]
-	newModelName, newOk := newPod.Labels[modelIdentifier]
+	oldModelName, oldOk := oldPod.Labels[ModelIdentifier]
+	newModelName, newOk := newPod.Labels[ModelIdentifier]
 
 	if !oldOk && !newOk {
 		return // No model information to track in either old or new pod
 	}
 
+	// TODO: The logic here is problematic, consider following situations:
+	// 1. Only model name changes (Current implementation messy with pod name, too)
+	// 2. Only pod name changes (Is this possible? If not, no need to remove and readd pods registry)
+	// 3. I believe changes of LORA model names are not handled here.
+
 	// Remove old mappings if present
 	if oldOk {
-		delete(c.Pods, oldPod.Name)
-		c.deletePodAndModelMapping(oldPod.Name, oldModelName)
+		c.deletePodLocked(oldPod.Name)
+		c.deletePodAndModelMappingLocked(oldPod.Name, oldModelName, 1)
 	}
 
 	// Add new mappings if present
 	if newOk {
-		c.Pods[newPod.Name] = newPod
-		c.addPodAndModelMappingLocked(newPod.Name, newModelName)
+		metaPod := c.addPodLocked(newPod)
+		c.addPodAndModelMappingLocked(metaPod, newModelName)
 	}
 
 	klog.V(4).Infof("POD UPDATED: %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
-	c.debugInfoLocked()
+	c.debugInfo()
 }
 
 func (c *Cache) deletePod(obj interface{}) {
@@ -338,23 +381,21 @@ func (c *Cache) deletePod(obj interface{}) {
 	defer c.mu.Unlock()
 
 	pod := obj.(*v1.Pod)
-	_, ok := pod.Labels[modelIdentifier]
+	_, ok := pod.Labels[ModelIdentifier]
 	if !ok {
 		return
 	}
 
 	// delete base model and associated lora models on this pod
-	if models, ok := c.PodToModelMapping[pod.Name]; ok {
-		for modelName := range models {
-			c.deletePodAndModelMapping(pod.Name, modelName)
+	metaPod := c.deletePodLocked(pod.Name)
+	if metaPod != nil {
+		for _, modelName := range metaPod.Models.Array() {
+			c.deletePodAndModelMappingLocked(pod.Name, modelName, 1)
 		}
 	}
-	delete(c.Pods, pod.Name)
-	delete(c.PodMetrics, pod.Name)
-	delete(c.PodModelMetrics, pod.Name)
 
 	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
-	c.debugInfoLocked()
+	c.debugInfo()
 }
 
 func (c *Cache) addModelAdapter(obj interface{}) {
@@ -363,11 +404,11 @@ func (c *Cache) addModelAdapter(obj interface{}) {
 
 	model := obj.(*modelv1alpha1.ModelAdapter)
 	for _, pod := range model.Status.Instances {
-		c.addPodAndModelMappingLocked(pod, model.Name)
+		c.addPodAndModelMappingLockedByName(pod, model.Name)
 	}
 
 	klog.V(4).Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
-	c.debugInfoLocked()
+	c.debugInfo()
 }
 
 func (c *Cache) updateModelAdapter(oldObj interface{}, newObj interface{}) {
@@ -376,17 +417,16 @@ func (c *Cache) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 
 	oldModel := oldObj.(*modelv1alpha1.ModelAdapter)
 	newModel := newObj.(*modelv1alpha1.ModelAdapter)
-
 	for _, pod := range oldModel.Status.Instances {
-		c.deletePodAndModelMapping(pod, oldModel.Name)
+		c.deletePodAndModelMappingLocked(pod, oldModel.Name, 0)
 	}
 
 	for _, pod := range newModel.Status.Instances {
-		c.addPodAndModelMappingLocked(pod, newModel.Name)
+		c.addPodAndModelMappingLockedByName(pod, newModel.Name)
 	}
 
 	klog.V(4).Infof("MODELADAPTER UPDATED. %s/%s %s", oldModel.Namespace, oldModel.Name, newModel.Status.Phase)
-	c.debugInfoLocked()
+	c.debugInfo()
 }
 
 func (c *Cache) deleteModelAdapter(obj interface{}) {
@@ -395,214 +435,235 @@ func (c *Cache) deleteModelAdapter(obj interface{}) {
 
 	model := obj.(*modelv1alpha1.ModelAdapter)
 	for _, pod := range model.Status.Instances {
-		c.deletePodAndModelMapping(pod, model.Name)
+		c.deletePodAndModelMappingLocked(pod, model.Name, 0)
 	}
 
 	klog.V(4).Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
-	c.debugInfoLocked()
+	c.debugInfo()
 }
 
-func (c *Cache) addPodAndModelMappingLocked(podName, modelName string) {
-	pod, ok := c.Pods[podName]
+func (c *Cache) addPodLocked(pod *v1.Pod) *Pod {
+	if c.bufferPod == nil {
+		c.bufferPod = &Pod{
+			Pod:    pod,
+			Models: NewRegistry[string](),
+		}
+	} else {
+		c.bufferPod.Pod = pod
+	}
+	metaPod, loaded := c.pods.LoadOrStore(pod.Name, c.bufferPod)
+	if !loaded {
+		c.bufferModel = nil
+	}
+	return metaPod
+}
+
+func (c *Cache) addPodAndModelMappingLockedByName(podName, modelName string) {
+	pod, ok := c.pods.Load(podName)
 	if !ok {
 		klog.Errorf("pod %s does not exist in internal-cache", podName)
 		return
 	}
 
-	models, ok := c.PodToModelMapping[podName]
-	if !ok {
-		c.PodToModelMapping[podName] = map[string]struct{}{
-			modelName: {},
-		}
-	} else {
-		models[modelName] = struct{}{}
-		c.PodToModelMapping[podName] = models
-	}
-
-	pods, ok := c.ModelToPodMapping[modelName]
-	if !ok {
-		c.ModelToPodMapping[modelName] = map[string]*v1.Pod{
-			podName: pod,
-		}
-	} else {
-		pods[podName] = pod
-		c.ModelToPodMapping[modelName] = pods
-	}
+	c.addPodAndModelMappingLocked(pod, modelName)
 }
 
-func (c *Cache) deletePodAndModelMapping(podName, modelName string) {
-	if models, ok := c.PodToModelMapping[podName]; ok {
-		delete(models, modelName)
-		if len(models) != 0 {
-			c.PodToModelMapping[podName] = models
-		} else {
-			delete(c.PodToModelMapping, podName)
+func (c *Cache) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
+	if c.bufferModel == nil {
+		c.bufferModel = &Model{
+			Pods:            NewRegistryWithArrayProvider(func(arr []*v1.Pod) any { return &utils.PodArray{Pods: arr} }),
+			OutputPredictor: NewSimmpleOutputPredictor(maxInputTokens, maxOutputTokens, movingWindow),
+		}
+	}
+	metaModel, loaded := c.modelMetas.LoadOrStore(modelName, c.bufferModel)
+	if !loaded {
+		c.bufferModel = nil
+		if c.modelRouterProvider != nil {
+			var err error
+			metaModel.QueueRouter, err = c.modelRouterProvider(modelName)
+			if err != nil {
+				klog.Errorf("failed to initialize model-based queue router: %v", err)
+			}
 		}
 	}
 
-	if pods, ok := c.ModelToPodMapping[modelName]; ok {
-		delete(pods, podName)
-		if len(pods) != 0 {
-			c.ModelToPodMapping[modelName] = pods
-		} else {
-			delete(c.ModelToPodMapping, modelName)
-		}
-	}
+	metaPod.Models.Store(modelName, modelName)
+	metaModel.Pods.Store(metaPod.Name, metaPod.Pod)
 }
 
-func (c *Cache) debugInfo() {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	c.debugInfoLocked()
+func (c *Cache) deletePodLocked(podName string) *Pod {
+	metaPod, _ := c.pods.LoadAndDelete(podName)
+	return metaPod
 }
 
-func (c *Cache) debugInfoLocked() {
-	for _, pod := range c.Pods {
-		klog.V(4).Infof("pod: %s, podIP: %v", pod.Name, pod.Status.PodIP)
-	}
-	for podName, models := range c.PodToModelMapping {
-		var modelList string
-		for modelName := range models {
-			modelList += modelName + " "
-		}
-		klog.V(4).Infof("pod: %s, models: %s", podName, modelList)
-	}
-	for modelName, pods := range c.ModelToPodMapping {
-		var podList string
-		for podName := range pods {
-			podList += podName + " "
-		}
-		klog.V(4).Infof("model: %s, pods: %s", modelName, podList)
-	}
-	for podName, metrics := range c.PodMetrics {
-		for metricName, metricVal := range metrics {
-			klog.V(5).Infof("%v_%v_%v", podName, metricName, metricVal)
+// deletePodAndModelMapping delete mappings between pods and model by specified names.
+// If ignoreMapping > 0, podToModel mapping will be ignored.
+// If ignoreMapping < 0, modelToPod mapping will be ignored
+func (c *Cache) deletePodAndModelMappingLocked(podName, modelName string, ignoreMapping int) {
+	if ignoreMapping <= 0 {
+		if metaPod, ok := c.pods.Load(podName); ok {
+			metaPod.Models.Delete(modelName)
+			// PodToModelMapping entry should only be deleted during pod deleting.
 		}
 	}
-	for podName, models := range c.PodModelMetrics {
-		for modelName, metrics := range models {
-			for metricName, metricVal := range metrics {
-				klog.V(5).Infof("%v_%v_%v_%v", podName, modelName, metricName, metricVal)
+
+	if ignoreMapping >= 0 {
+		if meta, ok := c.modelMetas.Load(modelName); ok {
+			meta.Pods.Delete(podName)
+			if meta.Pods.Len() == 0 {
+				c.modelMetas.Delete(modelName)
 			}
 		}
 	}
 }
 
-func (c *Cache) GetPod(podName string) (*v1.Pod, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+func (c *Cache) debugInfo() {
+	c.pods.Range(func(podName string, pod *Pod) bool {
+		klog.V(4).Infof("pod: %s, podIP: %v, models: %s", podName, pod.Status.PodIP, strings.Join(pod.Models.Array(), " "))
+		pod.Metrics.Range(func(metricName string, metricVal metrics.MetricValue) bool {
+			klog.V(5).Infof("%v_%v_%v", podName, metricName, metricVal)
+			return true
+		})
+		pod.ModelMetrics.Range(func(metricName string, metricVal metrics.MetricValue) bool {
+			klog.V(5).Infof("%v_%v_%v", podName, metricName, metricVal)
+			return true
+		})
+		return true
+	})
+	c.modelMetas.Range(func(modelName string, meta *Model) bool {
+		var podList strings.Builder
+		for _, pod := range meta.Pods.Array() {
+			podList.WriteString(pod.Name)
+			podList.WriteByte(' ')
+		}
+		klog.V(4).Infof("model: %s, pods: %v", modelName, podList)
+		return true
+	})
+}
 
-	pod, ok := c.Pods[podName]
+func (c *Cache) GetPod(podName string) (*v1.Pod, error) {
+	metaPod, ok := c.pods.Load(podName)
 	if !ok {
 		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
 	}
 
-	return pod, nil
+	return metaPod.Pod, nil
 }
 
-func (c *Cache) GetPods() map[string]*v1.Pod {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	return c.Pods
+func (c *Cache) GetPods() []*v1.Pod {
+	pods := make([]*v1.Pod, 0, c.pods.Len())
+	c.pods.Range(func(_ string, metaPod *Pod) bool {
+		pods = append(pods, metaPod.Pod)
+		return true
+	})
+	return pods
 }
 
-func (c *Cache) GetPodsForModel(modelName string) (map[string]*v1.Pod, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	podsMap, ok := c.ModelToPodMapping[modelName]
+func (c *Cache) GetPodsForModel(modelName string) (*utils.PodArray, error) {
+	meta, ok := c.modelMetas.Load(modelName)
 	if !ok {
 		return nil, fmt.Errorf("model does not exist in the cache: %s", modelName)
 	}
 
-	return podsMap, nil
+	return meta.Pods.CustomizedArray().(*utils.PodArray), nil
 }
 
-func (c *Cache) GetModelsForPod(podName string) (map[string]struct{}, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	models, ok := c.PodToModelMapping[podName]
+func (c *Cache) GetModelsForPod(podName string) ([]string, error) {
+	metaPod, ok := c.pods.Load(podName)
 	if !ok {
 		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
 	}
 
-	return models, nil
+	return metaPod.Models.Array(), nil
 }
 
 func (c *Cache) CheckModelExists(modelName string) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	_, ok := c.ModelToPodMapping[modelName]
+	_, ok := c.modelMetas.Load(modelName)
 
 	return ok
 }
 
 func (c *Cache) GetPodMetric(podName, metricName string) (metrics.MetricValue, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	podMetrics, ok := c.PodMetrics[podName]
+	metaPod, ok := c.pods.Load(podName)
 	if !ok {
-		return nil, fmt.Errorf("pod does not exist in the podMetrics cache")
+		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
 	}
 
-	metricVal, ok := podMetrics[metricName]
+	return c.getPodMetricImpl(podName, &metaPod.Metrics, metricName)
+}
+
+func (c *Cache) GetPodModelMetric(podName, modelName string, metricName string) (metrics.MetricValue, error) {
+	metaPod, ok := c.pods.Load(podName)
 	if !ok {
-		return nil, fmt.Errorf("no metric available for %v", metricName)
+		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
+	}
+
+	return c.getPodMetricImpl(podName, &metaPod.ModelMetrics, c.getPodModelMetricName(modelName, metricName))
+}
+
+func (c *Cache) getPodMetricImpl(podName string, metricStore *utils.SyncMap[string, metrics.MetricValue], metricName string) (metrics.MetricValue, error) {
+	metricVal, ok := metricStore.Load(metricName)
+	if !ok {
+		return nil, fmt.Errorf("no metric available for %s - %v", podName, metricName)
 	}
 
 	return metricVal, nil
 }
 
-func (c *Cache) GetPodModelMetric(podName, modelName string, metricName string) (metrics.MetricValue, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	podMetrics, ok := c.PodModelMetrics[podName]
+func (c *Cache) GetModelProfileByPod(pod *v1.Pod, modelName string) (*ModelGPUProfile, error) {
+	deploymentName, ok := pod.Labels[utils.DeploymentIdentifier]
 	if !ok {
-		return nil, fmt.Errorf("pod does not exist in the podMetrics cache")
+		// Handle the case where the label is not found (e.g., log an error)
+		return nil, fmt.Errorf("deployment name label not found on pod %s", pod.Name)
 	}
 
-	modelMetrics, ok := podMetrics[modelName]
+	key := ModelGPUProfileKey(modelName, deploymentName)
+	profile, ok := c.deploymentProfiles.Load(key)
 	if !ok {
-		return nil, fmt.Errorf("model does not exist in the podMetrics cache")
+		return nil, fmt.Errorf("profile not available for %s", key)
 	}
 
-	metricVal, ok := modelMetrics[metricName]
+	return profile, nil
+}
+
+func (c *Cache) GetModelProfileByDeploymentName(deploymentName string, modelName string) (*ModelGPUProfile, error) {
+	key := ModelGPUProfileKey(modelName, deploymentName)
+	profile, ok := c.deploymentProfiles.Load(key)
 	if !ok {
-		return nil, fmt.Errorf("no metric available for %v", metricName)
+		return nil, fmt.Errorf("profile not available for %s", key)
 	}
 
-	return metricVal, nil
+	return profile, nil
+}
+
+func (c *Cache) getPodModelMetricName(modelName string, metricName string) string {
+	return fmt.Sprintf("%s/%s", modelName, metricName)
+}
+
+func (c *Cache) setPodMetric(podName string, metricName string, metricValue metrics.MetricValue) {
+
 }
 
 // Update `PodMetrics` and `PodModelMetrics` according to the metric scope
 // TODO: replace in-place metric update podMetrics and podModelMetrics to fresh copy for preventing stale metric keys
-func (c *Cache) updatePodRecordLocked(podName string, modelName string, metricName string, scope metrics.MetricScope, metricValue metrics.MetricValue) error {
+func (c *Cache) updatePodRecord(pod *Pod, modelName string, metricName string, scope metrics.MetricScope, metricValue metrics.MetricValue) error {
 	if scope == metrics.PodMetricScope {
 		if modelName != "" {
 			return fmt.Errorf("modelName should be empty for scope %v", scope)
 		}
-		c.PodMetrics[podName][metricName] = metricValue
+		pod.Metrics.Store(metricName, metricValue)
 	} else if scope == metrics.PodModelMetricScope {
 		if modelName == "" {
 			return fmt.Errorf("modelName should not be empty for scope %v", scope)
 		}
-		if len(c.PodModelMetrics[podName][modelName]) == 0 {
-			c.PodModelMetrics[podName][modelName] = map[string]metrics.MetricValue{}
-		}
-		c.PodModelMetrics[podName][modelName][metricName] = metricValue
+		pod.ModelMetrics.Store(c.getPodModelMetricName(modelName, metricName), metricValue)
 	} else {
 		return fmt.Errorf("scope %v is not supported", scope)
 	}
 	return nil
 }
 
-func (c *Cache) queryUpdatePromQLMetricsLocked(metric metrics.Metric, queryLabels map[string]string, podName string, modelName string, metricName string) error {
+func (c *Cache) queryUpdatePromQLMetrics(metric metrics.Metric, queryLabels map[string]string, pod *Pod, modelName string, metricName string) error {
 	scope := metric.MetricScope
 	query := metrics.BuildQuery(metric.PromQL, queryLabels)
 	// Querying metrics
@@ -617,15 +678,15 @@ func (c *Cache) queryUpdatePromQLMetricsLocked(metric metrics.Metric, queryLabel
 
 	// Update metrics
 	metricValue := &metrics.PrometheusMetricValue{Result: &result}
-	err = c.updatePodRecordLocked(podName, modelName, metricName, scope, metricValue)
+	err = c.updatePodRecord(pod, modelName, metricName, scope, metricValue)
 	if err != nil {
-		return fmt.Errorf("failed to update metrics %s from prometheus %s: %v", metricName, podName, err)
+		return fmt.Errorf("failed to update metrics %s from prometheus %s: %v", metricName, pod.Name, err)
 	}
-	klog.V(5).InfoS("Successfully parsed metrics from prometheus", "metric", metricName, "model", modelName, "PodName", podName, "Port", podPort, "metricValue", metricValue)
+	klog.V(5).InfoS("Successfully parsed metrics from prometheus", "metric", metricName, "model", modelName, "PodName", pod.Name, "Port", podPort, "metricValue", metricValue)
 	return nil
 }
 
-func (c *Cache) updateSimpleMetricFromRawMetricsLocked(pod *v1.Pod, allMetrics map[string]*dto.MetricFamily) {
+func (c *Cache) updateSimpleMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
 	podName := pod.Name
 	for _, metricName := range counterGaugeMetricNames {
 		metric, exists := metrics.Metrics[metricName]
@@ -650,7 +711,7 @@ func (c *Cache) updateSimpleMetricFromRawMetricsLocked(pod *v1.Pod, allMetrics m
 				continue
 			}
 
-			err = c.updatePodRecordLocked(podName, modelName, metricName, scope, &metrics.SimpleMetricValue{Value: metricValue})
+			err = c.updatePodRecord(pod, modelName, metricName, scope, &metrics.SimpleMetricValue{Value: metricValue})
 			if err != nil {
 				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
 				continue
@@ -661,7 +722,7 @@ func (c *Cache) updateSimpleMetricFromRawMetricsLocked(pod *v1.Pod, allMetrics m
 	}
 }
 
-func (c *Cache) updateHistogramMetricFromRawMetricsLocked(pod *v1.Pod, allMetrics map[string]*dto.MetricFamily) {
+func (c *Cache) updateHistogramMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
 	podName := pod.Name
 	for _, metricName := range histogramMetricNames {
 		metric, exists := metrics.Metrics[metricName]
@@ -689,7 +750,7 @@ func (c *Cache) updateHistogramMetricFromRawMetricsLocked(pod *v1.Pod, allMetric
 				Count:   metricValue.Count,
 				Buckets: metricValue.Buckets,
 			}
-			err = c.updatePodRecordLocked(podName, modelName, metricName, scope, histogramValue)
+			err = c.updatePodRecord(pod, modelName, metricName, scope, histogramValue)
 			if err != nil {
 				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", metricName, podName, pod.Status.PodIP, podPort, err)
 				continue
@@ -701,9 +762,7 @@ func (c *Cache) updateHistogramMetricFromRawMetricsLocked(pod *v1.Pod, allMetric
 	}
 }
 
-func (c *Cache) updateQueryLabelMetricFromRawMetricsLocked(pod *v1.Pod, allMetrics map[string]*dto.MetricFamily) {
-	podName := pod.Name
-
+func (c *Cache) updateQueryLabelMetricFromRawMetrics(pod *Pod, allMetrics map[string]*dto.MetricFamily) {
 	for _, labelMetricName := range labelQueryMetricNames {
 		metric, exists := metrics.Metrics[labelMetricName]
 		if !exists {
@@ -720,9 +779,9 @@ func (c *Cache) updateQueryLabelMetricFromRawMetricsLocked(pod *v1.Pod, allMetri
 		for _, familyMetric := range metricFamily.Metric {
 			modelName, _ := metrics.GetLabelValueForKey(familyMetric, "model_name")
 			labelValue, _ := metrics.GetLabelValueForKey(familyMetric, labelMetricName)
-			err := c.updatePodRecordLocked(podName, modelName, labelMetricName, scope, &metrics.LabelValueMetricValue{Value: labelValue})
+			err := c.updatePodRecord(pod, modelName, labelMetricName, scope, &metrics.LabelValueMetricValue{Value: labelValue})
 			if err != nil {
-				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", labelMetricName, podName, pod.Status.PodIP, podPort, err)
+				klog.V(4).Infof("Failed to update metrics %s from pod %s %s %d: %v", labelMetricName, pod.Name, pod.Status.PodIP, podPort, err)
 				continue
 			}
 
@@ -731,7 +790,7 @@ func (c *Cache) updateQueryLabelMetricFromRawMetricsLocked(pod *v1.Pod, allMetri
 	}
 }
 
-func (c *Cache) updateMetricFromPromQLLocked(pod *v1.Pod) {
+func (c *Cache) updateMetricFromPromQL(pod *Pod) {
 	podName := pod.Name
 
 	for _, metricName := range prometheusMetricNames {
@@ -745,16 +804,16 @@ func (c *Cache) updateMetricFromPromQLLocked(pod *v1.Pod) {
 		}
 		scope := metric.MetricScope
 		if scope == metrics.PodMetricScope {
-			err := c.queryUpdatePromQLMetricsLocked(metric, queryLabels, podName, "", metricName)
+			err := c.queryUpdatePromQLMetrics(metric, queryLabels, pod, "", metricName)
 			if err != nil {
 				klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
 				continue
 			}
 		} else if scope == metrics.PodModelMetricScope {
-			if modelNames, ok := c.PodToModelMapping[podName]; ok {
-				for modelName := range modelNames {
+			if pod.Models.Len() > 0 {
+				for _, modelName := range pod.Models.Array() {
 					queryLabels["model_name"] = modelName
-					err := c.queryUpdatePromQLMetricsLocked(metric, queryLabels, podName, modelName, metricName)
+					err := c.queryUpdatePromQLMetrics(metric, queryLabels, pod, modelName, metricName)
 					if err != nil {
 						klog.V(4).Infof("Failed to query and update PromQL metrics: %v", err)
 						continue
@@ -770,46 +829,36 @@ func (c *Cache) updateMetricFromPromQLLocked(pod *v1.Pod) {
 }
 
 func (c *Cache) updatePodMetrics() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	readyPods := utils.FilterReadyPods(c.Pods)
-	if len(readyPods) == 0 {
-		return
-	}
-
-	for _, pod := range readyPods {
-		podName := pod.Name
-		if len(c.PodMetrics[podName]) == 0 {
-			c.PodMetrics[podName] = map[string]metrics.MetricValue{}
-		}
-		if len(c.PodModelMetrics[podName]) == 0 {
-			c.PodModelMetrics[podName] = make(map[string]map[string]metrics.MetricValue)
+	c.pods.Range(func(podName string, metaPod *Pod) bool {
+		if !utils.FilterReadyPod(metaPod.Pod) {
+			// Skip unready pod
+			return true
 		}
 
 		// We should use the primary container port. In the future, we can decide whether to use sidecar container's port
-		url := fmt.Sprintf("http://%s:%d/metrics", pod.Status.PodIP, podPort)
+		url := fmt.Sprintf("http://%s:%d/metrics", metaPod.Status.PodIP, podPort)
 		allMetrics, err := metrics.ParseMetricsURL(url)
 		if err != nil {
 			klog.V(4).Infof("Error parsing metric families: %v\n", err)
 		}
 
 		// parse counterGaugeMetricsNames
-		c.updateSimpleMetricFromRawMetricsLocked(pod, allMetrics)
+		c.updateSimpleMetricFromRawMetrics(metaPod, allMetrics)
 
 		// parse histogramMetrics
-		c.updateHistogramMetricFromRawMetricsLocked(pod, allMetrics)
+		c.updateHistogramMetricFromRawMetrics(metaPod, allMetrics)
 
 		// parse QueryLabel metrics
-		c.updateQueryLabelMetricFromRawMetricsLocked(pod, allMetrics)
+		c.updateQueryLabelMetricFromRawMetrics(metaPod, allMetrics)
 
 		if c.prometheusApi == nil {
 			klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
-			continue
+			return true
 		}
 		// parse prometheus metrics
-		c.updateMetricFromPromQLLocked(pod)
-	}
+		c.updateMetricFromPromQL(metaPod)
+		return true
+	})
 }
 
 func (c *Cache) updateModelMetrics() {
@@ -822,7 +871,7 @@ func (c *Cache) updateModelMetrics() {
 	}
 }
 
-func (c *Cache) AddRequestCount(requestID string, modelName string) (traceTerm int64) {
+func (c *Cache) AddRequestCount(requestID string, modelName string, req *types.RouterRequest) (traceTerm int64) {
 	success := false
 	for {
 		trace := c.getRequestTrace(modelName)
@@ -833,47 +882,51 @@ func (c *Cache) AddRequestCount(requestID string, modelName string) (traceTerm i
 		// In case AddRequest return false, it has been recycled and we want to retry.
 	}
 
-	newPendingCounter := int32(0)
-	pPendingCounter, _ := c.pendingRequests.LoadOrStore(modelName, &newPendingCounter)
-	atomic.AddInt32(pPendingCounter.(*int32), 1)
+	meta, ok := c.modelMetas.Load(modelName)
+	if ok {
+		atomic.AddInt32(&meta.pendingRequests, 1)
+	}
+
+	if req != nil {
+		c.addRequestLoad(req)
+	}
 	return
 }
 
-func (c *Cache) DoneRequestCount(requestID string, modelName string, traceTerm int64) {
-	pPendingCounter, ok := c.pendingRequests.Load(modelName)
+func (c *Cache) DoneRequestCount(requestID string, modelName string, req *types.RouterRequest, traceTerm int64) {
+	if req != nil {
+		c.doneRequestLoad(req)
+	}
+
+	meta, ok := c.modelMetas.Load(modelName)
 	if ok {
-		atomic.AddInt32(pPendingCounter.(*int32), -1)
+		atomic.AddInt32(&meta.pendingRequests, -1)
 	}
 
 	// DoneRequest only works for current term, no need to retry.
 	c.getRequestTrace(modelName).DoneRequest(requestID, traceTerm)
 }
 
-func (c *Cache) AddRequestTrace(requestID string, modelName string, inputTokens, outputTokens int64) {
-	traceKey := c.getTraceKey(inputTokens, outputTokens)
-	for {
-		trace := c.getRequestTrace(modelName)
-		if trace.AddRequestTrace(requestID, traceKey) {
-			break
-		}
-		// In case DoneRequest return false, it has been recycled and we want to retry.
+func (c *Cache) DoneRequestTrace(requestID string, modelName string, req *types.RouterRequest, inputTokens, outputTokens, traceTerm int64) {
+	if req != nil {
+		c.doneRequestLoad(req)
 	}
-}
 
-func (c *Cache) DoneRequestTrace(requestID string, modelName string, inputTokens, outputTokens, traceTerm int64) {
-	pPendingCounter, ok := c.pendingRequests.Load(modelName)
+	meta, ok := c.modelMetas.Load(modelName)
 	if ok {
-		atomic.AddInt32(pPendingCounter.(*int32), -1)
+		atomic.AddInt32(&meta.pendingRequests, -1)
 	}
 
-	traceKey := c.getTraceKey(inputTokens, outputTokens)
+	var traceKey string
 	for {
 		trace := c.getRequestTrace(modelName)
-		if trace.DoneRequestTrace(requestID, traceKey, traceTerm) {
+		if traceKey, ok = trace.DoneRequestTrace(requestID, inputTokens, outputTokens, traceKey, traceTerm); ok {
 			break
 		}
 		// In case DoneRequest return false, it has been recycled and we want to retry.
 	}
+	meta.OutputPredictor.AddTrace(int(inputTokens), int(outputTokens), 1)
+	klog.V(5).Infof("inputTokens: %v, outputTokens: %v, trace key: %s", inputTokens, outputTokens, traceKey)
 }
 
 func (c *Cache) getRequestTrace(modelName string) *RequestTrace {
@@ -884,26 +937,57 @@ func (c *Cache) getRequestTrace(modelName string) *RequestTrace {
 	} else {
 		atomic.AddInt32(&c.numRequestsTraces, 1)
 	}
-	return newer.(*RequestTrace)
+	return newer
 }
 
-func (c *Cache) getTraceKey(inputTokens, outputTokens int64) (traceKey string) {
-	if inputTokens > 0 && outputTokens > 0 {
-		inputIndex := int64(math.Round(math.Log2(float64(inputTokens)) / RequestTracePrecision)) // Round to the nearest precision and convert to int
-		outputIndex := int64(math.Round(math.Log2(float64(outputTokens)) / RequestTracePrecision))
-		traceKey = fmt.Sprintf("%v:%v", inputIndex, outputIndex)
-
-		klog.V(5).Infof("inputTokens: %v, inputIndex: %v, outputTokens: %v, outputIndex: %v",
-			inputTokens, inputIndex, outputTokens, outputIndex)
+func (c *Cache) addRequestLoad(req *types.RouterRequest) {
+	if !req.HasRouted() {
+		klog.Warning("request has not been routed, please route request first")
+		return
 	}
-	return
+	pod := req.TargetPod()
+
+	var err error
+	req.PendingLoad, err = c.pendingLoadProvider.GetConsumption(context.Background(), pod, req)
+	if err != nil {
+		klog.Errorf("error on track request load consumption: %v", err)
+		return
+	}
+
+	metaPod, ok := c.pods.Load(pod.Name)
+	if !ok {
+		klog.Warningf("can't find routing pod: %s", pod.Name)
+		return
+	}
+	utilization := metaPod.pendingLoadUtilization.Add(req.PendingLoad)
+	c.updatePodRecord(metaPod, req.Model, metrics.NormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization})
+}
+
+func (c *Cache) doneRequestLoad(req *types.RouterRequest) {
+	if !req.HasRouted() {
+		klog.Warning("request has not been routed, please route request first")
+		return
+	}
+	pod := req.TargetPod()
+
+	if req.PendingLoad == 0.0 {
+		return
+	}
+
+	metaPod, ok := c.pods.Load(pod.Name)
+	if !ok {
+		klog.Warningf("can't find routing pod: %s", pod.Name)
+		return
+	}
+	utilization := metaPod.pendingLoadUtilization.Add(-req.PendingLoad)
+	c.updatePodRecord(metaPod, req.Model, metrics.NormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization})
 }
 
 func (c *Cache) writeRequestTraceToStorage(roundT int64) {
 	// Save and reset trace context, atomicity is guaranteed.
-	var requestTrace *sync.Map
+	var requestTrace *utils.SyncMap[string, *RequestTrace]
 	numTraces := atomic.LoadInt32(&c.numRequestsTraces)
-	requestTrace, c.requestTrace = c.requestTrace, &sync.Map{}
+	requestTrace, c.requestTrace = c.requestTrace, &utils.SyncMap[string, *RequestTrace]{}
 	numResetTo := int32(0)
 	// TODO: Adding a unit test here.
 	for !atomic.CompareAndSwapInt32(&c.numRequestsTraces, numTraces, numResetTo) {
@@ -912,15 +996,13 @@ func (c *Cache) writeRequestTraceToStorage(roundT int64) {
 		numTraces, numResetTo = updatedNumTraces, updatedNumTraces-numTraces
 	}
 
-	requestTrace.Range(func(iModelName, iTrace any) bool {
-		modelName := iModelName.(string)
-		trace := iTrace.(*RequestTrace)
+	requestTrace.Range(func(modelName string, trace *RequestTrace) bool {
 		requestTrace.Store(modelName, nil) // Simply assign nil instead of delete
 
 		trace.Lock()
 		pending := int32(0)
-		if pCounter, loaded := c.pendingRequests.Load(modelName); loaded {
-			pending = atomic.LoadInt32(pCounter.(*int32))
+		if meta, loaded := c.modelMetas.Load(modelName); loaded {
+			pending = atomic.LoadInt32(&meta.pendingRequests)
 		}
 		traceMap := trace.ToMapLocked(pending)
 		trace.RecycleLocked()
@@ -940,6 +1022,74 @@ func (c *Cache) writeRequestTraceToStorage(roundT int64) {
 	})
 
 	klog.V(5).Infof("writeRequestTraceWithKey: %v", roundT)
+}
+
+func (c *Cache) updateDeploymentProfiles(ctx context.Context) {
+	var cursor uint64
+	var keys []string
+	var err error
+	for {
+		select {
+		case <-ctx.Done():
+			klog.Errorf("quit update deployment profiles due to: %v", ctx.Err())
+			return
+		default:
+		}
+
+		keys, cursor, err = c.redisClient.Scan(ctx, cursor, "aibrix:profile_*", 10).Result() // 10 is the count, adjust as needed.  Use a larger count in production.
+		if err != nil {
+			klog.Errorf("failed to scan deploymet profileds due to: %v", err)
+			return
+		}
+
+		for _, key := range keys {
+			select {
+			case <-ctx.Done():
+				klog.Errorf("quit update deployment profiles due to: %v", ctx.Err())
+				return
+			default:
+			}
+
+			val, err := c.redisClient.Get(ctx, key).Bytes()
+			if err != nil {
+				klog.Warningf("error loading deployment profiles for %s: %v", key, err)
+				continue // Skip to the next key
+			}
+
+			var updated ModelGPUProfile
+			err = updated.Unmarshal(val)
+			if err != nil {
+				klog.Warningf("error unmarshalling deployment profiles for %s: %v, Value: %s", key, err, val)
+				continue // Skip to the next key
+			}
+
+			existed, ok := c.deploymentProfiles.Load(key)
+			if !ok || existed.Created < updated.Created {
+				c.deploymentProfiles.Store(key, &updated)
+			}
+		}
+
+		if cursor == 0 {
+			break // No more keys to scan
+		}
+	}
+}
+
+func (c *Cache) GetOutputPredictor(modelName string) (types.OutputPredictor, error) {
+	if model, ok := c.modelMetas.Load(modelName); ok {
+		return model.OutputPredictor, nil
+	}
+	return nil, fmt.Errorf("model does not exist in the cache: %s", modelName)
+}
+
+func (c *Cache) GetQueueRouter(modelName string) (types.Router, error) {
+	if model, ok := c.modelMetas.Load(modelName); !ok {
+		return nil, fmt.Errorf("model does not exist in the cache: %s", modelName)
+	} else if model.QueueRouter == nil {
+		return nil, fmt.Errorf("queue router not available for model: %s", modelName)
+	} else {
+		return model.QueueRouter, nil
+	}
 }
 
 func (c *Cache) AddSubscriber(subscriber metrics.MetricSubscriber) {

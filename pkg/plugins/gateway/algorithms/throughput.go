@@ -24,6 +24,7 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -33,7 +34,7 @@ type throughputRouter struct {
 	cache *cache.Cache
 }
 
-func NewThroughputRouter() (Router, error) {
+func NewThroughputRouter() (types.Router, error) {
 	c, err := cache.GetCache()
 	if err != nil {
 		return nil, err
@@ -44,26 +45,26 @@ func NewThroughputRouter() (Router, error) {
 	}, nil
 }
 
-func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error) {
-	var targetPodIP string
+func (r throughputRouter) Route(ctx context.Context, pods *utils.PodArray, req *types.RouterRequest) (string, error) {
+	var targetPod *v1.Pod
 	minCount := math.MaxFloat64
 
-	if len(pods) == 0 {
+	if len(pods.Pods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	readyPods := utils.FilterReadyPods(pods)
+	readyPods := utils.FilterRoutablePods(pods.Pods)
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods available for fallback")
 	}
 
 	for _, pod := range readyPods {
-		promptThroughput, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.AvgPromptThroughputToksPerS)
+		promptThroughput, err := r.cache.GetPodModelMetric(pod.Name, req.Model, metrics.AvgPromptThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		generationThroughput, err := r.cache.GetPodModelMetric(pod.Name, model, metrics.AvgGenerationThroughputToksPerS)
+		generationThroughput, err := r.cache.GetPodModelMetric(pod.Name, req.Model, metrics.AvgGenerationThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -76,25 +77,26 @@ func (r throughputRouter) Route(ctx context.Context, pods map[string]*v1.Pod, mo
 
 		if totalThroughput <= minCount {
 			minCount = totalThroughput
-			targetPodIP = pod.Status.PodIP
+			targetPod = pod
 		}
 	}
 
 	// Use fallback if no valid metrics
-	if targetPodIP == "" {
+	if targetPod == nil {
 		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPodIP, err = selectRandomPod(pods, rand.Intn)
+		targetPod, err = selectRandomPod(pods.Pods, rand.Intn)
 		if err != nil {
 			return "", err
 		}
 	}
 
-	if targetPodIP == "" {
+	if targetPod == nil {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	return targetPodIP + ":" + podMetricPort, nil
+	req.SetTargetPod(targetPod)
+	return req.TargetAddress(), nil
 }
 
 func (r *throughputRouter) SubscribedMetrics() []string {

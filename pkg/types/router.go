@@ -14,31 +14,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package routingalgorithms
+package types
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/vllm-project/aibrix/pkg/utils"
-
-	v1 "k8s.io/api/core/v1"
 )
 
 // Router defines the interface for routing logic to select target pods.
 type Router interface {
 	// TODO: add routeContext as a function parameter.
 	// Route returns the target pod
-	Route(ctx context.Context, pods map[string]*v1.Pod, model, message string) (string, error)
-}
-
-// selectRandomPodWithRand selects a random pod from the provided pod map.
-// It returns an error if no ready pods are available.
-func selectRandomPod(pods map[string]*v1.Pod, randomFn func(int) int) (string, error) {
-	readyPods := utils.FilterReadyPods(pods)
-	if len(readyPods) == 0 {
-		return "", fmt.Errorf("no ready pods available for fallback")
-	}
-	randomPod := readyPods[randomFn(len(readyPods))]
-	return randomPod.Status.PodIP, nil
+	Route(ctx context.Context, arr *utils.PodArray, req *RouterRequest) (string, error)
 }

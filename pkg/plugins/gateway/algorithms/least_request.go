@@ -30,6 +30,14 @@ import (
 	"k8s.io/klog/v2"
 )
 
+var (
+	RouterLeastRequest Algorithms = "least-request"
+)
+
+func init() {
+	Register(RouterLeastRequest, func(_ *types.RouterRequest) (types.Router, error) { return NewLeastRequestRouter() })
+}
+
 type leastRequestRouter struct {
 	cache *cache.Cache
 }

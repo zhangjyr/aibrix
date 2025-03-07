@@ -29,6 +29,14 @@ import (
 	"k8s.io/klog/v2"
 )
 
+var (
+	RouterLeastBusyTime Algorithms = "least-busy-time"
+)
+
+func init() {
+	Register(RouterLeastBusyTime, func(*types.RouterRequest) (types.Router, error) { return NewLeastBusyTimeRouter() })
+}
+
 type leastBusyTimeRouter struct {
 	cache *cache.Cache
 }

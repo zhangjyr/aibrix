@@ -23,7 +23,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-// selectRandomPodWithRand selects a random pod from the provided pod map.
+// selectRandomPod selects a random pod from the provided pod map.
 // It returns an error if no ready pods are available.
 func selectRandomPod(pods []*v1.Pod, randomFn func(int) int) (*v1.Pod, error) {
 	readyPods := utils.FilterRoutablePods(pods)

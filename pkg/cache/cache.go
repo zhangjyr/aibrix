@@ -82,8 +82,9 @@ type Block struct {
 }
 
 const (
-	ModelIdentifier = "model.aibrix.ai/name"
-
+	modelIdentifier                       = "model.aibrix.ai/name"
+	nodeType                              = "ray.io/node-type"
+	nodeWorker                            = "worker"
 	podPort                               = 8000
 	defaultPodMetricRefreshIntervalInMS   = 50
 	expireWriteRequestTraceIntervalInMins = 10
@@ -329,8 +330,14 @@ func (c *Cache) addPod(obj interface{}) {
 
 	pod := obj.(*v1.Pod)
 	// only track pods with model deployments
-	modelName, ok := pod.Labels[ModelIdentifier]
+	modelName, ok := pod.Labels[modelIdentifier]
 	if !ok {
+		return
+	}
+	// ignore worker pods
+	nodeType, ok := pod.Labels[nodeType]
+	if ok && nodeType == nodeWorker {
+		klog.InfoS("ignored ray worker pod", "name", pod.Name)
 		return
 	}
 
@@ -348,8 +355,8 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
 
-	oldModelName, oldOk := oldPod.Labels[ModelIdentifier]
-	newModelName, newOk := newPod.Labels[ModelIdentifier]
+	oldModelName, oldOk := oldPod.Labels[modelIdentifier]
+	newModelName, newOk := newPod.Labels[modelIdentifier]
 
 	if !oldOk && !newOk {
 		return // No model information to track in either old or new pod
@@ -364,6 +371,20 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 	if oldOk {
 		c.deletePodLocked(oldPod.Name)
 		c.deletePodAndModelMappingLocked(oldPod.Name, oldModelName, 1)
+	}
+
+	// ignore worker pods
+	nodeType, ok := oldPod.Labels[nodeType]
+	if ok && nodeType == nodeWorker {
+		klog.InfoS("ignored ray worker pod", "name", oldPod.Name)
+		return
+	}
+
+	// ignore worker pods
+	nodeType, ok = newPod.Labels[nodeType]
+	if ok && nodeType == nodeWorker {
+		klog.InfoS("ignored ray worker pod", "name", newPod.Name)
+		return
 	}
 
 	// Add new mappings if present
@@ -381,7 +402,7 @@ func (c *Cache) deletePod(obj interface{}) {
 	defer c.mu.Unlock()
 
 	pod := obj.(*v1.Pod)
-	_, ok := pod.Labels[ModelIdentifier]
+	_, ok := pod.Labels[modelIdentifier]
 	if !ok {
 		return
 	}

@@ -24,7 +24,6 @@ import (
 
 // Router defines the interface for routing logic to select target pods.
 type Router interface {
-	// TODO: add routeContext as a function parameter.
 	// Route returns the target pod
 	Route(ctx context.Context, arr *utils.PodArray, req *RouterRequest) (string, error)
 }

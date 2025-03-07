@@ -30,6 +30,14 @@ import (
 	"k8s.io/klog/v2"
 )
 
+var (
+	RouterThroughput Algorithms = "throughput"
+)
+
+func init() {
+	Register(RouterThroughput, func(*types.RouterRequest) (types.Router, error) { return NewThroughputRouter() })
+}
+
 type throughputRouter struct {
 	cache *cache.Cache
 }

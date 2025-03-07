@@ -27,6 +27,20 @@ import (
 	"k8s.io/klog/v2"
 )
 
+var (
+	RouterQueueRouter Algorithms = "queue"
+)
+
+func init() {
+	Register(RouterQueueRouter, func(req *types.RouterRequest) (types.Router, error) {
+		c, err := cache.GetCache()
+		if err != nil {
+			return nil, err
+		}
+		return c.GetQueueRouter(req.Model)
+	})
+}
+
 type queueRouter struct {
 	router         types.Router
 	queue          utils.GlobalQueue[*types.RouterRequest]

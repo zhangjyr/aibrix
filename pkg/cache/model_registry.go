@@ -21,20 +21,25 @@ import (
 )
 
 type Registry[V any] struct {
-	registry      map[string]V
-	values        []V // Pods cache for quick iteration
-	cacheArr      any
-	cacheProvider func([]V) any
-	mu            sync.RWMutex
+	registry map[string]V
+	values   []V // Pods cache for quick iteration
+	mu       sync.RWMutex
+}
+
+type CustomizedRegistry[V any, A comparable] struct {
+	Registry[V]
+	values         A // Pods cache for quick iteration
+	valuesProvider func([]V) A
 }
 
 func NewRegistry[V any]() *Registry[V] {
 	return &Registry[V]{}
 }
 
-func NewRegistryWithArrayProvider[V any](provider func([]V) any) *Registry[V] {
-	return &Registry[V]{
-		cacheProvider: provider,
+func NewRegistryWithArrayProvider[V any, A comparable](provider func([]V) A) *CustomizedRegistry[V, A] {
+	return &CustomizedRegistry[V, A]{
+		Registry:       Registry[V]{},
+		valuesProvider: provider,
 	}
 }
 
@@ -48,7 +53,12 @@ func (reg *Registry[V]) Delete(key string) {
 
 	delete(reg.registry, key)
 	reg.values = nil
-	reg.cacheArr = nil
+}
+
+func (reg *CustomizedRegistry[V, A]) Delete(key string) {
+	var nilVal A
+	reg.values = nilVal
+	reg.Registry.Delete(key)
 }
 
 func (reg *Registry[V]) Load(key string) (value V, ok bool) {
@@ -69,7 +79,12 @@ func (reg *Registry[V]) Store(key string, value V) {
 
 	reg.registry[key] = value
 	reg.values = append(reg.values, value)
-	reg.cacheArr = nil
+}
+
+func (reg *CustomizedRegistry[V, A]) Store(key string, value V) {
+	var nilVal A
+	reg.values = nilVal
+	reg.Registry.Store(key, value)
 }
 
 func (reg *Registry[V]) Array() (arr []V) {
@@ -78,20 +93,25 @@ func (reg *Registry[V]) Array() (arr []V) {
 		return arr
 	}
 
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+
 	// Reconstruct array
 	arr, _ = reg.updateArrayLocked()
-	return
+	return arr
 }
 
-func (reg *Registry[V]) CustomizedArray() (arr any) {
-	arr = reg.cacheArr
-	if arr != nil {
+func (reg *CustomizedRegistry[V, A]) Array() (arr A) {
+	ret := reg.values
+	if ret != arr { // ret != nil value
 		return arr
 	}
 
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+
 	// Reconstruct array
-	_, arr = reg.updateArrayLocked()
-	return
+	return reg.updateArrayLocked()
 }
 
 func (reg *Registry[V]) Len() int {
@@ -106,7 +126,7 @@ func (reg *Registry[V]) Len() int {
 	return len(reg.registry)
 }
 
-func (reg *Registry[V]) updateArrayLocked() (arr []V, cached any) {
+func (reg *Registry[V]) updateArrayLocked() ([]V, bool) {
 	reconstructed := false
 	if reg.values == nil && reg.registry != nil {
 		reg.values = make([]V, 0, len(reg.registry))
@@ -116,9 +136,14 @@ func (reg *Registry[V]) updateArrayLocked() (arr []V, cached any) {
 		reconstructed = true
 	}
 
-	if reg.cacheProvider != nil && (reconstructed || reg.cacheArr == nil) {
-		reg.cacheArr = reg.cacheProvider(reg.values)
-	}
+	return reg.values, reconstructed
+}
 
-	return reg.values, reg.cacheArr
+func (reg *CustomizedRegistry[V, A]) updateArrayLocked() (val A) {
+	values, reconstructed := reg.Registry.updateArrayLocked()
+	// Unlike slice: nil can be treated as empty []V, we always create empty A even values is nil
+	if reconstructed || reg.values == val { // reg.values == nil val
+		reg.values = reg.valuesProvider(values)
+	}
+	return reg.values
 }

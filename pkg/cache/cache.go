@@ -471,7 +471,7 @@ func (c *Cache) addPodAndModelMappingLockedByName(podName, modelName string) {
 func (c *Cache) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
 	if c.bufferModel == nil {
 		c.bufferModel = &Model{
-			Pods:            NewRegistryWithArrayProvider(func(arr []*v1.Pod) any { return &utils.PodArray{Pods: arr} }),
+			Pods:            NewRegistryWithArrayProvider(func(arr []*v1.Pod) *utils.PodArray { return &utils.PodArray{Pods: arr} }),
 			OutputPredictor: NewSimmpleOutputPredictor(maxInputTokens, maxOutputTokens, movingWindow),
 		}
 	}
@@ -532,7 +532,7 @@ func (c *Cache) debugInfo() {
 	})
 	c.modelMetas.Range(func(modelName string, meta *Model) bool {
 		var podList strings.Builder
-		for _, pod := range meta.Pods.Array() {
+		for _, pod := range meta.Pods.Registry.Array() {
 			podList.WriteString(pod.Name)
 			podList.WriteByte(' ')
 		}
@@ -565,7 +565,7 @@ func (c *Cache) GetPodsForModel(modelName string) (*utils.PodArray, error) {
 		return nil, fmt.Errorf("model does not exist in the cache: %s", modelName)
 	}
 
-	return meta.Pods.CustomizedArray().(*utils.PodArray), nil
+	return meta.Pods.Array(), nil
 }
 
 func (c *Cache) GetModelsForPod(podName string) ([]string, error) {
@@ -638,10 +638,6 @@ func (c *Cache) GetModelProfileByDeploymentName(deploymentName string, modelName
 
 func (c *Cache) getPodModelMetricName(modelName string, metricName string) string {
 	return fmt.Sprintf("%s/%s", modelName, metricName)
-}
-
-func (c *Cache) setPodMetric(podName string, metricName string, metricValue metrics.MetricValue) {
-
 }
 
 // Update `PodMetrics` and `PodModelMetrics` according to the metric scope
@@ -981,6 +977,12 @@ func (c *Cache) doneRequestLoad(req *types.RouterRequest) {
 	}
 	utilization := metaPod.pendingLoadUtilization.Add(-req.PendingLoad)
 	c.updatePodRecord(metaPod, req.Model, metrics.NormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization})
+	// Trigger scheduling by calling QueueRouter.Route with nil input request.
+	if utilization < c.pendingLoadProvider.Cap() {
+		if metaModel, ok := c.modelMetas.Load(req.Model); ok && metaModel.QueueRouter != nil {
+			metaModel.QueueRouter.Route(context.Background(), metaModel.Pods.Array(), nil)
+		}
+	}
 }
 
 func (c *Cache) writeRequestTraceToStorage(roundT int64) {

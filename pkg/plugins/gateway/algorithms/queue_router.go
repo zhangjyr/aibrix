@@ -86,12 +86,17 @@ func (r *queueRouter) Route(ctx context.Context, pods *utils.PodArray, req *type
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
+	if req == nil {
+		r.tryRoute(pods) // Simply trigger a possible dequeue
+		return "", nil   // Result is irrelevant
+	}
+
 	now := time.Now()
 	req.Context = ctx
 	req.RequestTime = now
 	r.queue.Enqueue(req, now)
 
-	r.tryRoute(pods)
+	r.tryRoute(pods) // Simply trigger a possible dequeue
 
 	targetPod := req.TargetPod() // Will wait
 

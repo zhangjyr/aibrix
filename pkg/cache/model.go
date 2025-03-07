@@ -17,11 +17,12 @@ package cache
 
 import (
 	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
 
 type Model struct {
-	Pods            *Registry[*v1.Pod]
+	Pods            *CustomizedRegistry[*v1.Pod, *utils.PodArray]
 	OutputPredictor types.OutputPredictor
 	QueueRouter     types.Router
 

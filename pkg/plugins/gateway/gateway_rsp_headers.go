@@ -27,9 +27,10 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 )
 
-func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, routerReq *types.RouterRequest) (*extProcPb.ProcessingResponse, bool, int) {
+func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest) (*extProcPb.ProcessingResponse, bool, int) {
 	klog.InfoS("-- In ResponseHeaders processing ...", "requestID", requestID)
 	b := req.Request.(*extProcPb.ProcessingRequest_ResponseHeaders)
+	routerCtx, _ := ctx.(*types.RoutingContext)
 
 	headers := []*configPb.HeaderValueOption{{
 		Header: &configPb.HeaderValue{
@@ -37,11 +38,11 @@ func (s *Server) HandleResponseHeaders(ctx context.Context, requestID string, re
 			RawValue: []byte("true"),
 		},
 	}}
-	if routerReq != nil {
+	if routerCtx != nil {
 		headers = append(headers, &configPb.HeaderValueOption{
 			Header: &configPb.HeaderValue{
 				Key:      HeaderTargetPod,
-				RawValue: []byte(routerReq.TargetAddress()),
+				RawValue: []byte(routerCtx.TargetAddress()),
 			},
 		})
 	}

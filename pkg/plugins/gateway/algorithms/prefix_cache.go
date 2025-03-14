@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"math/rand"
 	"strconv"
@@ -34,7 +33,7 @@ var (
 )
 
 func init() {
-	Register(RouterPrefixCache, func(*types.RouterRequest) (types.Router, error) { return NewPrefixCacheRouter() })
+	Register(RouterPrefixCache, func(*types.RoutingContext) (types.Router, error) { return NewPrefixCacheRouter() })
 }
 
 const (
@@ -70,25 +69,25 @@ func NewPrefixCacheRouter() (types.Router, error) {
 	}, nil
 }
 
-func (p prefixCacheRouter) Route(ctx context.Context, pods *utils.PodArray, req *types.RouterRequest) (string, error) {
+func (p prefixCacheRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
 	readyPods := utils.FilterRoutablePods(pods.Pods)
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 	if len(readyPods) == 1 {
 		for _, pod := range pods.Pods {
-			req.SetTargetPod(pod)
-			return req.TargetAddress(), nil
+			ctx.SetTargetPod(pod)
+			return ctx.TargetAddress(), nil
 		}
 	}
 
-	tokens, err := utils.TokenizeInputText(req.Message)
+	tokens, err := utils.TokenizeInputText(ctx.Message)
 	if err != nil {
 		return "", err
 	}
 
 	var targetPod *v1.Pod
-	matchedTokens, unMatchedTokens, matchedPods := p.prefixCacheIndexer.MatchPrefix(tokens, req.Model, readyPods)
+	matchedTokens, unMatchedTokens, matchedPods := p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPods)
 	if len(matchedTokens)*100/len(tokens) > prefixCacheMatchThresholdPercent {
 		targetPod = matchedPods[rand.Intn(len(matchedPods))]
 	} else {
@@ -96,7 +95,7 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods *utils.PodArray, req 
 		targetPod = readyPods[rand.Intn(len(readyPods))]
 	}
 	if len(unMatchedTokens) > 0 {
-		p.prefixCacheIndexer.AddPrefix(unMatchedTokens, req.Model, targetPod.Name)
+		p.prefixCacheIndexer.AddPrefix(unMatchedTokens, ctx.Model, targetPod.Name)
 	}
 
 	var matchedPodNames, readyPodNames []string
@@ -107,14 +106,12 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods *utils.PodArray, req 
 		readyPodNames = append(readyPodNames, p.Status.PodIP)
 	}
 	klog.InfoS("prefix cache route",
-		"message", req.Message,
-		"tokens", tokens,
 		"matched_tokens", matchedTokens,
 		"unmatched_tokens", unMatchedTokens,
 		"matched_pods", matchedPodNames,
 		"ready_pods", readyPodNames,
 		"target_pod", targetPod.Status.PodIP)
 
-	req.SetTargetPod(targetPod)
-	return req.TargetAddress(), nil
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
 }

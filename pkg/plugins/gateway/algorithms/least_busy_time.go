@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"math/rand"
@@ -34,7 +33,7 @@ var (
 )
 
 func init() {
-	Register(RouterLeastBusyTime, func(*types.RouterRequest) (types.Router, error) { return NewLeastBusyTimeRouter() })
+	Register(RouterLeastBusyTime, func(*types.RoutingContext) (types.Router, error) { return NewLeastBusyTimeRouter() })
 }
 
 type leastBusyTimeRouter struct {
@@ -52,7 +51,7 @@ func NewLeastBusyTimeRouter() (types.Router, error) {
 	}, nil
 }
 
-func (r leastBusyTimeRouter) Route(ctx context.Context, pods *utils.PodArray, req *types.RouterRequest) (string, error) {
+func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
 	var targetPod *v1.Pod
 	minBusyTimeRatio := math.MaxFloat64 // <= 1 in general
 
@@ -93,6 +92,6 @@ func (r leastBusyTimeRouter) Route(ctx context.Context, pods *utils.PodArray, re
 		return "", fmt.Errorf("no available pods for request routing")
 	}
 
-	req.SetTargetPod(targetPod)
-	return req.TargetAddress(), nil
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
 }

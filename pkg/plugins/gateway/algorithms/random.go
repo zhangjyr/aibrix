@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"math/rand"
 
@@ -31,7 +30,7 @@ var (
 )
 
 func init() {
-	Register(RouterRandom, func(*types.RouterRequest) (types.Router, error) { return NewRandomRouter() })
+	Register(RouterRandom, func(*types.RoutingContext) (types.Router, error) { return NewRandomRouter() })
 }
 
 type randomRouter struct {
@@ -41,7 +40,7 @@ func NewRandomRouter() (types.Router, error) {
 	return randomRouter{}, nil
 }
 
-func (r randomRouter) Route(ctx context.Context, pods *utils.PodArray, req *types.RouterRequest) (string, error) {
+func (r randomRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
 	var targetPod *v1.Pod
 	if len(pods.Pods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
@@ -57,8 +56,8 @@ func (r randomRouter) Route(ctx context.Context, pods *utils.PodArray, req *type
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	req.SetTargetPod(targetPod)
-	return req.TargetAddress(), nil
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
 }
 
 func (r *randomRouter) SubscribedMetrics() []string {

@@ -189,6 +189,10 @@ func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
 	return NewGatewayCache(config, stopCh, nil, nil)
 }
 
+func NewMetadataCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Cache {
+	return NewGatewayCache(config, stopCh, redisClient, nil)
+}
+
 func NewGatewayCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client, modelRouterProvider ModelRouterProvider) *Cache {
 	once.Do(func() {
 		if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
@@ -589,6 +593,10 @@ func (c *Cache) GetPodsForModel(modelName string) (*utils.PodArray, error) {
 	return meta.Pods.Array(), nil
 }
 
+func (c *Cache) GetModels() []string {
+	return c.modelMetas.Keys()
+}
+
 func (c *Cache) GetModelsForPod(podName string) ([]string, error) {
 	metaPod, ok := c.pods.Load(podName)
 	if !ok {
@@ -888,7 +896,7 @@ func (c *Cache) updateModelMetrics() {
 	}
 }
 
-func (c *Cache) AddRequestCount(requestID string, modelName string, req *types.RouterRequest) (traceTerm int64) {
+func (c *Cache) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64) {
 	success := false
 	for {
 		trace := c.getRequestTrace(modelName)
@@ -904,15 +912,15 @@ func (c *Cache) AddRequestCount(requestID string, modelName string, req *types.R
 		atomic.AddInt32(&meta.pendingRequests, 1)
 	}
 
-	if req != nil {
-		c.addRequestLoad(req)
+	if ctx != nil {
+		c.addRequestLoad(ctx)
 	}
 	return
 }
 
-func (c *Cache) DoneRequestCount(requestID string, modelName string, req *types.RouterRequest, traceTerm int64) {
-	if req != nil {
-		c.doneRequestLoad(req)
+func (c *Cache) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
+	if ctx != nil {
+		c.doneRequestLoad(ctx)
 	}
 
 	meta, ok := c.modelMetas.Load(modelName)
@@ -924,9 +932,9 @@ func (c *Cache) DoneRequestCount(requestID string, modelName string, req *types.
 	c.getRequestTrace(modelName).DoneRequest(requestID, traceTerm)
 }
 
-func (c *Cache) DoneRequestTrace(requestID string, modelName string, req *types.RouterRequest, inputTokens, outputTokens, traceTerm int64) {
-	if req != nil {
-		c.doneRequestLoad(req)
+func (c *Cache) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens, outputTokens, traceTerm int64) {
+	if ctx != nil {
+		c.doneRequestLoad(ctx)
 	}
 
 	meta, ok := c.modelMetas.Load(modelName)
@@ -957,15 +965,15 @@ func (c *Cache) getRequestTrace(modelName string) *RequestTrace {
 	return newer
 }
 
-func (c *Cache) addRequestLoad(req *types.RouterRequest) {
-	if !req.HasRouted() {
+func (c *Cache) addRequestLoad(ctx *types.RoutingContext) {
+	if !ctx.HasRouted() {
 		klog.Warning("request has not been routed, please route request first")
 		return
 	}
-	pod := req.TargetPod()
+	pod := ctx.TargetPod()
 
 	var err error
-	req.PendingLoad, err = c.pendingLoadProvider.GetConsumption(context.Background(), pod, req)
+	ctx.PendingLoad, err = c.pendingLoadProvider.GetConsumption(ctx, pod)
 	if err != nil {
 		klog.Errorf("error on track request load consumption: %v", err)
 		return
@@ -976,18 +984,18 @@ func (c *Cache) addRequestLoad(req *types.RouterRequest) {
 		klog.Warningf("can't find routing pod: %s", pod.Name)
 		return
 	}
-	utilization := metaPod.pendingLoadUtilization.Add(req.PendingLoad)
-	c.updatePodRecord(metaPod, req.Model, metrics.NormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization})
+	utilization := metaPod.pendingLoadUtilization.Add(ctx.PendingLoad)
+	c.updatePodRecord(metaPod, ctx.Model, metrics.NormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization})
 }
 
-func (c *Cache) doneRequestLoad(req *types.RouterRequest) {
-	if !req.HasRouted() {
+func (c *Cache) doneRequestLoad(ctx *types.RoutingContext) {
+	if !ctx.HasRouted() {
 		klog.Warning("request has not been routed, please route request first")
 		return
 	}
-	pod := req.TargetPod()
+	pod := ctx.TargetPod()
 
-	if req.PendingLoad == 0.0 {
+	if ctx.PendingLoad == 0.0 {
 		return
 	}
 
@@ -996,12 +1004,12 @@ func (c *Cache) doneRequestLoad(req *types.RouterRequest) {
 		klog.Warningf("can't find routing pod: %s", pod.Name)
 		return
 	}
-	utilization := metaPod.pendingLoadUtilization.Add(-req.PendingLoad)
-	c.updatePodRecord(metaPod, req.Model, metrics.NormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization})
+	utilization := metaPod.pendingLoadUtilization.Add(-ctx.PendingLoad)
+	c.updatePodRecord(metaPod, ctx.Model, metrics.NormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization})
 	// Trigger scheduling by calling QueueRouter.Route with nil input request.
 	if utilization < c.pendingLoadProvider.Cap() {
-		if metaModel, ok := c.modelMetas.Load(req.Model); ok && metaModel.QueueRouter != nil {
-			metaModel.QueueRouter.Route(context.Background(), metaModel.Pods.Array(), nil)
+		if metaModel, ok := c.modelMetas.Load(ctx.Model); ok && metaModel.QueueRouter != nil {
+			metaModel.QueueRouter.Route(nil, metaModel.Pods.Array())
 		}
 	}
 }

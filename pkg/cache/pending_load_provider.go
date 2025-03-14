@@ -16,8 +16,6 @@ limitations under the License.
 package cache
 
 import (
-	"context"
-
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
@@ -49,13 +47,13 @@ func (p *PendingLoadProvider) Cap() float64 {
 	return 1.0
 }
 
-func (p *PendingLoadProvider) GetConsumption(ctx context.Context, pod *v1.Pod, req *types.RouterRequest) (float64, error) {
-	profile, err := p.Cache().GetModelProfileByPod(pod, req.Model)
+func (p *PendingLoadProvider) GetConsumption(ctx *types.RoutingContext, pod *v1.Pod) (float64, error) {
+	profile, err := p.Cache().GetModelProfileByPod(pod, ctx.Model)
 	if err != nil {
 		return 0.01, err
 	}
 
-	features, err := req.Features()
+	features, err := ctx.Features()
 	if err != nil {
 		return 0.0, err
 	}

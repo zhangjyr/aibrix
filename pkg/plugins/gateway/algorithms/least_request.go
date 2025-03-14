@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"math/rand"
@@ -35,7 +34,7 @@ var (
 )
 
 func init() {
-	Register(RouterLeastRequest, func(_ *types.RouterRequest) (types.Router, error) { return NewLeastRequestRouter() })
+	Register(RouterLeastRequest, func(*types.RoutingContext) (types.Router, error) { return NewLeastRequestRouter() })
 }
 
 type leastRequestRouter struct {
@@ -53,7 +52,7 @@ func NewLeastRequestRouter() (types.Router, error) {
 	}, nil
 }
 
-func (r leastRequestRouter) Route(ctx context.Context, pods *utils.PodArray, req *types.RouterRequest) (string, error) {
+func (r leastRequestRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
 	var targetPod *v1.Pod
 	minCount := math.MaxFloat64
 
@@ -67,17 +66,17 @@ func (r leastRequestRouter) Route(ctx context.Context, pods *utils.PodArray, req
 	}
 
 	for _, pod := range readyPods {
-		runningReq, err := r.cache.GetPodModelMetric(pod.Name, req.Model, metrics.NumRequestsRunning)
+		runningReq, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.NumRequestsRunning)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		waitingReq, err := r.cache.GetPodModelMetric(pod.Name, req.Model, metrics.NumRequestsWaiting)
+		waitingReq, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.NumRequestsWaiting)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		swappedReq, err := r.cache.GetPodModelMetric(pod.Name, req.Model, metrics.NumRequestsSwapped)
+		swappedReq, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.NumRequestsSwapped)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -107,8 +106,8 @@ func (r leastRequestRouter) Route(ctx context.Context, pods *utils.PodArray, req
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	req.SetTargetPod(targetPod)
-	return req.TargetAddress(), nil
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
 }
 
 func (r *leastRequestRouter) SubscribedMetrics() []string {

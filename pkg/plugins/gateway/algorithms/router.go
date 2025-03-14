@@ -42,4 +42,4 @@ func Register(algorithms Algorithms, router routerFunc) {
 var routerRegistry = map[Algorithms]routerFunc{}
 var routerStores = map[Algorithms]any{}
 
-type routerFunc func(*types.RouterRequest) (types.Router, error)
+type routerFunc func(*types.RoutingContext) (types.Router, error)

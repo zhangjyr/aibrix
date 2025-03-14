@@ -17,13 +17,11 @@ limitations under the License.
 package types
 
 import (
-	"context"
-
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 // Router defines the interface for routing logic to select target pods.
 type Router interface {
 	// Route returns the target pod
-	Route(ctx context.Context, arr *utils.PodArray, req *RouterRequest) (string, error)
+	Route(ctx *RoutingContext, arr *utils.PodArray) (string, error)
 }

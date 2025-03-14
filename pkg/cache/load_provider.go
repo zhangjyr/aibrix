@@ -16,7 +16,6 @@ limitations under the License.
 package cache
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/vllm-project/aibrix/pkg/types"
@@ -28,10 +27,10 @@ var ErrorNotSupport = fmt.Errorf("not support")
 // LoadProvider provides an abstraction to get the utilizatin in terms of specified metrics
 type LoadProvider interface {
 	// GetUtilization reads utilization of the pod in terms of the metrics
-	GetUtilization(ctx context.Context, pod *v1.Pod, model string) (float64, error)
+	GetUtilization(ctx *types.RoutingContext, pod *v1.Pod) (float64, error)
 
 	// GetConsumption reads load consumption of the request on specified pod)
-	GetConsumption(ctx context.Context, pod *v1.Pod, req *types.RouterRequest) (float64, error)
+	GetConsumption(ctx *types.RoutingContext, pod *v1.Pod) (float64, error)
 }
 
 // CappedLoadProvider provides an abstraction to get the capacity of specified metrics.
@@ -68,8 +67,8 @@ func (p *CachedLoadProvider) Cache() *Cache {
 	return p.cache
 }
 
-func (p *CachedLoadProvider) GetUtilization(ctx context.Context, pod *v1.Pod, model string) (float64, error) {
-	cached, err := p.cache.GetPodModelMetric(pod.Name, model, p.metricName)
+func (p *CachedLoadProvider) GetUtilization(ctx *types.RoutingContext, pod *v1.Pod) (float64, error) {
+	cached, err := p.cache.GetPodModelMetric(pod.Name, ctx.Model, p.metricName)
 	if err != nil {
 		return 0.0, err
 	}
@@ -77,6 +76,6 @@ func (p *CachedLoadProvider) GetUtilization(ctx context.Context, pod *v1.Pod, mo
 	return cached.GetSimpleValue(), err
 }
 
-func (p *CachedLoadProvider) GetConsumption(ctx context.Context, pod *v1.Pod, req *types.RouterRequest) (float64, error) {
+func (p *CachedLoadProvider) GetConsumption(ctx *types.RoutingContext, pod *v1.Pod) (float64, error) {
 	return 0.0, ErrorNotSupport
 }

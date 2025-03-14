@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"math"
 
@@ -52,7 +51,7 @@ func NewLeastLoadPullingRouter(provider cache.CappedLoadProvider) (types.Router,
 	}, nil
 }
 
-func (r *leastLoadRouter) Route(ctx context.Context, pods *utils.PodArray, req *types.RouterRequest) (string, error) {
+func (r *leastLoadRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
 	if len(pods.Pods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
@@ -69,7 +68,7 @@ func (r *leastLoadRouter) Route(ctx context.Context, pods *utils.PodArray, req *
 			continue
 		}
 
-		util, err := r.provider.GetUtilization(ctx, pod, req.Model)
+		util, err := r.provider.GetUtilization(ctx, pod)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -80,7 +79,7 @@ func (r *leastLoadRouter) Route(ctx context.Context, pods *utils.PodArray, req *
 
 		var consumption float64
 		if r.pulling {
-			consumption, err = r.provider.GetConsumption(ctx, pod, req)
+			consumption, err = r.provider.GetConsumption(ctx, pod)
 			if err != nil {
 				klog.Error(err)
 				continue
@@ -100,6 +99,6 @@ func (r *leastLoadRouter) Route(ctx context.Context, pods *utils.PodArray, req *
 	}
 
 	klog.V(4).Infof("targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
-	req.SetTargetPod(targetPod)
-	return req.TargetAddress(), nil
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
 }

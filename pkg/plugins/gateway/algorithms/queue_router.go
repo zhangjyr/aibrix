@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -32,7 +31,7 @@ var (
 )
 
 func init() {
-	Register(RouterQueueRouter, func(req *types.RouterRequest) (types.Router, error) {
+	Register(RouterQueueRouter, func(req *types.RoutingContext) (types.Router, error) {
 		c, err := cache.GetCache()
 		if err != nil {
 			return nil, err
@@ -43,7 +42,7 @@ func init() {
 
 type queueRouter struct {
 	router         types.Router
-	queue          utils.GlobalQueue[*types.RouterRequest]
+	queue          utils.GlobalQueue[*types.RoutingContext]
 	chRouteTrigger chan *utils.PodArray
 
 	// providers             []*Producer
@@ -61,7 +60,7 @@ type queueRouter struct {
 	// provider CappedLoadProvider
 }
 
-func NewQueueRouter(backend types.Router, queue utils.GlobalQueue[*types.RouterRequest]) (types.Router, error) {
+func NewQueueRouter(backend types.Router, queue utils.GlobalQueue[*types.RoutingContext]) (types.Router, error) {
 	router := &queueRouter{
 		router:         backend,
 		queue:          queue,
@@ -95,27 +94,26 @@ func NewLeastLoadSLORouter(modelName string) (types.Router, error) {
 	return NewQueueRouter(sloQueue, sloQueue)
 }
 
-func (r *queueRouter) Route(ctx context.Context, pods *utils.PodArray, req *types.RouterRequest) (string, error) {
+func (r *queueRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
 	if len(pods.Pods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	if req == nil {
+	if ctx == nil {
 		r.tryRoute(pods) // Simply trigger a possible dequeue
 		return "", nil   // Result is irrelevant
 	}
 
 	now := time.Now()
-	req.Context = ctx
-	req.RequestTime = now
-	r.queue.Enqueue(req, now)
+	ctx.RequestTime = now
+	r.queue.Enqueue(ctx, now)
 
 	r.tryRoute(pods) // Simply trigger a possible dequeue
 
-	targetPod := req.TargetPod() // Will wait
+	targetPod := ctx.TargetPod() // Will wait
 
 	klog.V(4).Infof("targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
-	return req.TargetAddress(), nil
+	return ctx.TargetAddress(), nil
 }
 
 func (r *queueRouter) tryRoute(pods *utils.PodArray) {
@@ -131,20 +129,20 @@ func (r *queueRouter) serve() {
 		pods := <-r.chRouteTrigger
 
 		for {
-			req, err := r.queue.Peek(time.Now(), pods)
-			if req == nil || err != nil {
+			ctx, err := r.queue.Peek(time.Now(), pods)
+			if ctx == nil || err != nil {
 				klog.Errorf("error on peek request queue: %v", err)
 				break
 			}
 
-			_, err = r.router.Route(req.Context, pods, req)
+			_, err = r.router.Route(ctx, pods)
 			// Ignore err
 			if err == nil {
 				// req.SetTargetPod() should have called in Route()
 				dequeued, err := r.queue.Dequeue()
 				if err != nil {
 					klog.Errorf("error on dequeue request queue: %v", err)
-				} else if dequeued != req {
+				} else if dequeued != ctx {
 					klog.Error("unexpected request dequeued")
 				}
 			}

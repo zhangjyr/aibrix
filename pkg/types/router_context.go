@@ -30,8 +30,10 @@ const podMetricPort = "8000"
 
 type RequestFeatures []float64
 
-type RouterRequest struct {
-	Context     context.Context
+// RoutingContext encapsulates the context information required for routing.
+// It can be extended with more fields as needed in the future.
+type RoutingContext struct {
+	context.Context
 	Model       string
 	Message     string
 	RequestTime time.Time
@@ -45,23 +47,23 @@ type RouterRequest struct {
 
 var requestPool = sync.Pool{
 	New: func() any {
-		return &RouterRequest{
+		return &RoutingContext{
 			chTargetPod: make(chan *v1.Pod),
 		}
 	},
 }
 
-func NewRouterRequest(model string, message string, predictor OutputPredictor) *RouterRequest {
-	request := requestPool.Get().(*RouterRequest)
-	request.reset(model, message, predictor)
+func NewRoutingContext(ctx context.Context, model string, message string, predictor OutputPredictor) *RoutingContext {
+	request := requestPool.Get().(*RoutingContext)
+	request.reset(ctx, model, message, predictor)
 	return request
 }
 
-func (r *RouterRequest) Done() {
+func (r *RoutingContext) Delete() {
 	requestPool.Put(r)
 }
 
-func (r *RouterRequest) PromptTokens() ([]int, error) {
+func (r *RoutingContext) PromptTokens() ([]int, error) {
 	if r.tokens == nil {
 		var err error
 		r.tokens, err = utils.TokenizeInputText(r.Message)
@@ -72,7 +74,7 @@ func (r *RouterRequest) PromptTokens() ([]int, error) {
 	return r.tokens, nil
 }
 
-func (r *RouterRequest) PromptLength() (int, error) {
+func (r *RoutingContext) PromptLength() (int, error) {
 	tokens, err := r.PromptTokens()
 	if err != nil {
 		return 0, err
@@ -80,7 +82,7 @@ func (r *RouterRequest) PromptLength() (int, error) {
 	return len(tokens), nil
 }
 
-func (r *RouterRequest) TokenLength() (int, error) {
+func (r *RoutingContext) TokenLength() (int, error) {
 	promptLen, err := r.PromptLength()
 	if err != nil {
 		return 0, err
@@ -93,7 +95,7 @@ func (r *RouterRequest) TokenLength() (int, error) {
 	return r.predictor.Predict(promptLen), nil
 }
 
-func (r *RouterRequest) Features() (RequestFeatures, error) {
+func (r *RoutingContext) Features() (RequestFeatures, error) {
 	promptLen, err := r.PromptLength()
 	if err != nil {
 		return nil, err
@@ -107,7 +109,7 @@ func (r *RouterRequest) Features() (RequestFeatures, error) {
 	return RequestFeatures{float64(outputLen), float64(promptLen)}, nil
 }
 
-func (r *RouterRequest) SetTargetPod(pod *v1.Pod) {
+func (r *RoutingContext) SetTargetPod(pod *v1.Pod) {
 	r.targetPod = pod
 	// Notify possible waiting PodIP() call, abundon if no waiting.
 	select {
@@ -116,7 +118,7 @@ func (r *RouterRequest) SetTargetPod(pod *v1.Pod) {
 	}
 }
 
-func (r *RouterRequest) TargetPod() *v1.Pod {
+func (r *RoutingContext) TargetPod() *v1.Pod {
 	if r.targetPod == nil {
 		r.targetPod = <-r.chTargetPod
 		// Notify next waiting PodIP() call, abundon if no waiting.
@@ -126,19 +128,20 @@ func (r *RouterRequest) TargetPod() *v1.Pod {
 	return r.targetPod
 }
 
-func (r *RouterRequest) TargetAddress() string {
+func (r *RoutingContext) TargetAddress() string {
 	return r.targetAddress(r.TargetPod())
 }
 
-func (r *RouterRequest) HasRouted() bool {
+func (r *RoutingContext) HasRouted() bool {
 	return r.targetPod != nil
 }
 
-func (r *RouterRequest) targetAddress(pod *v1.Pod) string {
+func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
 	return fmt.Sprintf("%v:%v", pod.Status.PodIP, podMetricPort)
 }
 
-func (r *RouterRequest) reset(model string, message string, predictor OutputPredictor) {
+func (r *RoutingContext) reset(ctx context.Context, model string, message string, predictor OutputPredictor) {
+	r.Context = ctx
 	r.Model = model
 	r.Message = message
 	r.tokens = nil

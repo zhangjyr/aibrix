@@ -17,34 +17,59 @@ limitations under the License.
 package metadata
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/gorilla/mux"
 	"github.com/redis/go-redis/v9"
+	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
 
 type httpServer struct {
 	redisClient *redis.Client
+	cache       *cache.Cache
 }
 
 func NewHTTPServer(addr string, redis *redis.Client) *http.Server {
+	c, err := cache.GetCache()
+	if err != nil {
+		panic(err)
+	}
+
 	server := &httpServer{
 		redisClient: redis,
+		cache:       c,
 	}
 	r := mux.NewRouter()
+	// User related handlers
 	r.HandleFunc("/CreateUser", server.createUser).Methods("POST")
 	r.HandleFunc("/ReadUser", server.readUser).Methods("POST")
 	r.HandleFunc("/UpdateUser", server.updateUser).Methods("POST")
 	r.HandleFunc("/DeleteUser", server.deleteUser).Methods("POST")
+	// OpenAI API related handlers
+	r.HandleFunc("/v1/models", server.models).Methods("GET")
 
 	return &http.Server{
 		Addr:    addr,
 		Handler: r,
 	}
+}
+
+// models returns base and lora adapters registered to aibrix control plane
+func (s *httpServer) models(w http.ResponseWriter, r *http.Request) {
+	modelNames := s.cache.GetModels()
+	response := BuildModelsResponse(modelNames)
+	jsonBytes, err := json.Marshal(response)
+	if err != nil {
+		http.Error(w, "error in processing model list", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, "%s", string(jsonBytes))
 }
 
 func (s *httpServer) createUser(w http.ResponseWriter, r *http.Request) {

@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
@@ -37,7 +36,7 @@ func NewPackLoadRouter(provider cache.CappedLoadProvider) (types.Router, error) 
 	}, nil
 }
 
-func (r *packLoadRouter) Route(ctx context.Context, pods *utils.PodArray, req *types.RouterRequest) (string, error) {
+func (r *packLoadRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
 	if len(pods.Pods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
@@ -52,7 +51,7 @@ func (r *packLoadRouter) Route(ctx context.Context, pods *utils.PodArray, req *t
 			continue
 		}
 
-		util, err := r.provider.GetUtilization(ctx, pod, req.Model)
+		util, err := r.provider.GetUtilization(ctx, pod)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -61,7 +60,7 @@ func (r *packLoadRouter) Route(ctx context.Context, pods *utils.PodArray, req *t
 		klog.V(4).Infof("pod: %v, podIP: %v, util: %.2f",
 			pod.Name, pod.Status.PodIP, util)
 
-		consumption, err := r.provider.GetConsumption(ctx, pod, req)
+		consumption, err := r.provider.GetConsumption(ctx, pod)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -80,6 +79,6 @@ func (r *packLoadRouter) Route(ctx context.Context, pods *utils.PodArray, req *t
 	}
 
 	klog.V(4).Infof("targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
-	req.SetTargetPod(targetPod)
-	return req.TargetAddress(), nil
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
 }

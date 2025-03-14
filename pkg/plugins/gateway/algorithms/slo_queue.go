@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"sort"
@@ -35,7 +34,7 @@ const (
 )
 
 type candidateRouterRequest struct {
-	*types.RouterRequest
+	*types.RoutingContext
 	SubKey     string
 	ProfileKey string
 	Rank       float64
@@ -45,7 +44,7 @@ type SLOQueue struct {
 	types.Router
 
 	modelName string
-	subs      utils.SyncMap[string, *utils.SimpleQueue[*types.RouterRequest]]
+	subs      utils.SyncMap[string, *utils.SimpleQueue[*types.RoutingContext]]
 	features  utils.SyncMap[string, types.RequestFeatures]
 	subpool   sync.Pool
 
@@ -59,13 +58,13 @@ func NewSLOQueue(base types.Router, modelName string) (router *SLOQueue) {
 		Router:    base,
 		modelName: modelName,
 	}
-	router.subpool.New = func() any { return &utils.SimpleQueue[*types.RouterRequest]{} }
+	router.subpool.New = func() any { return &utils.SimpleQueue[*types.RoutingContext]{} }
 	router.expandDequeueCandidatesLocked(10) // Arbitarily reserve 10 slots
 	return router
 }
 
-func (q *SLOQueue) Enqueue(c *types.RouterRequest, currentTime time.Time) error {
-	newQueue := q.subpool.Get().(*utils.SimpleQueue[*types.RouterRequest])
+func (q *SLOQueue) Enqueue(c *types.RoutingContext, currentTime time.Time) error {
+	newQueue := q.subpool.Get().(*utils.SimpleQueue[*types.RoutingContext])
 	features, err := c.Features()
 	if err != nil {
 		return err
@@ -82,7 +81,7 @@ func (q *SLOQueue) Enqueue(c *types.RouterRequest, currentTime time.Time) error 
 	return nil
 }
 
-func (q *SLOQueue) Peek(currentTime time.Time, pods *utils.PodArray) (req *types.RouterRequest, err error) {
+func (q *SLOQueue) Peek(currentTime time.Time, pods *utils.PodArray) (req *types.RoutingContext, err error) {
 	// Most implementation goes here.
 
 	// Dedup deployments
@@ -103,7 +102,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods *utils.PodArray) (req *types
 
 	// Refill candidates
 	q.dequeueCandidates = q.dequeueCandidates[:0]
-	q.subs.Range(func(key string, sub *utils.SimpleQueue[*types.RouterRequest]) bool {
+	q.subs.Range(func(key string, sub *utils.SimpleQueue[*types.RoutingContext]) bool {
 		if sub.Len() > 0 {
 			r, _ := sub.Peek(currentTime, pods)
 			// Reuse a dequeue candidate
@@ -111,7 +110,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods *utils.PodArray) (req *types
 			q.validateDequeueCandidatesLocked(idx + 1)
 			q.dequeueCandidates = q.dequeueCandidates[:idx+1]
 			// Reset values
-			q.dequeueCandidates[idx].RouterRequest = req
+			q.dequeueCandidates[idx].RoutingContext = req
 			q.dequeueCandidates[idx].SubKey = key
 			q.dequeueCandidates[idx].ProfileKey = ""
 			// Use a relaxer SLO
@@ -144,7 +143,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods *utils.PodArray) (req *types
 	sort.Slice(q.dequeueCandidates, func(i, j int) bool {
 		// Keep original order for no slo violation
 		if q.dequeueCandidates[i].Rank < 0 && q.dequeueCandidates[j].Rank < 0 {
-			return q.dequeueCandidates[i].RouterRequest.RequestTime.Before(q.dequeueCandidates[j].RouterRequest.RequestTime)
+			return q.dequeueCandidates[i].RoutingContext.RequestTime.Before(q.dequeueCandidates[j].RoutingContext.RequestTime)
 		} else {
 			return q.higherRank(q.dequeueCandidates[i].Rank, q.dequeueCandidates[j].Rank) > 0
 		}
@@ -155,19 +154,19 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods *utils.PodArray) (req *types
 	for _, candidate := range q.dequeueCandidates {
 		q.lastSubKey = candidate.SubKey
 		if monogenousGPURouting {
-			q.lastPodCandidate, _ = q.Router.Route(candidate.Context, &utils.PodArray{Pods: pods.PodsByDeployments(candidate.ProfileKey)}, candidate.RouterRequest)
+			q.lastPodCandidate, _ = q.Router.Route(candidate.RoutingContext, &utils.PodArray{Pods: pods.PodsByDeployments(candidate.ProfileKey)})
 		} else {
-			q.lastPodCandidate, _ = q.Router.Route(candidate.Context, pods, candidate.RouterRequest)
+			q.lastPodCandidate, _ = q.Router.Route(candidate.RoutingContext, pods)
 		}
 		if len(q.lastPodCandidate) != 0 {
-			return candidate.RouterRequest, nil
+			return candidate.RoutingContext, nil
 		}
 	}
 
 	return nil, nil
 }
 
-func (q *SLOQueue) Dequeue() (*types.RouterRequest, error) {
+func (q *SLOQueue) Dequeue() (*types.RoutingContext, error) {
 	if len(q.lastPodCandidate) == 0 {
 		return nil, fmt.Errorf("call SLOQueue.Peek first")
 	}
@@ -178,14 +177,14 @@ func (q *SLOQueue) Dequeue() (*types.RouterRequest, error) {
 }
 
 func (q *SLOQueue) Len() (total int) {
-	q.subs.Range(func(_ string, sub *utils.SimpleQueue[*types.RouterRequest]) bool {
+	q.subs.Range(func(_ string, sub *utils.SimpleQueue[*types.RoutingContext]) bool {
 		total += sub.Len()
 		return true
 	})
 	return
 }
 
-func (q *SLOQueue) Route(ctx context.Context, pods *utils.PodArray, req *types.RouterRequest) (podIP string, err error) {
+func (q *SLOQueue) Route(ctx *types.RoutingContext, pods *utils.PodArray) (podIP string, err error) {
 	if len(q.lastPodCandidate) == 0 {
 		return "", fmt.Errorf("call SLOQueue.Peek first")
 	}
@@ -223,7 +222,7 @@ func (q *SLOQueue) featuresKey(features types.RequestFeatures) string {
 	return fmt.Sprint(features)
 }
 
-func (q *SLOQueue) rank(currentTime time.Time, req *types.RouterRequest, profile *cache.ModelGPUProfile) (rank float64, err error) {
+func (q *SLOQueue) rank(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile) (rank float64, err error) {
 	features, _ := req.Features() // Since req are in the queue, Features() must be called before without an error.
 	signature, _ := profile.GetSignature(features...)
 	if profile.SLOs.TTFT > 0.0 {
@@ -240,7 +239,7 @@ func (q *SLOQueue) rank(currentTime time.Time, req *types.RouterRequest, profile
 	return rank, nil
 }
 
-func (q *SLOQueue) rankE2E(currentTime time.Time, req *types.RouterRequest, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
+func (q *SLOQueue) rankE2E(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
 	target := profile.SLOs.E2E // TODO: We should make  SLO.E2E always available
 	expected, err := profile.LatencySeconds(signature...)
 	if err != nil {
@@ -249,7 +248,7 @@ func (q *SLOQueue) rankE2E(currentTime time.Time, req *types.RouterRequest, prof
 	return float64(currentTime.Sub(req.RequestTime))/float64(time.Second) + expected - target, nil
 }
 
-func (q *SLOQueue) rankTTFT(currentTime time.Time, req *types.RouterRequest, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
+func (q *SLOQueue) rankTTFT(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
 	target := profile.SLOs.TTFT // TODO: We should make  SLO.E2E always available
 	expected, err := profile.TTFTSeconds(signature...)
 	if err != nil {

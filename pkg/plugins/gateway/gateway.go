@@ -68,7 +68,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var rpm, traceTerm int64
 	var respErrorCode int
 	var model, routingStrategy string
-	var routerReq *types.RouterRequest
+	var routerCtx *types.RoutingContext
 	var stream, isRespError bool
 	ctx := srv.Context()
 	requestID := uuid.New().String()
@@ -98,10 +98,13 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 			resp, user, rpm, routingStrategy = s.HandleRequestHeaders(ctx, requestID, req)
 
 		case *extProcPb.ProcessingRequest_RequestBody:
-			resp, model, routerReq, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user, routingStrategy)
+			resp, model, routerCtx, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user, routingStrategy)
+			if routerCtx != nil {
+				ctx = routerCtx
+			}
 
 		case *extProcPb.ProcessingRequest_ResponseHeaders:
-			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, req, routerReq)
+			resp, isRespError, respErrorCode = s.HandleResponseHeaders(ctx, requestID, req)
 
 		case *extProcPb.ProcessingRequest_ResponseBody:
 			respBody := req.Request.(*extProcPb.ProcessingRequest_ResponseBody)
@@ -109,7 +112,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 				klog.ErrorS(errors.New("request end"), string(respBody.ResponseBody.GetBody()), "requestID", requestID)
 				generateErrorResponse(envoyTypePb.StatusCode(respErrorCode), nil, string(respBody.ResponseBody.GetBody()))
 			} else {
-				resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, routerReq, stream, traceTerm, completed)
+				resp, completed = s.HandleResponseBody(ctx, requestID, req, user, rpm, model, stream, traceTerm, completed)
 			}
 		default:
 			klog.Infof("Unknown Request type %+v\n", v)
@@ -121,12 +124,12 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	}
 }
 
-func (s *Server) selectTargetPod(ctx context.Context, routingStrategy routing.Algorithms, pods *utils.PodArray, req *types.RouterRequest) (string, error) {
-	router, err := routing.Select(routingStrategy)(req)
+func (s *Server) selectTargetPod(ctx *types.RoutingContext, routingStrategy routing.Algorithms, pods *utils.PodArray) (string, error) {
+	router, err := routing.Select(routingStrategy)(ctx)
 	if err != nil {
 		return "", err
 	}
-	return router.Route(ctx, pods, req)
+	return router.Route(ctx, pods)
 }
 
 func NewHealthCheckServer() *HealthServer {

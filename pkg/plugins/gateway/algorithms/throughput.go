@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"math/rand"
@@ -35,7 +34,7 @@ var (
 )
 
 func init() {
-	Register(RouterThroughput, func(*types.RouterRequest) (types.Router, error) { return NewThroughputRouter() })
+	Register(RouterThroughput, func(*types.RoutingContext) (types.Router, error) { return NewThroughputRouter() })
 }
 
 type throughputRouter struct {
@@ -53,7 +52,7 @@ func NewThroughputRouter() (types.Router, error) {
 	}, nil
 }
 
-func (r throughputRouter) Route(ctx context.Context, pods *utils.PodArray, req *types.RouterRequest) (string, error) {
+func (r throughputRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
 	var targetPod *v1.Pod
 	minCount := math.MaxFloat64
 
@@ -67,12 +66,12 @@ func (r throughputRouter) Route(ctx context.Context, pods *utils.PodArray, req *
 	}
 
 	for _, pod := range readyPods {
-		promptThroughput, err := r.cache.GetPodModelMetric(pod.Name, req.Model, metrics.AvgPromptThroughputToksPerS)
+		promptThroughput, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.AvgPromptThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		generationThroughput, err := r.cache.GetPodModelMetric(pod.Name, req.Model, metrics.AvgGenerationThroughputToksPerS)
+		generationThroughput, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -103,8 +102,8 @@ func (r throughputRouter) Route(ctx context.Context, pods *utils.PodArray, req *
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	req.SetTargetPod(targetPod)
-	return req.TargetAddress(), nil
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
 }
 
 func (r *throughputRouter) SubscribedMetrics() []string {

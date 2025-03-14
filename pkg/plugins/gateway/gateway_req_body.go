@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package gateway
 
 import (
@@ -30,10 +31,10 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingStrategy string) (*extProcPb.ProcessingResponse, string, *types.RouterRequest, bool, int64) {
+func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingStrategy string) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
 	klog.InfoS("-- In RequestBody processing ...", "requestID", requestID)
 	var model string
-	var routerReq *types.RouterRequest
+	var routingCtx *types.RoutingContext
 	var ok, stream bool
 	var term int64 // Identify the trace window
 
@@ -45,7 +46,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorRequestBodyProcessing, RawValue: []byte("true")}}},
-			"error processing request body"), model, routerReq, stream, term
+			"error processing request body"), model, routingCtx, stream, term
 	}
 
 	if model, ok = jsonMap["model"].(string); !ok || model == "" {
@@ -53,7 +54,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		return generateErrorResponse(envoyTypePb.StatusCode_InternalServerError,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorNoModelInRequest, RawValue: []byte(model)}}},
-			"no model in request body"), model, routerReq, stream, term
+			"no model in request body"), model, routingCtx, stream, term
 	}
 
 	// early reject the request if model doesn't exist.
@@ -62,7 +63,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		return generateErrorResponse(envoyTypePb.StatusCode_BadRequest,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorNoModelBackends, RawValue: []byte(model)}}},
-			fmt.Sprintf("model %s does not exist", model)), model, routerReq, stream, term
+			fmt.Sprintf("model %s does not exist", model)), model, routingCtx, stream, term
 	}
 
 	// early reject if no pods are ready to accept request for a model
@@ -72,13 +73,13 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 				Key: HeaderErrorNoModelBackends, RawValue: []byte("true")}}},
-			fmt.Sprintf("error on getting pods for model %s", model)), model, routerReq, stream, term
+			fmt.Sprintf("error on getting pods for model %s", model)), model, routingCtx, stream, term
 	}
 
 	stream, ok = jsonMap["stream"].(bool)
 	if ok && stream {
 		if errRes := validateStreamOptions(requestID, user, jsonMap); errRes != nil {
-			return errRes, model, routerReq, stream, term
+			return errRes, model, routingCtx, stream, term
 		}
 	}
 
@@ -94,20 +95,20 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 	} else {
 		message, extErr := getRequestMessage(jsonMap)
 		if extErr != nil {
-			return extErr, model, routerReq, stream, term
+			return extErr, model, routingCtx, stream, term
 		}
 
 		predictor, _ := s.cache.GetOutputPredictor(model) // Ignore error here, will handle in RouterRequest if necessary
-		routerReq = types.NewRouterRequest(model, message, predictor)
+		routingCtx = types.NewRoutingContext(ctx, model, message, predictor)
 
-		targetPodIP, err := s.selectTargetPod(ctx, routing.Algorithms(routingStrategy), podsArr, routerReq)
+		targetPodIP, err := s.selectTargetPod(routingCtx, routing.Algorithms(routingStrategy), podsArr)
 		if targetPodIP == "" || err != nil {
 			klog.ErrorS(err, "failed to select target pod", "requestID", requestID, "routingStrategy", routingStrategy, "model", model)
 			return generateErrorResponse(
 				envoyTypePb.StatusCode_ServiceUnavailable,
 				[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{
 					Key: HeaderErrorRouting, RawValue: []byte("true")}}},
-				"error on selecting target pod"), model, routerReq, stream, term
+				"error on selecting target pod"), model, routingCtx, stream, term
 		}
 
 		headers = append(headers,
@@ -126,7 +127,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.InfoS("request start", "requestID", requestID, "model", model, "routingStrategy", routingStrategy, "targetPodIP", targetPodIP)
 	}
 
-	term = s.cache.AddRequestCount(requestID, model, routerReq)
+	term = s.cache.AddRequestCount(routingCtx, requestID, model)
 
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestBody{
@@ -138,5 +139,5 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 				},
 			},
 		},
-	}, model, routerReq, stream, term
+	}, model, routingCtx, stream, term
 }

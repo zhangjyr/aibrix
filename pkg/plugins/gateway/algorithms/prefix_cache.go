@@ -17,12 +17,12 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"fmt"
 	"math/rand"
 	"strconv"
 
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway/prefixcacheindexer"
+	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -33,8 +33,7 @@ var (
 )
 
 func init() {
-	router, err := NewPrefixCacheRouter()
-	Register(RouterPrefixCache, func() (Router, error) { return router, err })
+	Register(RouterPrefixCache, func(*types.RoutingContext) (types.Router, error) { return NewPrefixCacheRouter() })
 }
 
 const (
@@ -64,30 +63,31 @@ type prefixCacheRouter struct {
 	prefixCacheIndexer prefixcacheindexer.PrefixCacheIndexer
 }
 
-func NewPrefixCacheRouter() (Router, error) {
+func NewPrefixCacheRouter() (types.Router, error) {
 	return prefixCacheRouter{
 		prefixCacheIndexer: prefixcacheindexer.NewPrefixHashTable(),
 	}, nil
 }
 
-func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error) {
-	readyPods := utils.FilterReadyPods(pods)
+func (p prefixCacheRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
+	readyPods := utils.FilterRoutablePods(pods.Pods)
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 	if len(readyPods) == 1 {
-		for _, pod := range pods {
-			return getPodAddress(pod.Status.PodIP)
+		for _, pod := range pods.Pods {
+			ctx.SetTargetPod(pod)
+			return ctx.TargetAddress(), nil
 		}
 	}
 
-	tokens, err := utils.TokenizeInputText(routingCtx.Message)
+	tokens, err := utils.TokenizeInputText(ctx.Message)
 	if err != nil {
 		return "", err
 	}
 
 	var targetPod *v1.Pod
-	matchedTokens, unMatchedTokens, matchedPods := p.prefixCacheIndexer.MatchPrefix(tokens, routingCtx.Model, readyPods)
+	matchedTokens, unMatchedTokens, matchedPods := p.prefixCacheIndexer.MatchPrefix(tokens, ctx.Model, readyPods)
 	if len(matchedTokens)*100/len(tokens) > prefixCacheMatchThresholdPercent {
 		targetPod = matchedPods[rand.Intn(len(matchedPods))]
 	} else {
@@ -95,7 +95,7 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, r
 		targetPod = readyPods[rand.Intn(len(readyPods))]
 	}
 	if len(unMatchedTokens) > 0 {
-		p.prefixCacheIndexer.AddPrefix(unMatchedTokens, routingCtx.Model, targetPod.Name)
+		p.prefixCacheIndexer.AddPrefix(unMatchedTokens, ctx.Model, targetPod.Name)
 	}
 
 	var matchedPodNames, readyPodNames []string
@@ -112,5 +112,6 @@ func (p prefixCacheRouter) Route(ctx context.Context, pods map[string]*v1.Pod, r
 		"ready_pods", readyPodNames,
 		"target_pod", targetPod.Status.PodIP)
 
-	return getPodAddress(targetPod.Status.PodIP)
+	ctx.SetTargetPod(targetPod)
+	return ctx.TargetAddress(), nil
 }

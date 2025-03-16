@@ -26,20 +26,34 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"github.com/vllm-project/aibrix/pkg/utils"
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 )
 
+var dummyPod = &Pod{
+	Pod: &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "testpod",
+		},
+	},
+}
+
 func newTraceCache() *Cache {
 	return &Cache{
-		initialized:     true,
-		requestTrace:    &sync.Map{},
-		pendingRequests: &sync.Map{},
+		initialized:  true,
+		requestTrace: &utils.SyncMap[string, *RequestTrace]{},
 	}
 }
 
 func TestCache(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Cache Suite")
+}
+
+func (c *Cache) AddPod(obj interface{}) {
+	c.addPod(obj)
 }
 
 type lagacyCache struct {
@@ -68,28 +82,33 @@ var _ = Describe("Cache", func() {
 	It("should basic add request count, add request trace no err", func() {
 		modelName := "llama-7b"
 		cache := newTraceCache()
-		term := cache.AddRequestCount("no use now", modelName)
+		cache.pods.Store(dummyPod.Name, dummyPod)
+		cache.addPodAndModelMappingLocked(dummyPod, modelName)
+		_, exist := cache.modelMetas.Load(modelName)
+		Expect(exist).To(BeTrue())
+
+		term := cache.AddRequestCount(nil, "no use now", modelName)
 		Expect(cache.numRequestsTraces).To(Equal(int32(1)))
 		trace := cache.getRequestTrace(modelName)
 		Expect(trace).ToNot(BeNil())
 		Expect(trace.numKeys).To(Equal(int32(0)))
 		Expect(trace.numRequests).To(Equal(int32(1)))
 		Expect(trace.completedRequests).To(Equal(int32(0)))
-		pPendingCounter, exist := cache.pendingRequests.Load(modelName)
+		meta, exist := cache.modelMetas.Load(modelName)
 		Expect(exist).To(BeTrue())
-		Expect(*pPendingCounter.(*int32)).To(Equal(int32(1)))
+		Expect(meta.pendingRequests).To(Equal(int32(1)))
 
-		cache.DoneRequestCount("no use now", modelName, term)
+		cache.DoneRequestCount(nil, "no use now", modelName, term)
 		Expect(cache.numRequestsTraces).To(Equal(int32(1)))
 		trace = cache.getRequestTrace(modelName)
 		Expect(trace).ToNot(BeNil())
 		Expect(trace.numRequests).To(Equal(int32(1)))
 		Expect(trace.completedRequests).To(Equal(int32(1)))
-		pPendingCounter, exist = cache.pendingRequests.Load(modelName)
+		meta, exist = cache.modelMetas.Load(modelName)
 		Expect(exist).To(BeTrue())
-		Expect(*pPendingCounter.(*int32)).To(Equal(int32(0)))
+		Expect(meta.pendingRequests).To(Equal(int32(0)))
 
-		cache.AddRequestTrace("no use now", modelName, 1, 1)
+		cache.DoneRequestTrace(nil, "no use now", modelName, 1, 1, 1)
 		Expect(trace.numKeys).To(Equal(int32(1)))
 		pProfileCounter, exist := trace.trace.Load("0:0") // log2(1)
 		Expect(exist).To(BeTrue())
@@ -97,7 +116,11 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should global pending counter return 0.", func() {
+		modelName := "llama-7b"
 		cache := newTraceCache()
+		cache.pods.Store(dummyPod.Name, dummyPod)
+		cache.addPodAndModelMappingLocked(dummyPod, modelName)
+
 		total := 100000
 		var wg sync.WaitGroup
 		for i := 0; i < 10; i++ { // Repeat N times to increase problem rate
@@ -106,9 +129,9 @@ var _ = Describe("Cache", func() {
 			go func() {
 				for j := 0; j < total; j++ {
 					// Retry until success
-					term := cache.AddRequestCount("no use now", "model")
+					term := cache.AddRequestCount(nil, "no use now", modelName)
 					runtime.Gosched()
-					cache.DoneRequestTrace("no use now", "model", 1, 1, term)
+					cache.DoneRequestTrace(nil, "no use now", modelName, 1, 1, term)
 				}
 				wg.Done()
 			}()
@@ -116,8 +139,8 @@ var _ = Describe("Cache", func() {
 		wg.Wait()
 		// duration := time.Since(start)
 		// print(duration)
-		pendingCounter, _ := cache.pendingRequests.Load("model")
-		Expect(atomic.LoadInt32(pendingCounter.(*int32))).To(Equal(int32(0)))
+		meta, _ := cache.modelMetas.Load(modelName)
+		Expect(atomic.LoadInt32(&meta.pendingRequests)).To(Equal(int32(0)))
 	})
 })
 
@@ -147,7 +170,7 @@ func BenchmarkAddRequest(b *testing.B) {
 		wg.Add(1)
 		go func() {
 			for i := 0; i < b.N/thread; i++ {
-				cache.AddRequestCount("no use now", "model")
+				cache.AddRequestCount(nil, "no use now", "model")
 			}
 			wg.Done()
 		}()
@@ -159,28 +182,12 @@ func BenchmarkDoneRequest(b *testing.B) {
 	cache := newTraceCache()
 	thread := 10
 	var wg sync.WaitGroup
-	term := cache.AddRequestCount("no use now", "model")
+	term := cache.AddRequestCount(nil, "no use now", "model")
 	for i := 0; i < thread; i++ {
 		wg.Add(1)
 		go func() {
 			for i := 0; i < b.N/thread; i++ {
-				cache.DoneRequestCount("no use now", "model", term)
-			}
-			wg.Done()
-		}()
-	}
-	wg.Wait()
-}
-
-func BenchmarkAddRequestTrace(b *testing.B) {
-	cache := newTraceCache()
-	thread := 10
-	var wg sync.WaitGroup
-	for i := 0; i < thread; i++ {
-		wg.Add(1)
-		go func() {
-			for i := 0; i < b.N/thread; i++ {
-				cache.AddRequestTrace("no use now", "model", rand.Int63n(8192), rand.Int63n(1024))
+				cache.DoneRequestCount(nil, "no use now", "model", term)
 			}
 			wg.Done()
 		}()
@@ -192,12 +199,12 @@ func BenchmarkDoneRequestTrace(b *testing.B) {
 	cache := newTraceCache()
 	thread := 10
 	var wg sync.WaitGroup
-	term := cache.AddRequestCount("no use now", "model")
+	term := cache.AddRequestCount(nil, "no use now", "model")
 	for i := 0; i < thread; i++ {
 		wg.Add(1)
 		go func() {
 			for i := 0; i < b.N/thread; i++ {
-				cache.DoneRequestTrace("no use now", "model", rand.Int63n(8192), rand.Int63n(1024), term)
+				cache.DoneRequestTrace(nil, "no use now", "model", rand.Int63n(8192), rand.Int63n(1024), term)
 			}
 			wg.Done()
 		}()

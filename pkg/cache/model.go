@@ -16,14 +16,12 @@ limitations under the License.
 package cache
 
 import (
-	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
 
 type Model struct {
-	Pods        *CustomizedRegistry[*v1.Pod, *utils.PodArray]
-	QueueRouter types.Router
+	Pods *CustomizedRegistry[*v1.Pod, *utils.PodArray]
 
 	pendingRequests int32
 }

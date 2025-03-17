@@ -34,7 +34,6 @@ import (
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/plugins/gateway"
-	routing "github.com/vllm-project/aibrix/pkg/plugins/gateway/algorithms"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
 )
@@ -72,7 +71,7 @@ func main() {
 		panic(err)
 	}
 
-	cache.NewGatewayCache(config, stopCh, redisClient, routing.NewQueueRouter)
+	cache.NewGatewayCache(config, stopCh, redisClient)
 
 	// Connect to K8s cluster
 	k8sClient, err := kubernetes.NewForConfig(config)

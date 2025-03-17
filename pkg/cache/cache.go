@@ -61,17 +61,14 @@ type Cache struct {
 	subscribers   []metrics.MetricSubscriber
 	metrics       map[string]interface{}
 	// ModelMetrics        map[string]map[string]interface{}                 // reserved
-	// Pods            map[string]*v1.Pod
-	// PodMetrics      map[string]map[string]metrics.MetricValue            // pod_name: map[metric_name]metric_val
-	// PodModelMetrics map[string]map[string]map[string]metrics.MetricValue // pod_name: map[model_name]map[metric_name]metric_val
-	// PodToModelMapping   utils.SyncMap[string, *Registry[string]]             // pod_name: *Registry or map[model_name]model_name
-	pods                utils.SyncMap[string, *Pod]           // pod_name: *PodMeta
-	modelMetas          utils.SyncMap[string, *Model]         // model_name: *Model
-	requestTrace        *utils.SyncMap[string, *RequestTrace] // model_name: *RequestTrace
-	numRequestsTraces   int32                                 // counter for requestTrace
-	bufferPod           *Pod
-	bufferModel         *Model
-	modelRouterProvider ModelRouterProvider
+	pods              utils.SyncMap[string, *Pod]           // pod_name: *PodMeta
+	modelMetas        utils.SyncMap[string, *Model]         // model_name: *Model
+	requestTrace      *utils.SyncMap[string, *RequestTrace] // model_name: *RequestTrace
+	numRequestsTraces int32                                 // counter for requestTrace
+
+	// buffer for sync map operations
+	bufferPod   *Pod
+	bufferModel *Model
 }
 
 type Block struct {
@@ -181,14 +178,14 @@ func NewTestCacheWithPodsMetrics(pods []*v1.Pod, podMetrics map[string]map[strin
 }
 
 func NewCache(config *rest.Config, stopCh <-chan struct{}) *Cache {
-	return NewGatewayCache(config, stopCh, nil, nil)
+	return NewGatewayCache(config, stopCh, nil)
 }
 
 func NewMetadataCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Cache {
-	return NewGatewayCache(config, stopCh, redisClient, nil)
+	return NewGatewayCache(config, stopCh, redisClient)
 }
 
-func NewGatewayCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client, modelRouterProvider ModelRouterProvider) *Cache {
+func NewGatewayCache(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client) *Cache {
 	once.Do(func() {
 		if err := v1alpha1scheme.AddToScheme(scheme.Scheme); err != nil {
 			panic(err)
@@ -237,11 +234,10 @@ func NewGatewayCache(config *rest.Config, stopCh <-chan struct{}, redisClient *r
 		}
 
 		instance = Cache{
-			initialized:         true,
-			redisClient:         redisClient,
-			prometheusApi:       prometheusApi,
-			requestTrace:        &utils.SyncMap[string, *RequestTrace]{},
-			modelRouterProvider: modelRouterProvider,
+			initialized:   true,
+			redisClient:   redisClient,
+			prometheusApi: prometheusApi,
+			requestTrace:  &utils.SyncMap[string, *RequestTrace]{},
 		}
 		if _, err := podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc:    instance.addPod,
@@ -494,13 +490,6 @@ func (c *Cache) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
 	metaModel, loaded := c.modelMetas.LoadOrStore(modelName, c.bufferModel)
 	if !loaded {
 		c.bufferModel = nil
-		if c.modelRouterProvider != nil {
-			var err error
-			metaModel.QueueRouter, err = c.modelRouterProvider(modelName)
-			if err != nil {
-				klog.Errorf("failed to initialize model-based queue router: %v", err)
-			}
-		}
 	}
 
 	metaPod.Models.Store(modelName, modelName)
@@ -956,16 +945,6 @@ func (c *Cache) writeRequestTraceToStorage(roundT int64) {
 	})
 
 	klog.V(5).Infof("writeRequestTraceWithKey: %v", roundT)
-}
-
-func (c *Cache) GetQueueRouter(modelName string) (types.Router, error) {
-	if model, ok := c.modelMetas.Load(modelName); !ok {
-		return nil, fmt.Errorf("model does not exist in the cache: %s", modelName)
-	} else if model.QueueRouter == nil {
-		return nil, fmt.Errorf("queue router not available for model: %s", modelName)
-	} else {
-		return model.QueueRouter, nil
-	}
 }
 
 func (c *Cache) AddSubscriber(subscriber metrics.MetricSubscriber) {

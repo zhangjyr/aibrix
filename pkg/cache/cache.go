@@ -159,7 +159,9 @@ func GetCache() (*Cache, error) {
 
 func NewTestCacheWithPods(pods []*v1.Pod) *Cache {
 	c := &Cache{}
-	for pod := range pods {
+	for _, pod := range pods {
+		pod.Labels = make(map[string]string)
+		pod.Labels[modelIdentifier] = "modelName"
 		c.addPod(pod)
 	}
 	return c
@@ -468,7 +470,7 @@ func (c *Cache) addPodLocked(pod *v1.Pod) *Pod {
 	}
 	metaPod, loaded := c.pods.LoadOrStore(pod.Name, c.bufferPod)
 	if !loaded {
-		c.bufferModel = nil
+		c.bufferPod = nil
 	}
 	return metaPod
 }

@@ -32,11 +32,9 @@ import (
 	"k8s.io/klog/v2"
 )
 
-var dummyPod = &Pod{
-	Pod: &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "testpod",
-		},
+var dummyPod = &v1.Pod{
+	ObjectMeta: metav1.ObjectMeta{
+		Name: "testpod",
 	},
 }
 
@@ -82,8 +80,8 @@ var _ = Describe("Cache", func() {
 	It("should basic add request count, add request trace no err", func() {
 		modelName := "llama-7b"
 		cache := newTraceCache()
-		cache.pods.Store(dummyPod.Name, dummyPod)
-		cache.addPodAndModelMappingLocked(dummyPod, modelName)
+		metaPod := cache.addPodLocked(dummyPod)
+		cache.addPodAndModelMappingLocked(metaPod, modelName)
 		_, exist := cache.modelMetas.Load(modelName)
 		Expect(exist).To(BeTrue())
 
@@ -118,8 +116,8 @@ var _ = Describe("Cache", func() {
 	It("should global pending counter return 0.", func() {
 		modelName := "llama-7b"
 		cache := newTraceCache()
-		cache.pods.Store(dummyPod.Name, dummyPod)
-		cache.addPodAndModelMappingLocked(dummyPod, modelName)
+		metaPod := cache.addPodLocked(dummyPod)
+		cache.addPodAndModelMappingLocked(metaPod, modelName)
 
 		total := 100000
 		var wg sync.WaitGroup

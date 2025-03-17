@@ -18,7 +18,6 @@ package cache
 import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/utils"
-	"go.uber.org/atomic"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -27,6 +26,4 @@ type Pod struct {
 	Models       *Registry[string]
 	Metrics      utils.SyncMap[string, metrics.MetricValue]
 	ModelMetrics utils.SyncMap[string, metrics.MetricValue] // Key: model_name:metric_name
-
-	pendingLoadUtilization atomic.Float64
 }

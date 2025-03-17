@@ -874,18 +874,10 @@ func (c *Cache) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 	if ok {
 		atomic.AddInt32(&meta.pendingRequests, 1)
 	}
-
-	if ctx != nil {
-		c.addRequestLoad(ctx)
-	}
 	return
 }
 
 func (c *Cache) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
-	if ctx != nil {
-		c.doneRequestLoad(ctx)
-	}
-
 	meta, ok := c.modelMetas.Load(modelName)
 	if ok {
 		atomic.AddInt32(&meta.pendingRequests, -1)
@@ -896,10 +888,6 @@ func (c *Cache) DoneRequestCount(ctx *types.RoutingContext, requestID string, mo
 }
 
 func (c *Cache) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens, outputTokens, traceTerm int64) {
-	if ctx != nil {
-		c.doneRequestLoad(ctx)
-	}
-
 	meta, ok := c.modelMetas.Load(modelName)
 	if ok {
 		atomic.AddInt32(&meta.pendingRequests, -1)
@@ -925,42 +913,6 @@ func (c *Cache) getRequestTrace(modelName string) *RequestTrace {
 		atomic.AddInt32(&c.numRequestsTraces, 1)
 	}
 	return newer
-}
-
-func (c *Cache) addRequestLoad(ctx *types.RoutingContext) {
-	if !ctx.HasRouted() {
-		klog.Warning("request has not been routed, please route request first")
-		return
-	}
-	pod := ctx.TargetPod()
-
-	metaPod, ok := c.pods.Load(pod.Name)
-	if !ok {
-		klog.Warningf("can't find routing pod: %s", pod.Name)
-		return
-	}
-	utilization := metaPod.pendingLoadUtilization.Add(ctx.PendingLoad)
-	c.updatePodRecord(metaPod, ctx.Model, metrics.NormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization})
-}
-
-func (c *Cache) doneRequestLoad(ctx *types.RoutingContext) {
-	if !ctx.HasRouted() {
-		klog.Warning("request has not been routed, please route request first")
-		return
-	}
-	pod := ctx.TargetPod()
-
-	if ctx.PendingLoad == 0.0 {
-		return
-	}
-
-	metaPod, ok := c.pods.Load(pod.Name)
-	if !ok {
-		klog.Warningf("can't find routing pod: %s", pod.Name)
-		return
-	}
-	utilization := metaPod.pendingLoadUtilization.Add(-ctx.PendingLoad)
-	c.updatePodRecord(metaPod, ctx.Model, metrics.NormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization})
 }
 
 func (c *Cache) writeRequestTraceToStorage(roundT int64) {

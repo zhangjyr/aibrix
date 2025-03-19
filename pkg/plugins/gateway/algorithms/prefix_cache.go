@@ -94,7 +94,7 @@ func (p prefixCacheRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray
 		}
 	}
 
-	tokens, err := p.tokenizer.TokenizeInputText(routingCtx.Message)
+	tokens, err := p.tokenizer.TokenizeInputText(ctx.Message)
 	if err != nil {
 		return "", err
 	}

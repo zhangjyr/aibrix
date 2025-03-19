@@ -49,11 +49,13 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	defer func() {
 		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
 		if !hasCompleted && complete && b.ResponseBody.EndOfStream {
-			s.cache.DoneRequestTrace(routerCtx, requestID, model, promptTokens, completionTokens, traceTerm)
+      if enableGPUOptimizerTracing {
+			  s.cache.DoneRequestTrace(routerCtx, requestID, model, promptTokens, completionTokens, traceTerm)
+      }
 			if routerCtx != nil {
 				routerCtx.Delete()
 			}
-		}
+    }
 	}()
 
 	if stream {
@@ -61,6 +63,9 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 			Body: io.NopCloser(bytes.NewReader(b.ResponseBody.GetBody())),
 		}
 		streaming := ssestream.NewStream[openai.ChatCompletionChunk](ssestream.NewDecoder(t), nil)
+		defer func() {
+			_ = streaming.Close()
+		}()
 		for streaming.Next() {
 			evt := streaming.Current()
 			if len(evt.Choices) == 0 {

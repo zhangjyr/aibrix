@@ -126,7 +126,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 		klog.InfoS("request start", "requestID", requestID, "model", model, "routingStrategy", routingStrategy, "targetPodIP", targetPodIP)
 	}
 
-	term = s.cache.AddRequestCount(routingCtx, requestID, model)
+  if enableGPUOptimizerTracing {
+	  term = s.cache.AddRequestCount(routingCtx, requestID, model)
+	}
 
 	return &extProcPb.ProcessingResponse{
 		Response: &extProcPb.ProcessingResponse_RequestBody{

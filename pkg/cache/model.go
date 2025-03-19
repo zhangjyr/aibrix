@@ -22,6 +22,7 @@ import (
 
 type Model struct {
 	Pods *CustomizedRegistry[*v1.Pod, *utils.PodArray]
+	// Metrics utils.SyncMap[string, metrics.MetricValue] // reserved
 
 	pendingRequests int32
 }

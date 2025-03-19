@@ -54,15 +54,14 @@ type ModelRouterProvider func(modelName string) (types.Router, error)
 
 // type global
 type Cache struct {
-	mu            sync.RWMutex
-	redisClient   *redis.Client
-	prometheusApi prometheusv1.API
-	initialized   bool
-	subscribers   []metrics.MetricSubscriber
-	metrics       map[string]interface{}
-	// ModelMetrics        map[string]map[string]interface{}                 // reserved
-	pods              utils.SyncMap[string, *Pod]           // pod_name: *PodMeta
-	modelMetas        utils.SyncMap[string, *Model]         // model_name: *Model
+	mu                sync.RWMutex
+	redisClient       *redis.Client
+	prometheusApi     prometheusv1.API
+	initialized       bool
+	subscribers       []metrics.MetricSubscriber
+	metrics           map[string]interface{}
+	metaPods          utils.SyncMap[string, *Pod]           // pod_name: *PodMeta
+	metaModels        utils.SyncMap[string, *Model]         // model_name: *Model
 	requestTrace      *utils.SyncMap[string, *RequestTrace] // model_name: *RequestTrace
 	numRequestsTraces int32                                 // counter for requestTrace
 
@@ -166,7 +165,7 @@ func NewTestCacheWithPods(pods []*v1.Pod) *Cache {
 
 func NewTestCacheWithPodsMetrics(pods []*v1.Pod, podMetrics map[string]map[string]metrics.MetricValue) *Cache {
 	c := NewTestCacheWithPods(pods)
-	c.pods.Range(func(podName string, metaPod *Pod) bool {
+	c.metaPods.Range(func(podName string, metaPod *Pod) bool {
 		if metrics, ok := podMetrics[podName]; ok {
 			for metricName, metric := range metrics {
 				metaPod.Metrics.Store(metricName, metric)
@@ -317,13 +316,11 @@ func NewGatewayCache(config *rest.Config, stopCh <-chan struct{}, redisClient *r
 }
 
 func (c *Cache) addPod(obj interface{}) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	pod := obj.(*v1.Pod)
 	// only track pods with model deployments
 	modelName, ok := pod.Labels[modelIdentifier]
 	if !ok {
+		klog.InfoS("ignored pod without model label", "name", pod.Name)
 		return
 	}
 	// ignore worker pods
@@ -333,49 +330,49 @@ func (c *Cache) addPod(obj interface{}) {
 		return
 	}
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	metaPod := c.addPodLocked(pod)
 	c.addPodAndModelMappingLocked(metaPod, modelName)
 
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
-	c.debugInfo()
+	go c.debugInfo()
 }
 
 func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
 
-	oldModelName, oldOk := oldPod.Labels[modelIdentifier]
+	_, oldOk := oldPod.Labels[modelIdentifier]
+	_, existed := c.metaPods.Load(oldPod.Name) // Make sure nothing left.
 	newModelName, newOk := newPod.Labels[modelIdentifier]
 
-	if !oldOk && !newOk {
+	if !oldOk && !existed && !newOk {
+		klog.InfoS("ignored pod without model label", "old pod", oldPod.Name, "old pod existence", existed, "new pod", newPod.Name)
 		return // No model information to track in either old or new pod
 	}
 
-	// TODO: The logic here is problematic, consider following situations:
-	// 1. Only model name changes (Current implementation messy with pod name, too)
-	// 2. Only pod name changes (Is this possible? If not, no need to remove and readd pods registry)
-	// 3. I believe changes of LORA model names are not handled here.
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	// Remove old mappings if present
-	if oldOk {
-		c.deletePodLocked(oldPod.Name)
-		c.deletePodAndModelMappingLocked(oldPod.Name, oldModelName, 1)
+	// TODO: No in place update is handled here
+
+	// Remove old mappings if present, no adapter will be inherited. (Adapters will be rescaned and readded later)
+	if oldOk || existed {
+		odlMetaPod := c.deletePodLocked(oldPod.Name)
+		if odlMetaPod != nil {
+			for _, modelName := range odlMetaPod.Models.Array() {
+				c.deletePodAndModelMappingLocked(odlMetaPod.Name, modelName, 1)
+			}
+		}
 	}
 
 	// ignore worker pods
-	nodeType, ok := oldPod.Labels[nodeType]
-	if ok && nodeType == nodeWorker {
-		klog.InfoS("ignored ray worker pod", "name", oldPod.Name)
-		return
-	}
-
-	// ignore worker pods
-	nodeType, ok = newPod.Labels[nodeType]
-	if ok && nodeType == nodeWorker {
-		klog.InfoS("ignored ray worker pod", "name", newPod.Name)
+	oldNodeType := oldPod.Labels[nodeType]
+	newNodeType := newPod.Labels[nodeType]
+	if oldNodeType == nodeWorker || newNodeType == nodeWorker {
+		klog.InfoS("ignored ray worker pod", "old pod", oldPod.Name, "new pod", newPod.Name)
 		return
 	}
 
@@ -386,18 +383,19 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 	}
 
 	klog.V(4).Infof("POD UPDATED: %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
-	c.debugInfo()
+	go c.debugInfo()
 }
 
 func (c *Cache) deletePod(obj interface{}) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	pod := obj.(*v1.Pod)
 	_, ok := pod.Labels[modelIdentifier]
-	if !ok {
+	_, existed := c.metaPods.Load(pod.Name) // Make sure nothing left.
+	if !ok && !existed {
 		return
 	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	// delete base model and associated lora models on this pod
 	metaPod := c.deletePodLocked(pod.Name)
@@ -408,7 +406,7 @@ func (c *Cache) deletePod(obj interface{}) {
 	}
 
 	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
-	c.debugInfo()
+	go c.debugInfo()
 }
 
 func (c *Cache) addModelAdapter(obj interface{}) {
@@ -421,7 +419,7 @@ func (c *Cache) addModelAdapter(obj interface{}) {
 	}
 
 	klog.V(4).Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
-	c.debugInfo()
+	go c.debugInfo()
 }
 
 func (c *Cache) updateModelAdapter(oldObj interface{}, newObj interface{}) {
@@ -439,7 +437,7 @@ func (c *Cache) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 	}
 
 	klog.V(4).Infof("MODELADAPTER UPDATED. %s/%s %s", oldModel.Namespace, oldModel.Name, newModel.Status.Phase)
-	c.debugInfo()
+	go c.debugInfo()
 }
 
 func (c *Cache) deleteModelAdapter(obj interface{}) {
@@ -452,7 +450,7 @@ func (c *Cache) deleteModelAdapter(obj interface{}) {
 	}
 
 	klog.V(4).Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
-	c.debugInfo()
+	go c.debugInfo()
 }
 
 func (c *Cache) addPodLocked(pod *v1.Pod) *Pod {
@@ -464,7 +462,7 @@ func (c *Cache) addPodLocked(pod *v1.Pod) *Pod {
 	} else {
 		c.bufferPod.Pod = pod
 	}
-	metaPod, loaded := c.pods.LoadOrStore(pod.Name, c.bufferPod)
+	metaPod, loaded := c.metaPods.LoadOrStore(pod.Name, c.bufferPod)
 	if !loaded {
 		c.bufferPod = nil
 	}
@@ -472,7 +470,7 @@ func (c *Cache) addPodLocked(pod *v1.Pod) *Pod {
 }
 
 func (c *Cache) addPodAndModelMappingLockedByName(podName, modelName string) {
-	pod, ok := c.pods.Load(podName)
+	pod, ok := c.metaPods.Load(podName)
 	if !ok {
 		klog.Errorf("pod %s does not exist in internal-cache", podName)
 		return
@@ -487,7 +485,7 @@ func (c *Cache) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
 			Pods: NewRegistryWithArrayProvider(func(arr []*v1.Pod) *utils.PodArray { return &utils.PodArray{Pods: arr} }),
 		}
 	}
-	metaModel, loaded := c.modelMetas.LoadOrStore(modelName, c.bufferModel)
+	metaModel, loaded := c.metaModels.LoadOrStore(modelName, c.bufferModel)
 	if !loaded {
 		c.bufferModel = nil
 	}
@@ -497,7 +495,7 @@ func (c *Cache) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
 }
 
 func (c *Cache) deletePodLocked(podName string) *Pod {
-	metaPod, _ := c.pods.LoadAndDelete(podName)
+	metaPod, _ := c.metaPods.LoadAndDelete(podName)
 	return metaPod
 }
 
@@ -506,24 +504,24 @@ func (c *Cache) deletePodLocked(podName string) *Pod {
 // If ignoreMapping < 0, modelToPod mapping will be ignored
 func (c *Cache) deletePodAndModelMappingLocked(podName, modelName string, ignoreMapping int) {
 	if ignoreMapping <= 0 {
-		if metaPod, ok := c.pods.Load(podName); ok {
+		if metaPod, ok := c.metaPods.Load(podName); ok {
 			metaPod.Models.Delete(modelName)
 			// PodToModelMapping entry should only be deleted during pod deleting.
 		}
 	}
 
 	if ignoreMapping >= 0 {
-		if meta, ok := c.modelMetas.Load(modelName); ok {
+		if meta, ok := c.metaModels.Load(modelName); ok {
 			meta.Pods.Delete(podName)
 			if meta.Pods.Len() == 0 {
-				c.modelMetas.Delete(modelName)
+				c.metaModels.Delete(modelName)
 			}
 		}
 	}
 }
 
 func (c *Cache) debugInfo() {
-	c.pods.Range(func(podName string, pod *Pod) bool {
+	c.metaPods.Range(func(podName string, pod *Pod) bool {
 		klog.V(4).Infof("pod: %s, podIP: %v, models: %s", podName, pod.Status.PodIP, strings.Join(pod.Models.Array(), " "))
 		pod.Metrics.Range(func(metricName string, metricVal metrics.MetricValue) bool {
 			klog.V(5).Infof("%v_%v_%v", podName, metricName, metricVal)
@@ -535,7 +533,7 @@ func (c *Cache) debugInfo() {
 		})
 		return true
 	})
-	c.modelMetas.Range(func(modelName string, meta *Model) bool {
+	c.metaModels.Range(func(modelName string, meta *Model) bool {
 		var podList strings.Builder
 		for _, pod := range meta.Pods.Registry.Array() {
 			podList.WriteString(pod.Name)
@@ -547,7 +545,7 @@ func (c *Cache) debugInfo() {
 }
 
 func (c *Cache) GetPod(podName string) (*v1.Pod, error) {
-	metaPod, ok := c.pods.Load(podName)
+	metaPod, ok := c.metaPods.Load(podName)
 	if !ok {
 		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
 	}
@@ -555,9 +553,10 @@ func (c *Cache) GetPod(podName string) (*v1.Pod, error) {
 	return metaPod.Pod, nil
 }
 
+// Do not call this directly, for debug purpose and less efficient.
 func (c *Cache) GetPods() []*v1.Pod {
-	pods := make([]*v1.Pod, 0, c.pods.Len())
-	c.pods.Range(func(_ string, metaPod *Pod) bool {
+	pods := make([]*v1.Pod, 0, c.metaPods.Len())
+	c.metaPods.Range(func(_ string, metaPod *Pod) bool {
 		pods = append(pods, metaPod.Pod)
 		return true
 	})
@@ -565,7 +564,7 @@ func (c *Cache) GetPods() []*v1.Pod {
 }
 
 func (c *Cache) GetPodsForModel(modelName string) (*utils.PodArray, error) {
-	meta, ok := c.modelMetas.Load(modelName)
+	meta, ok := c.metaModels.Load(modelName)
 	if !ok {
 		return nil, fmt.Errorf("model does not exist in the cache: %s", modelName)
 	}
@@ -574,11 +573,11 @@ func (c *Cache) GetPodsForModel(modelName string) (*utils.PodArray, error) {
 }
 
 func (c *Cache) GetModels() []string {
-	return c.modelMetas.Keys()
+	return c.metaModels.Keys()
 }
 
 func (c *Cache) GetModelsForPod(podName string) ([]string, error) {
-	metaPod, ok := c.pods.Load(podName)
+	metaPod, ok := c.metaPods.Load(podName)
 	if !ok {
 		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
 	}
@@ -587,13 +586,13 @@ func (c *Cache) GetModelsForPod(podName string) ([]string, error) {
 }
 
 func (c *Cache) CheckModelExists(modelName string) bool {
-	_, ok := c.modelMetas.Load(modelName)
+	_, ok := c.metaModels.Load(modelName)
 
 	return ok
 }
 
 func (c *Cache) GetPodMetric(podName, metricName string) (metrics.MetricValue, error) {
-	metaPod, ok := c.pods.Load(podName)
+	metaPod, ok := c.metaPods.Load(podName)
 	if !ok {
 		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
 	}
@@ -602,7 +601,7 @@ func (c *Cache) GetPodMetric(podName, metricName string) (metrics.MetricValue, e
 }
 
 func (c *Cache) GetPodModelMetric(podName, modelName string, metricName string) (metrics.MetricValue, error) {
-	metaPod, ok := c.pods.Load(podName)
+	metaPod, ok := c.metaPods.Load(podName)
 	if !ok {
 		return nil, fmt.Errorf("pod does not exist in the cache: %s", podName)
 	}
@@ -808,7 +807,7 @@ func (c *Cache) updateMetricFromPromQL(pod *Pod) {
 }
 
 func (c *Cache) updatePodMetrics() {
-	c.pods.Range(func(podName string, metaPod *Pod) bool {
+	c.metaPods.Range(func(podName string, metaPod *Pod) bool {
 		if !utils.FilterReadyPod(metaPod.Pod) {
 			// Skip unready pod
 			return true
@@ -861,7 +860,7 @@ func (c *Cache) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 		// In case AddRequest return false, it has been recycled and we want to retry.
 	}
 
-	meta, ok := c.modelMetas.Load(modelName)
+	meta, ok := c.metaModels.Load(modelName)
 	if ok {
 		atomic.AddInt32(&meta.pendingRequests, 1)
 	}
@@ -869,7 +868,7 @@ func (c *Cache) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 }
 
 func (c *Cache) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
-	meta, ok := c.modelMetas.Load(modelName)
+	meta, ok := c.metaModels.Load(modelName)
 	if ok {
 		atomic.AddInt32(&meta.pendingRequests, -1)
 	}
@@ -879,7 +878,7 @@ func (c *Cache) DoneRequestCount(ctx *types.RoutingContext, requestID string, mo
 }
 
 func (c *Cache) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens, outputTokens, traceTerm int64) {
-	meta, ok := c.modelMetas.Load(modelName)
+	meta, ok := c.metaModels.Load(modelName)
 	if ok {
 		atomic.AddInt32(&meta.pendingRequests, -1)
 	}
@@ -924,7 +923,7 @@ func (c *Cache) writeRequestTraceToStorage(roundT int64) {
 
 		trace.Lock()
 		pending := int32(0)
-		if meta, loaded := c.modelMetas.Load(modelName); loaded {
+		if meta, loaded := c.metaModels.Load(modelName); loaded {
 			pending = atomic.LoadInt32(&meta.pendingRequests)
 		}
 		traceMap := trace.ToMapLocked(pending)

@@ -320,7 +320,7 @@ func (c *Cache) addPod(obj interface{}) {
 	// only track pods with model deployments
 	modelName, ok := pod.Labels[modelIdentifier]
 	if !ok {
-		klog.InfoS("ignored pod without model label", "name", pod.Name)
+		// klog.InfoS("ignored pod without model label", "name", pod.Name)
 		return
 	}
 	// ignore worker pods
@@ -349,7 +349,7 @@ func (c *Cache) updatePod(oldObj interface{}, newObj interface{}) {
 	newModelName, newOk := newPod.Labels[modelIdentifier]
 
 	if !oldOk && !existed && !newOk {
-		klog.InfoS("ignored pod without model label", "old pod", oldPod.Name, "old pod existence", existed, "new pod", newPod.Name)
+		// klog.InfoS("ignored pod without model label", "old pod", oldPod.Name, "old pod existence", existed, "new pod", newPod.Name)
 		return // No model information to track in either old or new pod
 	}
 

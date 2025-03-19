@@ -68,7 +68,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 
 	// early reject if no pods are ready to accept request for a model
 	podsArr, err := s.cache.GetPodsForModel(model)
-	if err != nil || podsArr.Len() == 0 || utils.CountRoutablePods(podsArr.Pods) == 0 {
+	if err != nil || podsArr == nil || podsArr.Len() == 0 || utils.CountRoutablePods(podsArr.Pods) == 0 {
 		klog.ErrorS(err, "no ready pod available", "requestID", requestID, "model", model)
 		return generateErrorResponse(envoyTypePb.StatusCode_ServiceUnavailable,
 			[]*configPb.HeaderValueOption{{Header: &configPb.HeaderValue{

@@ -52,7 +52,8 @@ func TestRandomRouting(t *testing.T) {
 	mean := sum / float64(len(histogram))
 	stddev := math.Sqrt(sumSquared/float64(len(histogram)) - mean*mean)
 
-	assert.True(t, stddev/mean < 0.2, "stand deviation of pod distribution should be less than 20%%, but got %f, mean %f", stddev, mean)
+	assert.True(t, stddev/mean < 0.2,
+		"stand deviation of pod distribution should be less than 20%%, but got %f, mean %f", stddev, mean)
 }
 
 func TestPrefixCacheRouting(t *testing.T) {

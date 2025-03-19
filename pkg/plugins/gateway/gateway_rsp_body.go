@@ -49,13 +49,13 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 	defer func() {
 		// Wrapped in a function to delay the evaluation of parameters. Using complete to make sure DoneRequestTrace only call once for a request.
 		if !hasCompleted && complete && b.ResponseBody.EndOfStream {
-      if enableGPUOptimizerTracing {
-			  s.cache.DoneRequestTrace(routerCtx, requestID, model, promptTokens, completionTokens, traceTerm)
-      }
+			if enableGPUOptimizerTracing {
+				s.cache.DoneRequestTrace(routerCtx, requestID, model, promptTokens, completionTokens, traceTerm)
+			}
 			if routerCtx != nil {
 				routerCtx.Delete()
 			}
-    }
+		}
 	}()
 
 	if stream {

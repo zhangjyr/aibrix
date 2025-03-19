@@ -213,7 +213,8 @@ var _ = Describe("Cache", func() {
 		cache.addPod(oldPod)
 		cache.addModelAdapter(getNewModelAdapter("m1adapter", oldPod.Name))
 		oldMetaPod, _ := cache.metaPods.Load(oldPod.Name)
-		cache.updatePodRecord(oldMetaPod, "", metrics.NumRequestsRunning, metrics.PodMetricScope, &metrics.LabelValueMetricValue{Value: "0"})
+		err := cache.updatePodRecord(oldMetaPod, "", metrics.NumRequestsRunning, metrics.PodMetricScope, &metrics.LabelValueMetricValue{Value: "0"})
+		Expect(err).To(BeNil())
 		Expect(oldMetaPod.Models.Len()).To(Equal(2))
 		Expect(oldMetaPod.Metrics.Len()).To(Equal(1))
 
@@ -247,7 +248,7 @@ var _ = Describe("Cache", func() {
 		modelPod, exist := metaModel.Pods.Load("p2")
 		Expect(exist).To(BeTrue())
 		Expect(modelPod).To(Equal(newPod))
-		// Model adpater meta cleared
+		// Model adapter meta cleared
 		_, exist = cache.metaModels.Load("m1adapter")
 		Expect(exist).To(BeFalse())
 	})

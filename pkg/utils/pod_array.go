@@ -35,6 +35,9 @@ type PodArray struct {
 }
 
 func (arr *PodArray) Len() int {
+	if arr == nil {
+		return 0
+	}
 	return len(arr.Pods)
 }
 

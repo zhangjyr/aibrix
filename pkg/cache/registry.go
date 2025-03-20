@@ -117,7 +117,7 @@ func (reg *Registry[V]) Array() (arr []V) {
 func (reg *CustomizedRegistry[V, A]) Array() (arr A) {
 	ret := reg.values
 	if ret != arr { // ret != nil value
-		return arr
+		return ret
 	}
 
 	reg.mu.Lock()

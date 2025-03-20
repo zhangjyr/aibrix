@@ -40,7 +40,7 @@ var dummyPod = &v1.Pod{
 	},
 }
 
-func getNewPod(podName string, modelName string, id int) *v1.Pod {
+func getReadyPod(podName string, modelName string, id int) *v1.Pod {
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   podName,
@@ -57,6 +57,12 @@ func getNewPod(podName string, modelName string, id int) *v1.Pod {
 		},
 	}
 	pod.ObjectMeta.Labels[modelIdentifier] = modelName
+	return pod
+}
+
+func getNewPod(podName string, modelName string, id int) *v1.Pod {
+	pod := getReadyPod(podName, modelName, id)
+	pod.Status.Conditions[0].Type = v1.PodInitialized
 	return pod
 }
 
@@ -130,20 +136,20 @@ var _ = Describe("Cache", func() {
 		cache := newTraceCache()
 
 		// Ignore pods without model label
-		podWOModel := getNewPod("p1", "m1", 0)
+		podWOModel := getReadyPod("p1", "m1", 0)
 		podWOModel.ObjectMeta.Labels = nil
 		cache.addPod(podWOModel)
 		_, exist := cache.metaPods.Load("p1")
 		Expect(exist).To(BeFalse())
 
 		// Ignore pods without model label
-		podRayWorker := getNewPod("p1", "m1", 0)
+		podRayWorker := getReadyPod("p1", "m1", 0)
 		podRayWorker.ObjectMeta.Labels[nodeType] = nodeWorker
 		cache.addPod(podRayWorker)
 		_, exist = cache.metaPods.Load("p1")
 		Expect(exist).To(BeFalse())
 
-		pod := getNewPod("p1", "m1", 0)
+		pod := getReadyPod("p1", "m1", 0)
 		cache.addPod(pod)
 
 		// Pod meta exists
@@ -172,7 +178,7 @@ var _ = Describe("Cache", func() {
 
 	It("should addModelAdapter create metaModels entry", func() {
 		cache := newTraceCache()
-		cache.addPod(getNewPod("p1", "m1", 0))
+		cache.addPod(getReadyPod("p1", "m1", 0))
 
 		// Success
 		cache.addModelAdapter(getNewModelAdapter("m1adapter", "p1"))
@@ -209,7 +215,7 @@ var _ = Describe("Cache", func() {
 
 	It("should updatePod clear old mappings with no model adapter inherited", func() {
 		cache := newTraceCache()
-		oldPod := getNewPod("p1", "m1", 0)
+		oldPod := getReadyPod("p1", "m1", 0)
 		cache.addPod(oldPod)
 		cache.addModelAdapter(getNewModelAdapter("m1adapter", oldPod.Name))
 		oldMetaPod, _ := cache.metaPods.Load(oldPod.Name)
@@ -218,7 +224,7 @@ var _ = Describe("Cache", func() {
 		Expect(oldMetaPod.Models.Len()).To(Equal(2))
 		Expect(oldMetaPod.Metrics.Len()).To(Equal(1))
 
-		newPod := getNewPod("p2", "m1", 1) // IP may changed due to migration
+		newPod := getReadyPod("p2", "m1", 1) // IP may changed due to migration
 
 		cache.updatePod(oldPod, newPod)
 
@@ -253,9 +259,28 @@ var _ = Describe("Cache", func() {
 		Expect(exist).To(BeFalse())
 	})
 
+	It("should pods returned after updatePod reflect updated pods", func() {
+		cache := newTraceCache()
+
+		oldPod := getNewPod("p1", "m1", 0)
+		cache.addPod(oldPod)
+		pods, err := cache.GetPodsForModel("m1")
+		Expect(err).To(BeNil())
+		Expect(pods.Len()).To(Equal(1))
+		Expect(utils.CountRoutablePods(pods.Pods)).To(Equal(0))
+
+		newPod := getReadyPod("p1", "m1", 0) // IP may changed due to migration
+		cache.updatePod(oldPod, newPod)
+
+		pods, err = cache.GetPodsForModel("m1")
+		Expect(err).To(BeNil())
+		Expect(pods.Len()).To(Equal(1))
+		Expect(utils.CountRoutablePods(pods.Pods)).To(Equal(1))
+	})
+
 	It("should deletePod clear pod, model, and modelAdapter entrys", func() {
 		cache := newTraceCache()
-		pod := getNewPod("p1", "m1", 0)
+		pod := getReadyPod("p1", "m1", 0)
 		cache.addPod(pod)
 		cache.addModelAdapter(getNewModelAdapter("m1adapter", pod.Name))
 
@@ -283,9 +308,9 @@ var _ = Describe("Cache", func() {
 
 	It("should deleteModelAdapter remove mappings", func() {
 		cache := newTraceCache()
-		cache.addPod(getNewPod("p1", "m1", 0))
-		cache.addPod(getNewPod("p2", "m1", 0))
-		cache.addPod(getNewPod("p3", "m1", 0))
+		cache.addPod(getReadyPod("p1", "m1", 0))
+		cache.addPod(getReadyPod("p2", "m1", 0))
+		cache.addPod(getReadyPod("p3", "m1", 0))
 		oldAdapter := getNewModelAdapterWithPods("m1adapter1", []string{"p1", "p2"})
 		cache.addModelAdapter(oldAdapter)
 
@@ -322,9 +347,9 @@ var _ = Describe("Cache", func() {
 
 	It("should updateModelAdapter reset mappings", func() {
 		cache := newTraceCache()
-		cache.addPod(getNewPod("p1", "m1", 0))
-		cache.addPod(getNewPod("p2", "m1", 0))
-		cache.addPod(getNewPod("p3", "m1", 0))
+		cache.addPod(getReadyPod("p1", "m1", 0))
+		cache.addPod(getReadyPod("p2", "m1", 0))
+		cache.addPod(getReadyPod("p3", "m1", 0))
 		oldAdapter := getNewModelAdapterWithPods("m1adapter1", []string{"p1", "p2"})
 		cache.addModelAdapter(oldAdapter)
 
@@ -379,7 +404,7 @@ var _ = Describe("Cache", func() {
 
 	It("should GetPod return k8s pod", func() {
 		cache := newTraceCache()
-		pod := getNewPod("p1", "m1", 0)
+		pod := getReadyPod("p1", "m1", 0)
 		cache.addPod(pod)
 
 		_, err := cache.GetPod("p0")
@@ -392,8 +417,8 @@ var _ = Describe("Cache", func() {
 
 	It("should GetPods return k8s pod slice", func() {
 		cache := newTraceCache()
-		pod1 := getNewPod("p1", "m1", 0)
-		pod2 := getNewPod("p2", "m2", 0)
+		pod1 := getReadyPod("p1", "m1", 0)
+		pod2 := getReadyPod("p2", "m2", 0)
 		cache.addPod(pod1)
 		cache.addPod(pod2)
 
@@ -405,8 +430,8 @@ var _ = Describe("Cache", func() {
 
 	It("should GetPodsForModel() return a PodArray", func() {
 		cache := newTraceCache()
-		pod1 := getNewPod("p1", "m1", 0)
-		pod2 := getNewPod("p2", "m2", 0)
+		pod1 := getReadyPod("p1", "m1", 0)
+		pod2 := getReadyPod("p2", "m2", 0)
 		cache.addPod(pod1)
 		cache.addPod(pod2)
 
@@ -422,8 +447,8 @@ var _ = Describe("Cache", func() {
 
 	It("should GetModels return string slice", func() {
 		cache := newTraceCache()
-		pod1 := getNewPod("p1", "m1", 0)
-		pod2 := getNewPod("p2", "m2", 0)
+		pod1 := getReadyPod("p1", "m1", 0)
+		pod2 := getReadyPod("p2", "m2", 0)
 		cache.addPod(pod1)
 		cache.addPod(pod2)
 
@@ -441,8 +466,8 @@ var _ = Describe("Cache", func() {
 
 	It("should GetModelsForPod() return a string slice", func() {
 		cache := newTraceCache()
-		pod1 := getNewPod("p1", "m1", 0)
-		pod2 := getNewPod("p2", "m2", 0)
+		pod1 := getReadyPod("p1", "m1", 0)
+		pod2 := getReadyPod("p2", "m2", 0)
 		cache.addPod(pod1)
 		cache.addPod(pod2)
 

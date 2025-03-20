@@ -20,6 +20,8 @@ import (
 	"sync"
 )
 
+// Registry is a generic hash set focus on storing values with string keys.
+// Array output is optimized by offering a cached copy.
 type Registry[V any] struct {
 	registry map[string]V
 	values   []V  // Pods cache for quick iteration
@@ -27,6 +29,7 @@ type Registry[V any] struct {
 	mu       sync.RWMutex
 }
 
+// CustomizedRegistry extends Registry to provide a customized array provider.
 type CustomizedRegistry[V any, A comparable] struct {
 	Registry[V]
 	values         A // Pods cache for quick iteration
@@ -101,8 +104,12 @@ func (reg *CustomizedRegistry[V, A]) Store(key string, value V) {
 }
 
 func (reg *Registry[V]) Array() (arr []V) {
-	arr = reg.values
-	if arr != nil || reg.registry == nil {
+	if reg == nil {
+		return nil
+	}
+
+	arr, valid := reg.values, reg.valid // atomic
+	if valid {
 		return arr
 	}
 
@@ -115,6 +122,10 @@ func (reg *Registry[V]) Array() (arr []V) {
 }
 
 func (reg *CustomizedRegistry[V, A]) Array() (arr A) {
+	if reg == nil {
+		return
+	}
+
 	ret := reg.values
 	if ret != arr { // ret != nil value
 		return ret
@@ -128,15 +139,27 @@ func (reg *CustomizedRegistry[V, A]) Array() (arr A) {
 }
 
 func (reg *Registry[V]) Len() int {
-	pods, valid := reg.values, reg.valid // atomic
+	if reg == nil {
+		return 0
+	}
+
+	arr, valid := reg.values, reg.valid // atomic
 	if valid {
-		return len(pods)
+		return len(arr)
 	}
 
 	reg.mu.RLock()
 	defer reg.mu.RUnlock()
 
 	return len(reg.registry)
+}
+
+func (reg *CustomizedRegistry[V, A]) Len() int {
+	if reg == nil {
+		return 0
+	}
+
+	return reg.Registry.Len()
 }
 
 func (reg *Registry[V]) updateArrayLocked() ([]V, bool) {

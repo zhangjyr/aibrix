@@ -13,19 +13,28 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package cache
 
-import (
-	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
-	v1 "k8s.io/api/core/v1"
-)
+package tokenizer
 
-type Model struct {
-	Pods *CustomizedRegistry[*v1.Pod, *utils.PodArray]
-	// Metrics utils.SyncMap[string, metrics.MetricValue] // reserved
-	OutputPredictor types.OutputPredictor
-	QueueRouter     types.Router
+import "strings"
 
-	pendingRequests int32
+type stringTokenizer struct{}
+
+func NewStringTokenizer() Tokenizer {
+	return &stringTokenizer{}
+}
+
+func (s stringTokenizer) TokenizeInputText(text string) ([]byte, error) {
+	return convertStrArrayToByteArray(strings.Split(text, " ")), nil
+}
+
+func convertStrArrayToByteArray(tokens []string) []byte {
+	var x = []byte{}
+	for i := 0; i < len(tokens); i++ {
+		b := []byte(tokens[i])
+		for j := 0; j < len(b); j++ {
+			x = append(x, b[j])
+		}
+	}
+	return x
 }

@@ -39,6 +39,10 @@ func requestContext(model string) *types.RoutingContext {
 	return types.NewRoutingContext(context.Background(), model, "", nil)
 }
 
+func requestContextWithMessage(model string, message string) *types.RoutingContext {
+	return types.NewRoutingContext(context.Background(), model, message, nil)
+}
+
 func TestNoPods(t *testing.T) {
 	c := cache.Cache{}
 	r1 := randomRouter{}
@@ -151,24 +155,27 @@ func TestWithIPPods(t *testing.T) {
 		})
 	model := ""
 
+	pods := podsFromCache(c)
+	assert.NotEqual(t, 0, pods.Len(), "No pods initiailized")
+
 	r1 := randomRouter{}
-	targetPodIP, err := r1.Route(requestContext(model), podsFromCache(c))
-	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
+	targetPodIP, err := r1.Route(requestContext(model), pods)
 	assert.NoError(t, err)
+	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
 
 	r2 := leastRequestRouter{
 		cache: c,
 	}
-	targetPodIP, err = r2.Route(requestContext(model), podsFromCache(c))
-	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
+	targetPodIP, err = r2.Route(requestContext(model), pods)
 	assert.NoError(t, err)
+	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
 
 	r3 := throughputRouter{
 		cache: c,
 	}
-	targetPodIP, err = r3.Route(requestContext(model), podsFromCache(c))
-	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
+	targetPodIP, err = r3.Route(requestContext(model), pods)
 	assert.NoError(t, err)
+	assert.NotEmpty(t, targetPodIP, "targetPodIP is not empty")
 }
 
 // TestSelectRandomPod tests the selectRandomPod function.

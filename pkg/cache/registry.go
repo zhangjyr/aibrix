@@ -22,7 +22,8 @@ import (
 
 type Registry[V any] struct {
 	registry map[string]V
-	values   []V // Pods cache for quick iteration
+	values   []V  // Pods cache for quick iteration
+	valid    bool // If value valid?
 	mu       sync.RWMutex
 }
 
@@ -33,7 +34,9 @@ type CustomizedRegistry[V any, A comparable] struct {
 }
 
 func NewRegistry[V any]() *Registry[V] {
-	return &Registry[V]{}
+	return &Registry[V]{
+		valid: true,
+	}
 }
 
 func NewRegistryWithArrayProvider[V any, A comparable](provider func([]V) A) *CustomizedRegistry[V, A] {
@@ -52,7 +55,10 @@ func (reg *Registry[V]) Delete(key string) {
 	}
 
 	delete(reg.registry, key)
-	reg.values = nil
+	// Check stale
+	if len(reg.values) != len(reg.registry) {
+		reg.values, reg.valid = reg.values[:0], false // atomic set, Reuse base array
+	}
 }
 
 func (reg *CustomizedRegistry[V, A]) Delete(key string) {
@@ -77,8 +83,15 @@ func (reg *Registry[V]) Store(key string, value V) {
 		reg.registry = make(map[string]V, 1)
 	}
 
+	_, exist := reg.registry[key]
+	stale := len(reg.values) != len(reg.registry)
 	reg.registry[key] = value
-	reg.values = append(reg.values, value)
+	if !exist && !stale {
+		reg.values, reg.valid = append(reg.values, value), true // atomic set
+	} else {
+		// clear and wait regenerate
+		reg.values, reg.valid = reg.values[:0], false
+	}
 }
 
 func (reg *CustomizedRegistry[V, A]) Store(key string, value V) {
@@ -104,7 +117,7 @@ func (reg *Registry[V]) Array() (arr []V) {
 func (reg *CustomizedRegistry[V, A]) Array() (arr A) {
 	ret := reg.values
 	if ret != arr { // ret != nil value
-		return arr
+		return ret
 	}
 
 	reg.mu.Lock()
@@ -115,8 +128,8 @@ func (reg *CustomizedRegistry[V, A]) Array() (arr A) {
 }
 
 func (reg *Registry[V]) Len() int {
-	pods := reg.values
-	if pods != nil {
+	pods, valid := reg.values, reg.valid // atomic
+	if valid {
 		return len(pods)
 	}
 
@@ -128,8 +141,10 @@ func (reg *Registry[V]) Len() int {
 
 func (reg *Registry[V]) updateArrayLocked() ([]V, bool) {
 	reconstructed := false
-	if reg.values == nil && reg.registry != nil {
-		reg.values = make([]V, 0, len(reg.registry))
+	if !reg.valid && reg.registry != nil {
+		if cap(reg.values) < len(reg.registry) {
+			reg.values = make([]V, 0, len(reg.registry))
+		}
 		for _, pod := range reg.registry {
 			reg.values = append(reg.values, pod)
 		}

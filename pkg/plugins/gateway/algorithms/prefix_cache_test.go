@@ -17,11 +17,9 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,10 +53,10 @@ func Test_PrefixCache(t *testing.T) {
 			}},
 	}
 
-	targetPod, err := prefixCacheRouter.Route(types.NewRoutingContext(context.Background(), "m1", "this is first message", nil), &utils.PodArray{Pods: pods})
+	targetPod, err := prefixCacheRouter.Route(requestContextWithMessage("m1", "this is first message"), &utils.PodArray{Pods: pods})
 	assert.NoError(t, err)
 
-	targetPod2, err := prefixCacheRouter.Route(types.NewRoutingContext(context.Background(), "m1", "this is first message", nil), &utils.PodArray{Pods: pods})
+	targetPod2, err := prefixCacheRouter.Route(requestContextWithMessage("m1", "this is first message"), &utils.PodArray{Pods: pods})
 	assert.NoError(t, err)
 
 	assert.Equal(t, targetPod, targetPod2)

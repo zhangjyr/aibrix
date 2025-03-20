@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-	http://www.apache.org/licenses/LICENSE-2.0
+    http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,19 +13,19 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package cache
+
+package tokenizer
 
 import (
-	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
-	v1 "k8s.io/api/core/v1"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
-type Model struct {
-	Pods *CustomizedRegistry[*v1.Pod, *utils.PodArray]
-	// Metrics utils.SyncMap[string, metrics.MetricValue] // reserved
-	OutputPredictor types.OutputPredictor
-	QueueRouter     types.Router
+func Test_StringTokenizer(t *testing.T) {
+	sTokenizer := NewStringTokenizer()
 
-	pendingRequests int32
+	bArr, err := sTokenizer.TokenizeInputText("this is first message")
+	assert.NoError(t, err)
+	assert.Equal(t, []byte{116, 104, 105, 115, 105, 115, 102, 105, 114, 115, 116, 109, 101, 115, 115, 97, 103, 101}, bArr)
 }

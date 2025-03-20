@@ -18,10 +18,27 @@ package cache
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
+
+var (
+	enableGPUOptimizerTracing = getGPUOptimizerTracingFlag()
+)
+
+func getGPUOptimizerTracingFlag() bool {
+	value := utils.LoadEnv("AIBRIX_GPU_OPTIMIZER_TRACING_FLAG", "false")
+	boolVal, err := strconv.ParseBool(value)
+	if err != nil || !boolVal {
+		return false
+	}
+
+	return boolVal
+}
 
 type RequestTraceMetaKey int
 

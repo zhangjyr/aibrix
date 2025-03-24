@@ -26,20 +26,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-var (
-	enableGPUOptimizerTracing = getGPUOptimizerTracingFlag()
-)
-
-func getGPUOptimizerTracingFlag() bool {
-	value := utils.LoadEnv("AIBRIX_GPU_OPTIMIZER_TRACING_FLAG", "false")
-	boolVal, err := strconv.ParseBool(value)
-	if err != nil || !boolVal {
-		return false
-	}
-
-	return boolVal
-}
-
 type RequestTraceMetaKey int
 
 const (
@@ -51,7 +37,21 @@ const (
 	RequestTraceNumMetaKeys // Guardian for the number of RequestTraceMetaKey. This is not a actual meta key.
 )
 
+// enableGPUOptimizerTracing is a flag to enable tracing GPU optimizer, default false
+var enableGPUOptimizerTracing = getGPUOptimizerTracingFlag()
+
+func getGPUOptimizerTracingFlag() bool {
+	value := utils.LoadEnv("AIBRIX_GPU_OPTIMIZER_TRACING_FLAG", "false")
+	boolVal, err := strconv.ParseBool(value)
+	if err != nil || !boolVal {
+		return false
+	}
+
+	return boolVal
+}
+
 var requestTraceMetaKeys = [...]string{"meta_v", "meta_interval_sec", "meta_precision", "meta_total_reqs", "meta_pending_reqs", "meta_len"}
+var NewRequestTrace = newRequestTraceGen(nil)
 
 func (key RequestTraceMetaKey) ToString() string {
 	return requestTraceMetaKeys[key]
@@ -238,5 +238,3 @@ func newRequestTraceGen(tracePool *sync.Pool) func(term int64) *RequestTrace {
 		return reqTrace
 	}
 }
-
-var NewRequestTrace = newRequestTraceGen(nil)

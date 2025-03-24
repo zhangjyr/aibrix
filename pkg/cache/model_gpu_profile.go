@@ -20,6 +20,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
+	"time"
+
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 const ModelGPUNameTemplate = "aibrix:profile_%s_%s"
@@ -29,6 +33,21 @@ const ModelGPUNameTemplate = "aibrix:profile_%s_%s"
 // certain index. While 0.5 indicate neutual preference. 0.25 set
 // threshold closer to lower index and then prefer higher index.
 const SignatureTolerance = 0.5
+
+const defaultModelGPUProfileRefreshInterval = 10 * time.Second
+
+// enableModelGPUProfileCaching is a flag to enable caching model GPU profiles, default true
+var enableModelGPUProfileCaching = getModelGPUProfileCachingFlag()
+
+func getModelGPUProfileCachingFlag() bool {
+	value := utils.LoadEnv("AIBRIX_Model_GPU_PROFILE_CACHING_FLAG", "true")
+	boolVal, err := strconv.ParseBool(value)
+	if err != nil || !boolVal {
+		return false
+	}
+
+	return boolVal
+}
 
 type ModelGPUProfile struct {
 	Deployment string      `json:"gpu"` // k8s deployment that specified model and GPU information.

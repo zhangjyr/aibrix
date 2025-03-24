@@ -25,3 +25,12 @@ type Router interface {
 	// Route returns the target pod
 	Route(ctx *RoutingContext, arr *utils.PodArray) (string, error)
 }
+
+// RouterFunc provides a stateful way to get a router, allowing a struct to provide the router by strategy and model.
+type RouterProvider interface {
+	// GetRouter returns the router
+	GetRouter(ctx *RoutingContext) (Router, error)
+}
+
+// RouterProviderFunc provides a stateless way to get a router
+type RouterProviderFunc func(*RoutingContext) (Router, error)

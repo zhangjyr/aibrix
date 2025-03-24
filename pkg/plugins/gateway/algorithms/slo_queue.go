@@ -85,7 +85,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods *utils.PodArray) (req *types
 	// Most implementation goes here.
 
 	// Dedup deployments
-	c, err := cache.GetCache()
+	c, err := cache.Get()
 	if err != nil {
 		return nil, err
 	}

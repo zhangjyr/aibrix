@@ -37,7 +37,7 @@ func NewPendingLoadProvider() (*PendingLoadProvider, error) {
 	}, nil
 }
 
-func newPendingLoadProvider(cache *Cache) *PendingLoadProvider {
+func newPendingLoadProvider(cache Cache) *PendingLoadProvider {
 	return &PendingLoadProvider{
 		CachedLoadProvider: newCachedLoadProvider(cache, metrics.NormalizedPendings),
 	}

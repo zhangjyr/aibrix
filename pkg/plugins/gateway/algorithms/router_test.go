@@ -31,20 +31,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func podsFromCache(c *cache.Cache) *utils.PodArray {
-	return &utils.PodArray{Pods: c.GetPods()}
+func podsFromCache(c *cache.Store) *utils.PodArray {
+	return &utils.PodArray{Pods: c.ListPods()}
 }
 
 func requestContext(model string) *types.RoutingContext {
-	return types.NewRoutingContext(context.Background(), model, "", nil)
+	return types.NewRoutingContext(context.Background(), RouterNotSet, model, "", nil)
 }
 
 func requestContextWithMessage(model string, message string) *types.RoutingContext {
-	return types.NewRoutingContext(context.Background(), model, message, nil)
+	return types.NewRoutingContext(context.Background(), RouterNotSet, model, message, nil)
 }
 
 func TestNoPods(t *testing.T) {
-	c := cache.Cache{}
+	c := cache.Store{}
 	r1 := randomRouter{}
 	model := ""
 	targetPodIP, err := r1.Route(requestContext(model), podsFromCache(&c))

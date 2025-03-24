@@ -30,7 +30,7 @@ import (
 )
 
 var (
-	RouterLeastRequest Algorithms = "least-request"
+	RouterLeastRequest types.RoutingAlgorithms = "least-request"
 )
 
 func init() {
@@ -38,11 +38,11 @@ func init() {
 }
 
 type leastRequestRouter struct {
-	cache *cache.Cache
+	cache cache.Cache
 }
 
 func NewLeastRequestRouter() (types.Router, error) {
-	c, err := cache.GetCache()
+	c, err := cache.Get()
 	if err != nil {
 		return nil, err
 	}
@@ -66,17 +66,17 @@ func (r leastRequestRouter) Route(ctx *types.RoutingContext, pods *utils.PodArra
 	}
 
 	for _, pod := range readyPods {
-		runningReq, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.NumRequestsRunning)
+		runningReq, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.NumRequestsRunning)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		waitingReq, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.NumRequestsWaiting)
+		waitingReq, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.NumRequestsWaiting)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		swappedReq, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.NumRequestsSwapped)
+		swappedReq, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.NumRequestsSwapped)
 		if err != nil {
 			klog.Error(err)
 			continue

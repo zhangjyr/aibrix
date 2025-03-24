@@ -49,7 +49,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	cache.NewMetadataCache(config, stopCh, redisClient)
+
+	cache.InitForMetadata(config, stopCh, redisClient)
 
 	klog.Info("Starting listening on port 8090")
 	srv := metadata.NewHTTPServer(":8090", redisClient)

@@ -43,12 +43,12 @@ type CappedLoadProvider interface {
 
 // CachedLoadProvider reads metrics from the cache
 type CachedLoadProvider struct {
-	cache      *Cache
+	cache      Cache
 	metricName string
 }
 
 func NewCachedLoadProvider(metricName string) (*CachedLoadProvider, error) {
-	c, err := GetCache()
+	c, err := Get()
 	if err != nil {
 		return nil, err
 	}
@@ -56,19 +56,19 @@ func NewCachedLoadProvider(metricName string) (*CachedLoadProvider, error) {
 	return newCachedLoadProvider(c, metricName), nil
 }
 
-func newCachedLoadProvider(cache *Cache, metricName string) *CachedLoadProvider {
+func newCachedLoadProvider(cache Cache, metricName string) *CachedLoadProvider {
 	return &CachedLoadProvider{
 		cache:      cache,
 		metricName: metricName,
 	}
 }
 
-func (p *CachedLoadProvider) Cache() *Cache {
+func (p *CachedLoadProvider) Cache() Cache {
 	return p.cache
 }
 
 func (p *CachedLoadProvider) GetUtilization(ctx *types.RoutingContext, pod *v1.Pod) (float64, error) {
-	cached, err := p.cache.GetPodModelMetric(pod.Name, ctx.Model, p.metricName)
+	cached, err := p.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, p.metricName)
 	if err != nil {
 		return 0.0, err
 	}

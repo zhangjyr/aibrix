@@ -59,7 +59,7 @@ func Test_ValidateRoutingStrategy(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		currentValidation := routing.Validate(routing.Algorithms(tt.routingStrategy))
+		_, currentValidation := routing.Validate(tt.routingStrategy)
 		assert.Equal(t, tt.expectedValidation, currentValidation, tt.message)
 	}
 }

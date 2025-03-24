@@ -29,7 +29,7 @@ import (
 )
 
 var (
-	RouterLeastBusyTime Algorithms = "least-busy-time"
+	RouterLeastBusyTime types.RoutingAlgorithms = "least-busy-time"
 )
 
 func init() {
@@ -37,11 +37,11 @@ func init() {
 }
 
 type leastBusyTimeRouter struct {
-	cache *cache.Cache
+	cache cache.Cache
 }
 
 func NewLeastBusyTimeRouter() (types.Router, error) {
-	c, err := cache.GetCache()
+	c, err := cache.Get()
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +64,7 @@ func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, pods *utils.PodArr
 			continue
 		}
 
-		busyTimeRatio, err := r.cache.GetPodMetric(pod.Name, "gpu_busy_time_ratio") // todo: replace mock
+		busyTimeRatio, err := r.cache.GetMetricValueByPod(pod.Name, "gpu_busy_time_ratio") // todo: replace mock
 		if err != nil {
 			klog.Error(err)
 			continue

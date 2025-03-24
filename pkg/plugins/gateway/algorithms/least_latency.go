@@ -30,7 +30,7 @@ import (
 )
 
 var (
-	RouterLeastLatency Algorithms = "least-latency"
+	RouterLeastLatency types.RoutingAlgorithms = "least-latency"
 )
 
 func init() {
@@ -38,11 +38,11 @@ func init() {
 }
 
 type leastExpectedLatencyRouter struct {
-	cache *cache.Cache
+	cache cache.Cache
 }
 
 func NewLeastExpectedLatencyRouter() (types.Router, error) {
-	c, err := cache.GetCache()
+	c, err := cache.Get()
 	if err != nil {
 		return nil, err
 	}
@@ -65,12 +65,12 @@ func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods *utils
 	cntPromt := 0
 	cntGeneration := 0
 	for _, pod := range pods.Pods {
-		avgPromptTokens, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.AvgPromptToksPerReq)
+		avgPromptTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgPromptToksPerReq)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		avgGenerationTokens, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.AvgGenerationToksPerReq)
+		avgGenerationTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgGenerationToksPerReq)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -99,19 +99,19 @@ func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods *utils
 		}
 
 		// expected queuing latency
-		queuingLatency, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.RequestQueueTimeSeconds)
+		queuingLatency, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.RequestQueueTimeSeconds)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
 
 		// expected prefill latency
-		avgPromptTokens, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.AvgPromptToksPerReq)
+		avgPromptTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgPromptToksPerReq)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		PrefillTime, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.RequestPrefillTimeSeconds)
+		PrefillTime, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.RequestPrefillTimeSeconds)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -119,12 +119,12 @@ func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods *utils
 		prefillLatency := PrefillTime.GetHistogramValue().GetMean() / avgPromptTokens.GetSimpleValue() * guessPromptTokens
 
 		// expected decode latency
-		avgGenerationTokens, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.AvgGenerationToksPerReq)
+		avgGenerationTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgGenerationToksPerReq)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		DecodeTime, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.RequestDecodeTimeSeconds)
+		DecodeTime, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.RequestDecodeTimeSeconds)
 		if err != nil {
 			klog.Error(err)
 			continue

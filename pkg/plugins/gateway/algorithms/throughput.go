@@ -30,7 +30,7 @@ import (
 )
 
 var (
-	RouterThroughput Algorithms = "throughput"
+	RouterThroughput types.RoutingAlgorithms = "throughput"
 )
 
 func init() {
@@ -38,11 +38,11 @@ func init() {
 }
 
 type throughputRouter struct {
-	cache *cache.Cache
+	cache cache.Cache
 }
 
 func NewThroughputRouter() (types.Router, error) {
-	c, err := cache.GetCache()
+	c, err := cache.Get()
 	if err != nil {
 		return nil, err
 	}
@@ -66,12 +66,12 @@ func (r throughputRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray)
 	}
 
 	for _, pod := range readyPods {
-		promptThroughput, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.AvgPromptThroughputToksPerS)
+		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgPromptThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		generationThroughput, err := r.cache.GetPodModelMetric(pod.Name, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
+		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue

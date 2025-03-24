@@ -30,10 +30,14 @@ const podMetricPort = "8000"
 
 type RequestFeatures []float64
 
+// RoutingAlgorithms defines the routing algorithms
+type RoutingAlgorithms string
+
 // RoutingContext encapsulates the context information required for routing.
 // It can be extended with more fields as needed in the future.
 type RoutingContext struct {
 	context.Context
+	Algorithm   RoutingAlgorithms
 	Model       string
 	Message     string
 	RequestTime time.Time
@@ -53,9 +57,15 @@ var requestPool = sync.Pool{
 	},
 }
 
-func NewRoutingContext(ctx context.Context, model string, message string, predictor OutputPredictor) *RoutingContext {
+func (alg RoutingAlgorithms) NewContext(ctx context.Context, model string, message string, predictor OutputPredictor) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
-	request.reset(ctx, model, message, predictor)
+	request.reset(ctx, alg, model, message, predictor)
+	return request
+}
+
+func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithms, model string, message string, predictor OutputPredictor) *RoutingContext {
+	request := requestPool.Get().(*RoutingContext)
+	request.reset(ctx, algorithms, model, message, predictor)
 	return request
 }
 
@@ -140,8 +150,9 @@ func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
 	return fmt.Sprintf("%v:%v", pod.Status.PodIP, podMetricPort)
 }
 
-func (r *RoutingContext) reset(ctx context.Context, model string, message string, predictor OutputPredictor) {
+func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithms, model string, message string, predictor OutputPredictor) {
 	r.Context = ctx
+	r.Algorithm = algorithms
 	r.Model = model
 	r.Message = message
 	r.tokens = nil

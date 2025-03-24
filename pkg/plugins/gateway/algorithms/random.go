@@ -26,7 +26,7 @@ import (
 )
 
 var (
-	RouterRandom Algorithms = "random"
+	RouterRandom types.RoutingAlgorithms = "random"
 )
 
 func init() {

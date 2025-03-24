@@ -27,16 +27,16 @@ import (
 )
 
 var (
-	RouterQueueRouter Algorithms = "queue"
+	RouterSLORouter types.RoutingAlgorithms = "slo-router"
 )
 
 func init() {
-	Register(RouterQueueRouter, func(req *types.RoutingContext) (types.Router, error) {
-		c, err := cache.GetCache()
+	Register(RouterSLORouter, func(ctx *types.RoutingContext) (types.Router, error) {
+		c, err := cache.Get()
 		if err != nil {
 			return nil, err
 		}
-		return c.GetQueueRouter(req.Model)
+		return c.GetRouter(ctx)
 	})
 }
 

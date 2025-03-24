@@ -31,7 +31,7 @@ import (
 )
 
 var (
-	RouterPrefixCacheAndLoad Algorithms = "prefix-cache-and-load"
+	RouterPrefixCacheAndLoad types.RoutingAlgorithms = "prefix-cache-and-load"
 )
 
 func init() {

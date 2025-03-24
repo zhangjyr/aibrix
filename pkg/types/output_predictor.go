@@ -20,3 +20,9 @@ type OutputPredictor interface {
 
 	Predict(promptLen int) (outputLen int)
 }
+
+// OutputPredictorProvider provides a stateful way to get an output predictor, allowing a struct to provide the output predictor by model.
+type OutputPredictorProvider interface {
+	// GetOutputPredictor returns the output predictor
+	GetOutputPredictor(modelName string) (OutputPredictor, error)
+}

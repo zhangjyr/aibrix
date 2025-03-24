@@ -93,11 +93,22 @@ func getNewModelAdapterWithPods(modelName string, podNames []string) *modelv1alp
 	return adapter
 }
 
-func newTraceCache() *Cache {
-	return &Cache{
+func newCache() *Store {
+	return &Store{
+		initialized: true,
+	}
+}
+
+func newTraceCache() (store *Store, reset func()) {
+	oldFloag := enableGPUOptimizerTracing
+	enableGPUOptimizerTracing = true
+	reset = func() {
+		enableGPUOptimizerTracing = oldFloag
+	}
+	return &Store{
 		initialized:  true,
 		requestTrace: &utils.SyncMap[string, *RequestTrace]{},
-	}
+	}, reset
 }
 
 func TestCache(t *testing.T) {
@@ -105,7 +116,7 @@ func TestCache(t *testing.T) {
 	RunSpecs(t, "Cache Suite")
 }
 
-func (c *Cache) AddPod(obj interface{}) {
+func (c *Store) AddPod(obj interface{}) {
 	c.addPod(obj)
 }
 
@@ -133,7 +144,7 @@ func (c *lagacyCache) AddRequestTrace(modelName string, inputTokens, outputToken
 
 var _ = Describe("Cache", func() {
 	It("should both addPod create both pods and metaModels entry", func() {
-		cache := newTraceCache()
+		cache := newCache()
 
 		// Ignore pods without model label
 		podWOModel := getReadyPod("p1", "m1", 0)
@@ -177,7 +188,7 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should addModelAdapter create metaModels entry", func() {
-		cache := newTraceCache()
+		cache := newCache()
 		cache.addPod(getReadyPod("p1", "m1", 0))
 
 		// Success
@@ -214,7 +225,7 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should updatePod clear old mappings with no model adapter inherited", func() {
-		cache := newTraceCache()
+		cache := newCache()
 		oldPod := getReadyPod("p1", "m1", 0)
 		cache.addPod(oldPod)
 		cache.addModelAdapter(getNewModelAdapter("m1adapter", oldPod.Name))
@@ -260,11 +271,11 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should pods returned after updatePod reflect updated pods", func() {
-		cache := newTraceCache()
+		cache := newCache()
 
 		oldPod := getNewPod("p1", "m1", 0)
 		cache.addPod(oldPod)
-		pods, err := cache.GetPodsForModel("m1")
+		pods, err := cache.ListPodsByModel("m1")
 		Expect(err).To(BeNil())
 		Expect(pods.Len()).To(Equal(1))
 		Expect(utils.CountRoutablePods(pods.Pods)).To(Equal(0))
@@ -272,14 +283,14 @@ var _ = Describe("Cache", func() {
 		newPod := getReadyPod("p1", "m1", 0) // IP may changed due to migration
 		cache.updatePod(oldPod, newPod)
 
-		pods, err = cache.GetPodsForModel("m1")
+		pods, err = cache.ListPodsByModel("m1")
 		Expect(err).To(BeNil())
 		Expect(pods.Len()).To(Equal(1))
 		Expect(utils.CountRoutablePods(pods.Pods)).To(Equal(1))
 	})
 
 	It("should deletePod clear pod, model, and modelAdapter entrys", func() {
-		cache := newTraceCache()
+		cache := newCache()
 		pod := getReadyPod("p1", "m1", 0)
 		cache.addPod(pod)
 		cache.addModelAdapter(getNewModelAdapter("m1adapter", pod.Name))
@@ -307,7 +318,7 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should deleteModelAdapter remove mappings", func() {
-		cache := newTraceCache()
+		cache := newCache()
 		cache.addPod(getReadyPod("p1", "m1", 0))
 		cache.addPod(getReadyPod("p2", "m1", 0))
 		cache.addPod(getReadyPod("p3", "m1", 0))
@@ -346,7 +357,7 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should updateModelAdapter reset mappings", func() {
-		cache := newTraceCache()
+		cache := newCache()
 		cache.addPod(getReadyPod("p1", "m1", 0))
 		cache.addPod(getReadyPod("p2", "m1", 0))
 		cache.addPod(getReadyPod("p3", "m1", 0))
@@ -403,7 +414,7 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should GetPod return k8s pod", func() {
-		cache := newTraceCache()
+		cache := newCache()
 		pod := getReadyPod("p1", "m1", 0)
 		cache.addPod(pod)
 
@@ -416,65 +427,65 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should GetPods return k8s pod slice", func() {
-		cache := newTraceCache()
+		cache := newCache()
 		pod1 := getReadyPod("p1", "m1", 0)
 		pod2 := getReadyPod("p2", "m2", 0)
 		cache.addPod(pod1)
 		cache.addPod(pod2)
 
-		pods := cache.GetPods()
+		pods := cache.ListPods()
 		Expect(pods).To(HaveLen(2)) // Must be slice
 		Expect(pods).To(ContainElement(HaveField("ObjectMeta.Name", "p1")))
 		Expect(pods).To(ContainElement(HaveField("ObjectMeta.Name", "p2")))
 	})
 
 	It("should GetPodsForModel() return a PodArray", func() {
-		cache := newTraceCache()
+		cache := newCache()
 		pod1 := getReadyPod("p1", "m1", 0)
 		pod2 := getReadyPod("p2", "m2", 0)
 		cache.addPod(pod1)
 		cache.addPod(pod2)
 
-		_, err := cache.GetPodsForModel("m0")
+		_, err := cache.ListPodsByModel("m0")
 		Expect(err).ToNot(BeNil())
 
-		pods, err := cache.GetPodsForModel("m1")
+		pods, err := cache.ListPodsByModel("m1")
 		Expect(err).To(BeNil())
 		Expect(pods.Len()).To(Equal(1)) // Must be slice
 		Expect(pods.Pods).To(HaveLen(1))
 		Expect(pods.Pods).To(ContainElement(HaveField("ObjectMeta.Name", "p1")))
 	})
 
-	It("should GetModels return string slice", func() {
-		cache := newTraceCache()
+	It("should ListModels return string slice", func() {
+		cache := newCache()
 		pod1 := getReadyPod("p1", "m1", 0)
 		pod2 := getReadyPod("p2", "m2", 0)
 		cache.addPod(pod1)
 		cache.addPod(pod2)
 
-		exist := cache.CheckModelExists("m0")
+		exist := cache.HasModel("m0")
 		Expect(exist).To(BeFalse())
 
-		exist = cache.CheckModelExists("m1")
+		exist = cache.HasModel("m1")
 		Expect(exist).To(BeTrue())
 
-		models := cache.GetModels()
+		models := cache.ListModels()
 		Expect(models).To(HaveLen(2)) // Must be slice
 		Expect(models).To(ContainElement("m1"))
 		Expect(models).To(ContainElement("m2"))
 	})
 
 	It("should GetModelsForPod() return a string slice", func() {
-		cache := newTraceCache()
+		cache := newCache()
 		pod1 := getReadyPod("p1", "m1", 0)
 		pod2 := getReadyPod("p2", "m2", 0)
 		cache.addPod(pod1)
 		cache.addPod(pod2)
 
-		_, err := cache.GetModelsForPod("p0")
+		_, err := cache.ListModelsByPod("p0")
 		Expect(err).ToNot(BeNil())
 
-		models, err := cache.GetModelsForPod("p1")
+		models, err := cache.ListModelsByPod("p1")
 		Expect(err).To(BeNil())
 		Expect(models).To(HaveLen(1))
 		Expect(models).To(ContainElement("m1"))
@@ -488,11 +499,9 @@ var _ = Describe("Cache", func() {
 		}()
 
 		modelName := "llama-7b"
-		cache := newTraceCache()
-		metaPod := cache.addPodLocked(dummyPod)
-		cache.addPodAndModelMappingLocked(metaPod, modelName)
-		_, exist := cache.metaModels.Load(modelName)
-		Expect(exist).To(BeTrue())
+		cache, reset := newTraceCache()
+		defer reset()
+		cache.AddPod(getReadyPod("p1", modelName, 0))
 
 		term := cache.AddRequestCount(nil, "no use now", modelName)
 		Expect(cache.numRequestsTraces).To(Equal(int32(1)))
@@ -523,16 +532,10 @@ var _ = Describe("Cache", func() {
 	})
 
 	It("should global pending counter return 0.", func() {
-		oldFloag := enableGPUOptimizerTracing
-		enableGPUOptimizerTracing = true
-		defer func() {
-			enableGPUOptimizerTracing = oldFloag
-		}()
-
 		modelName := "llama-7b"
-		cache := newTraceCache()
-		metaPod := cache.addPodLocked(dummyPod)
-		cache.addPodAndModelMappingLocked(metaPod, modelName)
+		cache, reset := newTraceCache()
+		defer reset()
+		cache.AddPod(getReadyPod("p1", modelName, 0))
 
 		total := 100000
 		var wg sync.WaitGroup
@@ -576,7 +579,8 @@ func BenchmarkLagacyAddRequestTrace(b *testing.B) {
 }
 
 func BenchmarkAddRequest(b *testing.B) {
-	cache := newTraceCache()
+	cache, reset := newTraceCache()
+	defer reset()
 	thread := 10
 	var wg sync.WaitGroup
 	for i := 0; i < thread; i++ {
@@ -592,7 +596,8 @@ func BenchmarkAddRequest(b *testing.B) {
 }
 
 func BenchmarkDoneRequest(b *testing.B) {
-	cache := newTraceCache()
+	cache, reset := newTraceCache()
+	defer reset()
 	thread := 10
 	var wg sync.WaitGroup
 	term := cache.AddRequestCount(nil, "no use now", "model")
@@ -609,7 +614,8 @@ func BenchmarkDoneRequest(b *testing.B) {
 }
 
 func BenchmarkDoneRequestTrace(b *testing.B) {
-	cache := newTraceCache()
+	cache, reset := newTraceCache()
+	defer reset()
 	thread := 10
 	var wg sync.WaitGroup
 	term := cache.AddRequestCount(nil, "no use now", "model")

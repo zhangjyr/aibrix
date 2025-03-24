@@ -21,6 +21,9 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
+// ModelRouterProviderFunc defines the function to provider per-model router
+type ModelRouterProviderFunc func(modelName string) (types.Router, error)
+
 type Model struct {
 	Pods *CustomizedRegistry[*v1.Pod, *utils.PodArray]
 	// Metrics utils.SyncMap[string, metrics.MetricValue] // reserved

@@ -44,11 +44,11 @@ type Server struct {
 	ratelimiter         ratelimiter.RateLimiter
 	client              kubernetes.Interface
 	requestCountTracker map[string]int
-	cache               *cache.Cache
+	cache               cache.Cache
 }
 
 func NewServer(redisClient *redis.Client, client kubernetes.Interface) *Server {
-	c, err := cache.GetCache()
+	c, err := cache.Get()
 	if err != nil {
 		panic(err)
 	}
@@ -67,7 +67,8 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var user utils.User
 	var rpm, traceTerm int64
 	var respErrorCode int
-	var model, routingStrategy string
+	var model string
+	var routingAlgorithm types.RoutingAlgorithms
 	var routerCtx *types.RoutingContext
 	var stream, isRespError bool
 	ctx := srv.Context()
@@ -95,10 +96,10 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 		switch v := req.Request.(type) {
 
 		case *extProcPb.ProcessingRequest_RequestHeaders:
-			resp, user, rpm, routingStrategy = s.HandleRequestHeaders(ctx, requestID, req)
+			resp, user, rpm, routingAlgorithm = s.HandleRequestHeaders(ctx, requestID, req)
 
 		case *extProcPb.ProcessingRequest_RequestBody:
-			resp, model, routerCtx, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user, routingStrategy)
+			resp, model, routerCtx, stream, traceTerm = s.HandleRequestBody(ctx, requestID, req, user, routingAlgorithm)
 			if routerCtx != nil {
 				ctx = routerCtx
 			}
@@ -124,8 +125,8 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	}
 }
 
-func (s *Server) selectTargetPod(ctx *types.RoutingContext, routingStrategy routing.Algorithms, pods *utils.PodArray) (string, error) {
-	router, err := routing.Select(routingStrategy)(ctx)
+func (s *Server) selectTargetPod(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
+	router, err := routing.Select(ctx.Algorithm)(ctx)
 	if err != nil {
 		return "", err
 	}

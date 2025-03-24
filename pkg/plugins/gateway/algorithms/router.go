@@ -17,47 +17,36 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"context"
-
-	v1 "k8s.io/api/core/v1"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"k8s.io/klog/v2"
 )
 
-type Algorithms string
-
-// RoutingContext encapsulates the context information required for routing.
-// It can be extended with more fields as needed in the future.
-type RoutingContext struct {
-	Model   string
-	Message string
-	// Additional fields can be added here to expand the routing context.
-}
-
-// Router defines the interface for routing logic to select target pods.
-type Router interface {
-	// Route returns the target pod
-	Route(ctx context.Context, pods map[string]*v1.Pod, routingCtx RoutingContext) (string, error)
-}
+const (
+	RouterNotSet = ""
+)
 
 // Validate validates if user provided routing routers is supported by gateway
-func Validate(algorithms Algorithms) bool {
-	_, ok := routerStores[algorithms]
-	return ok
-}
-
-// Select the user provided routing routers is supported by gateway
-func Select(algorithms Algorithms) routerFunc {
-	if !Validate(algorithms) {
-		algorithms = RouterRandom
+func Validate(algorithms string) (types.RoutingAlgorithms, bool) {
+	if _, ok := routerRegistry[types.RoutingAlgorithms(algorithms)]; ok {
+		return types.RoutingAlgorithms(algorithms), ok
+	} else {
+		return RouterNotSet, false
 	}
-	return routerRegistry[algorithms]
 }
 
-func Register(algorithms Algorithms, router routerFunc) {
+// Select the user provided router provider supported by gateway, no error reported and fallback to random router
+// Call Validate before this function to ensure expected behavior.
+func Select(algorithms types.RoutingAlgorithms) types.RouterProviderFunc {
+	if provider, ok := routerRegistry[types.RoutingAlgorithms(algorithms)]; ok {
+		return provider
+	} else {
+		klog.Warningf("Unsupported router strategy: %s, use %s instead.", algorithms, RouterRandom)
+		return routerRegistry[RouterRandom]
+	}
+}
+
+func Register(algorithms types.RoutingAlgorithms, router types.RouterProviderFunc) {
 	routerRegistry[algorithms] = router
-	routerStores[algorithms] = struct{}{}
 }
 
-var routerRegistry = map[Algorithms]routerFunc{}
-var routerStores = map[Algorithms]any{}
-
-type routerFunc func() (Router, error)
+var routerRegistry = map[types.RoutingAlgorithms]types.RouterProviderFunc{}

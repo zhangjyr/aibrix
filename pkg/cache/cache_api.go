@@ -18,6 +18,8 @@ package cache
 
 import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
+	"github.com/vllm-project/aibrix/pkg/types"
+	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -39,28 +41,23 @@ type PodCache interface {
 	//   error: Error information if operation fails
 	GetPod(podName string) (*v1.Pod, error)
 
-	// ListPods gets all pods mapping
-	// Returns:
-	//   map[string]*v1.Pod: Pod objects mapped by pod names
-	ListPods() map[string]*v1.Pod
-
 	// ListPodsByModel gets pods associated with a model
 	// Parameters:
 	//   modelName: Name of the model
 	// Returns:
 	//   map[string]*v1.Pod: Pod objects matching the criteria
 	//   error: Error information if operation fails
-	ListPodsByModel(modelName string) (map[string]*v1.Pod, error)
+	ListPodsByModel(modelName string) (*utils.PodArray, error)
 }
 
 // ModelCache defines operations for model information caching
 type ModelCache interface {
-	// GetModel checks existence of a model
+	// HasModel checks existence of a model
 	// Parameters:
 	//   modelName: Name of the model
 	// Returns:
 	//   bool: True if model exists, false otherwise
-	GetModel(modelName string) bool
+	HasModel(modelName string) bool
 
 	// ListModels gets all model names
 	// Returns:
@@ -73,7 +70,7 @@ type ModelCache interface {
 	// Returns:
 	//   map[string]struct{}: Set of model names
 	//   error: Error information if operation fails
-	ListModelsByPod(podName string) (map[string]struct{}, error)
+	ListModelsByPod(podName string) ([]string, error)
 }
 
 // MetricCache defines operations for metric data caching
@@ -89,6 +86,7 @@ type MetricCache interface {
 
 	// GetMetricValueByPodModel gets metric value for pod-model pair
 	// Parameters:
+	//   ctx: Routing context
 	//   podName: Name of the pod
 	//   modelName: Name of the model
 	//   metricName: Name of the metric
@@ -96,21 +94,6 @@ type MetricCache interface {
 	//   metrics.MetricValue: Retrieved metric value
 	//   error: Error information if operation fails
 	GetMetricValueByPodModel(podName, modelName string, metricName string) (metrics.MetricValue, error)
-
-	// AddRequestCount starts tracking request count
-	// Parameters:
-	//   requestID: Unique request identifier
-	//   modelName: Name of the model
-	// Returns:
-	//   int64: Trace term identifier
-	AddRequestCount(requestID string, modelName string) (traceTerm int64)
-
-	// DoneRequestCount completes request count tracking
-	// Parameters:
-	//   requestID: Unique request identifier
-	//   modelName: Name of the model
-	//   traceTerm: Trace term identifier
-	DoneRequestCount(requestID string, modelName string, traceTerm int64)
 
 	// AddSubscriber adds a metric subscriber
 	// Parameters:
@@ -120,20 +103,29 @@ type MetricCache interface {
 
 // TraceCache defines operations for request tracing
 type TraceCache interface {
-	// AddRequestTrace initiates request tracing
+	// AddRequestCount starts tracking request count
+	// Parameters:
+	//   ctx: Routing context
+	//   requestID: Unique request identifier
+	//   modelName: Name of the model
+	// Returns:
+	//   int64: Trace term identifier
+	AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64)
+
+	// DoneRequestCount completes request count tracking
 	// Parameters:
 	//   requestID: Unique request identifier
 	//   modelName: Name of the model
-	//   inputTokens: Number of input tokens
-	//   outputTokens: Number of output tokens
-	AddRequestTrace(requestID string, modelName string, inputTokens, outputTokens int64)
+	//   traceTerm: Trace term identifier
+	DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64)
 
 	// DoneRequestTrace completes request tracing
 	// Parameters:
+	//   ctx: Routing context
 	//   requestID: Unique request identifier
 	//   modelName: Name of the model
 	//   inputTokens: Number of input tokens
 	//   outputTokens: Number of output tokens
 	//   traceTerm: Trace term identifier
-	DoneRequestTrace(requestID string, modelName string, inputTokens, outputTokens, traceTerm int64)
+	DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens, outputTokens, traceTerm int64)
 }

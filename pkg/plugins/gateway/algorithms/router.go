@@ -37,7 +37,7 @@ func Validate(algorithms string) (types.RoutingAlgorithms, bool) {
 // Select the user provided router provider supported by gateway, no error reported and fallback to random router
 // Call Validate before this function to ensure expected behavior.
 func Select(algorithms types.RoutingAlgorithms) types.RouterProviderFunc {
-	if provider, ok := routerRegistry[types.RoutingAlgorithms(algorithms)]; ok {
+	if provider, ok := routerRegistry[algorithms]; ok {
 		return provider
 	} else {
 		klog.Warningf("Unsupported router strategy: %s, use %s instead.", algorithms, RouterRandom)

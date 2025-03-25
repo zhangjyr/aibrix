@@ -23,7 +23,6 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -51,15 +50,15 @@ func NewLeastBusyTimeRouter() (types.Router, error) {
 	}, nil
 }
 
-func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
+func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	var targetPod *v1.Pod
 	minBusyTimeRatio := math.MaxFloat64 // <= 1 in general
 
-	if len(pods.Pods) == 0 {
+	if pods.Len() == 0 {
 		return "", fmt.Errorf("no available pods for request routing")
 	}
 
-	for _, pod := range pods.Pods {
+	for _, pod := range pods.All() {
 		if pod.Status.PodIP == "" {
 			continue
 		}
@@ -82,7 +81,7 @@ func (r leastBusyTimeRouter) Route(ctx *types.RoutingContext, pods *utils.PodArr
 	if targetPod == nil {
 		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPod, err = selectRandomPod(pods.Pods, rand.Intn)
+		targetPod, err = selectRandomPod(pods.All(), rand.Intn)
 		if err != nil {
 			return "", err
 		}

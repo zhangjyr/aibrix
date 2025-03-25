@@ -22,7 +22,6 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -68,7 +67,7 @@ func (c *Store) ListPods() []*v1.Pod {
 //
 //	*utils.PodArray: PodArray wrapper for a slice of Pod objects
 //	error: Error if model doesn't exist
-func (c *Store) ListPodsByModel(modelName string) (*utils.PodArray, error) {
+func (c *Store) ListPodsByModel(modelName string) (types.PodList, error) {
 	meta, ok := c.metaModels.Load(modelName)
 	if !ok {
 		return nil, fmt.Errorf("model does not exist in the cache: %s", modelName)

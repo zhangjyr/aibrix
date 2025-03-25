@@ -437,8 +437,8 @@ func (p *prefixCacheAndLoadRouter) updatePodSet(readyPods []*v1.Pod) {
 	}
 }
 
-func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
-	readyPods := utils.FilterRoutablePods(pods.Pods)
+func (p *prefixCacheAndLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	readyPods := utils.FilterRoutablePods(pods.All())
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}

@@ -26,6 +26,7 @@ const (
 	DeploymentIdentifier string = "app.kubernetes.io/name"
 )
 
+// PodArray is a simple implementation of types.PodList indexed by deployment names
 type PodArray struct {
 	Pods []*v1.Pod
 
@@ -41,7 +42,14 @@ func (arr *PodArray) Len() int {
 	return len(arr.Pods)
 }
 
-func (arr *PodArray) PodsByDeployments(deploymentName string) []*v1.Pod {
+func (arr *PodArray) All() []*v1.Pod {
+	if arr == nil {
+		return nil
+	}
+	return arr.Pods
+}
+
+func (arr *PodArray) ListByIndex(deploymentName string) []*v1.Pod {
 	if len(arr.Pods) == 0 {
 		return nil
 	}
@@ -53,7 +61,7 @@ func (arr *PodArray) PodsByDeployments(deploymentName string) []*v1.Pod {
 	return arr.podsByDeployment[deploymentName]
 }
 
-func (arr *PodArray) Deployments() []string {
+func (arr *PodArray) Indexes() []string {
 	if len(arr.Pods) == 0 {
 		return nil
 	}

@@ -24,7 +24,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -52,11 +51,11 @@ func NewLeastExpectedLatencyRouter() (types.Router, error) {
 	}, nil
 }
 
-func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
+func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	var targetPod *v1.Pod
 	minExpectedLatency := math.MaxFloat64
 
-	if len(pods.Pods) == 0 {
+	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
@@ -64,7 +63,7 @@ func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods *utils
 	sumGenerationTokens := 0.0
 	cntPromt := 0
 	cntGeneration := 0
-	for _, pod := range pods.Pods {
+	for _, pod := range pods.All() {
 		avgPromptTokens, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgPromptToksPerReq)
 		if err != nil {
 			klog.Error(err)
@@ -93,7 +92,7 @@ func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods *utils
 		guessGenerationTokens = sumGenerationTokens / float64(cntGeneration)
 	}
 
-	for _, pod := range pods.Pods {
+	for _, pod := range pods.All() {
 		if pod.Status.PodIP == "" {
 			continue
 		}
@@ -145,7 +144,7 @@ func (r leastExpectedLatencyRouter) Route(ctx *types.RoutingContext, pods *utils
 	if targetPod == nil {
 		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPod, err = selectRandomPod(pods.Pods, rand.Intn)
+		targetPod, err = selectRandomPod(pods.All(), rand.Intn)
 		if err != nil {
 			return "", err
 		}

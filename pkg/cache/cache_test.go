@@ -274,7 +274,7 @@ var _ = Describe("Cache", func() {
 		pods, err := cache.ListPodsByModel("m1")
 		Expect(err).To(BeNil())
 		Expect(pods.Len()).To(Equal(1))
-		Expect(utils.CountRoutablePods(pods.Pods)).To(Equal(0))
+		Expect(utils.CountRoutablePods(pods.All())).To(Equal(0))
 
 		newPod := getReadyPod("p1", "m1", 0) // IP may changed due to migration
 		cache.updatePod(oldPod, newPod)
@@ -282,7 +282,7 @@ var _ = Describe("Cache", func() {
 		pods, err = cache.ListPodsByModel("m1")
 		Expect(err).To(BeNil())
 		Expect(pods.Len()).To(Equal(1))
-		Expect(utils.CountRoutablePods(pods.Pods)).To(Equal(1))
+		Expect(utils.CountRoutablePods(pods.All())).To(Equal(1))
 	})
 
 	It("should deletePod clear pod, model, and modelAdapter entrys", func() {
@@ -448,8 +448,8 @@ var _ = Describe("Cache", func() {
 		pods, err := cache.ListPodsByModel("m1")
 		Expect(err).To(BeNil())
 		Expect(pods.Len()).To(Equal(1)) // Must be slice
-		Expect(pods.Pods).To(HaveLen(1))
-		Expect(pods.Pods).To(ContainElement(HaveField("ObjectMeta.Name", "p1")))
+		Expect(pods.All()).To(HaveLen(1))
+		Expect(pods.All()).To(ContainElement(HaveField("ObjectMeta.Name", "p1")))
 	})
 
 	It("should ListModels return string slice", func() {

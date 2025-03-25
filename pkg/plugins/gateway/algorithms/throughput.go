@@ -52,15 +52,15 @@ func NewThroughputRouter() (types.Router, error) {
 	}, nil
 }
 
-func (r throughputRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
+func (r throughputRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	var targetPod *v1.Pod
 	minCount := math.MaxFloat64
 
-	if len(pods.Pods) == 0 {
+	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
-	readyPods := utils.FilterRoutablePods(pods.Pods)
+	readyPods := utils.FilterRoutablePods(pods.All())
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no ready pods available for fallback")
 	}
@@ -92,7 +92,7 @@ func (r throughputRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray)
 	if targetPod == nil {
 		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPod, err = selectRandomPod(pods.Pods, rand.Intn)
+		targetPod, err = selectRandomPod(pods.All(), rand.Intn)
 		if err != nil {
 			return "", err
 		}

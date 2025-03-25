@@ -19,7 +19,6 @@ package cache
 import (
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -28,7 +27,7 @@ type Cache interface {
 	PodCache
 	ModelCache
 	MetricCache
-	TraceCache
+	RequestTracker
 }
 
 // PodCache defines operations for pod information caching
@@ -47,7 +46,7 @@ type PodCache interface {
 	// Returns:
 	//   map[string]*v1.Pod: Pod objects matching the criteria
 	//   error: Error information if operation fails
-	ListPodsByModel(modelName string) (*utils.PodArray, error)
+	ListPodsByModel(modelName string) (types.PodList, error)
 }
 
 // ModelCache defines operations for model information caching
@@ -101,8 +100,8 @@ type MetricCache interface {
 	AddSubscriber(subscriber metrics.MetricSubscriber)
 }
 
-// TraceCache defines operations for request tracing
-type TraceCache interface {
+// RequestTracker defines operations for track workload statistics
+type RequestTracker interface {
 	// AddRequestCount starts tracking request count
 	// Parameters:
 	//   ctx: Routing context
@@ -112,14 +111,14 @@ type TraceCache interface {
 	//   int64: Trace term identifier
 	AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64)
 
-	// DoneRequestCount completes request count tracking
+	// DoneRequestCount completes request count tracking, only one DoneRequestXXX should be called for a request
 	// Parameters:
 	//   requestID: Unique request identifier
 	//   modelName: Name of the model
 	//   traceTerm: Trace term identifier
 	DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64)
 
-	// DoneRequestTrace completes request tracing
+	// DoneRequestTrace completes request tracing, only one DoneRequestXXX should be called for a request
 	// Parameters:
 	//   ctx: Routing context
 	//   requestID: Unique request identifier

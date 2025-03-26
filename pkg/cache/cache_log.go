@@ -23,6 +23,11 @@ import (
 )
 
 func (c *Store) debugInfo() {
+	if !klog.V(4).Enabled() {
+		// skip debug info
+		return
+	}
+
 	c.metaPods.Range(func(podName string, pod *Pod) bool {
 		klog.V(4).Infof("pod: %s, podIP: %v, models: %s", podName, pod.Status.PodIP, strings.Join(pod.Models.Array(), " "))
 		pod.Metrics.Range(func(metricName string, metricVal metrics.MetricValue) bool {
@@ -41,7 +46,7 @@ func (c *Store) debugInfo() {
 			podList.WriteString(pod.Name)
 			podList.WriteByte(' ')
 		}
-		klog.V(4).Infof("model: %s, pods: %v", modelName, podList)
+		klog.V(4).Infof("model: %s, pods: %s", modelName, podList.String())
 		return true
 	})
 }

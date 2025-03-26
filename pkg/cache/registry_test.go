@@ -73,6 +73,7 @@ var _ = Describe("Registry", func() {
 
 			// Check if the item is in the Array() output
 			Expect(registry.Len()).To(Equal(1))
+			Expect(len(registry.Array())).To(Equal(1))
 			Expect(registry.Array()).To(ContainElement(item))
 
 			// Remove the item from the registry
@@ -80,6 +81,7 @@ var _ = Describe("Registry", func() {
 			registry.Store(item, item2)
 			// Check if the item is no longer in the Array() output
 			Expect(registry.Len()).To(Equal(1))
+			Expect(len(registry.Array())).To(Equal(1))
 			Expect(registry.Array()).To(ContainElement(item2))
 		})
 
@@ -89,12 +91,14 @@ var _ = Describe("Registry", func() {
 			registry.Store(item, item)
 			// Check if the item is in the Array() output
 			Expect(registry.Len()).To(Equal(1))
+			Expect(len(registry.Array())).To(Equal(1))
 			Expect(registry.Array()).To(ContainElement(item))
 
 			// Remove the item from the registry
 			registry.Delete(item)
 			// Check if the item is no longer in the Array() output
 			Expect(registry.Len()).To(Equal(0))
+			Expect(len(registry.Array())).To(Equal(0))
 			Expect(registry.Array()).NotTo(ContainElement(item))
 
 			// Check 0 length leads same result as nil
@@ -103,8 +107,28 @@ var _ = Describe("Registry", func() {
 			registry.Store(item2, item2)
 			// Check if the item is in the Array() output
 			Expect(registry.Len()).To(Equal(2))
+			Expect(len(registry.Array())).To(Equal(2))
 			Expect(registry.Array()).To(ContainElement(item))
 			Expect(registry.Array()).To(ContainElement(item2))
+		})
+
+		It("should concurrent updateArrayLocked call return cached array", func() {
+			// Add an item to the registry
+			registry.Store(testKeys[0], testKeys[0])
+			registry.values, registry.valid = nil, false
+
+			arr, reconstructed := registry.updateArrayLocked()
+			Expect(reconstructed).To(BeTrue())
+			Expect(len(arr)).To(Equal(1))
+			Expect(registry.values).To(Equal(arr))
+			Expect(registry.valid).To(BeTrue())
+
+			// Concurrent call, assumeing guarded by mutex
+			arr, reconstructed = registry.updateArrayLocked()
+			Expect(reconstructed).To(BeFalse())
+			Expect(len(arr)).To(Equal(1))
+			Expect(registry.values).To(Equal(arr))
+			Expect(registry.valid).To(BeTrue())
 		})
 	})
 
@@ -120,11 +144,13 @@ var _ = Describe("Registry", func() {
 		It("should nil customized registry status accessible", func() {
 			var registry *CustomizedRegistry[*v1.Pod, *utils.PodArray]
 			Expect(registry.Len()).To(Equal(0))
+			Expect(registry.Array().Len()).To(Equal(0))
 			Expect(registry.Array()).To(BeNil())
 		})
 
 		It("verify empty customized registry status", func() {
 			Expect(registry.Len()).To(Equal(0))
+			Expect(registry.Array().Len()).To(Equal(0))
 			Expect(registry.Array()).ToNot(BeNil())
 			Expect(registry.Array().Pods).To(BeEmpty())
 
@@ -138,6 +164,8 @@ var _ = Describe("Registry", func() {
 
 			// Check if the item is in the Array() output
 			Expect(registry.Len()).To(Equal(1))
+			Expect(registry.Array().Len()).To(Equal(1))
+			Expect(len(registry.Array().Pods)).To(Equal(1))
 			Expect(registry.Array().Pods).To(ContainElement(item))
 
 			// Remove the item from the registry
@@ -145,6 +173,8 @@ var _ = Describe("Registry", func() {
 			registry.Store(key2, item2)
 			// Check if the item is no longer in the Array() output
 			Expect(registry.Len()).To(Equal(2))
+			Expect(registry.Array().Len()).To(Equal(2))
+			Expect(len(registry.Array().Pods)).To(Equal(2))
 			Expect(registry.Array().Pods).To(ContainElement(item))
 			Expect(registry.Array().Pods).To(ContainElement(item2))
 		})
@@ -156,6 +186,8 @@ var _ = Describe("Registry", func() {
 
 			// Check if the item is in the Array() output
 			Expect(registry.Len()).To(Equal(1))
+			Expect(registry.Array().Len()).To(Equal(1))
+			Expect(len(registry.Array().Pods)).To(Equal(1))
 			Expect(registry.Array().Pods).To(ContainElement(item))
 
 			// Remove the item from the registry
@@ -163,6 +195,8 @@ var _ = Describe("Registry", func() {
 			registry.Store(key, item2)
 			// Check if the item is no longer in the Array() output
 			Expect(registry.Len()).To(Equal(1))
+			Expect(registry.Array().Len()).To(Equal(1))
+			Expect(len(registry.Array().Pods)).To(Equal(1))
 			Expect(registry.Array().Pods).To(ContainElement(item2))
 		})
 
@@ -172,18 +206,24 @@ var _ = Describe("Registry", func() {
 			registry.Store(key, item)
 			// Check if the item is in the Array() output
 			Expect(registry.Len()).To(Equal(1))
+			Expect(registry.Array().Len()).To(Equal(1))
+			Expect(len(registry.Array().Pods)).To(Equal(1))
 			Expect(registry.Array().Pods).To(ContainElement(item))
 
 			// Remove the item from the registry
 			registry.Delete(key)
 			// Check if the item is no longer in the Array() output
 			Expect(registry.Len()).To(Equal(0))
+			Expect(registry.Array().Len()).To(Equal(0))
+			Expect(len(registry.Array().Pods)).To(Equal(0))
 			Expect(registry.Array().Pods).NotTo(ContainElement(item))
 
 			// Check 0 length leads same result as nil
 			registry.Store(key, item)
 			// Check if the item is in the Array() output
 			Expect(registry.Len()).To(Equal(1))
+			Expect(registry.Array().Len()).To(Equal(1))
+			Expect(len(registry.Array().Pods)).To(Equal(1))
 			Expect(registry.Array().Pods).To(ContainElement(item))
 		})
 	})

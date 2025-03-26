@@ -110,7 +110,7 @@ func (c *Store) addPod(obj interface{}) {
 	c.addPodAndModelMappingLocked(metaPod, modelName)
 
 	klog.V(4).Infof("POD CREATED: %s/%s", pod.Namespace, pod.Name)
-	go c.debugInfo()
+	c.debugInfo()
 }
 
 func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
@@ -156,7 +156,7 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	}
 
 	klog.V(4).Infof("POD UPDATED: %s/%s %s", newPod.Namespace, newPod.Name, newPod.Status.Phase)
-	go c.debugInfo()
+	c.debugInfo()
 }
 
 func (c *Store) deletePod(obj interface{}) {
@@ -179,7 +179,7 @@ func (c *Store) deletePod(obj interface{}) {
 	}
 
 	klog.V(4).Infof("POD DELETED: %s/%s", pod.Namespace, pod.Name)
-	go c.debugInfo()
+	c.debugInfo()
 }
 
 func (c *Store) addModelAdapter(obj interface{}) {
@@ -192,7 +192,7 @@ func (c *Store) addModelAdapter(obj interface{}) {
 	}
 
 	klog.V(4).Infof("MODELADAPTER CREATED: %s/%s", model.Namespace, model.Name)
-	go c.debugInfo()
+	c.debugInfo()
 }
 
 func (c *Store) updateModelAdapter(oldObj interface{}, newObj interface{}) {
@@ -210,7 +210,7 @@ func (c *Store) updateModelAdapter(oldObj interface{}, newObj interface{}) {
 	}
 
 	klog.V(4).Infof("MODELADAPTER UPDATED. %s/%s %s", oldModel.Namespace, oldModel.Name, newModel.Status.Phase)
-	go c.debugInfo()
+	c.debugInfo()
 }
 
 func (c *Store) deleteModelAdapter(obj interface{}) {
@@ -223,7 +223,7 @@ func (c *Store) deleteModelAdapter(obj interface{}) {
 	}
 
 	klog.V(4).Infof("MODELADAPTER DELETED: %s/%s", model.Namespace, model.Name)
-	go c.debugInfo()
+	c.debugInfo()
 }
 
 func (c *Store) addPodLocked(pod *v1.Pod) *Pod {

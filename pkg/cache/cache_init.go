@@ -186,7 +186,9 @@ func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 				// Periodically update metrics
 				store.updatePodMetrics()
 				store.updateModelMetrics()
-				// store.debugInfo()
+				if klog.V(5).Enabled() {
+					store.debugInfo()
+				}
 			case <-stopCh:
 				ticker.Stop()
 				return

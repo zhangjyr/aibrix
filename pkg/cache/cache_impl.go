@@ -66,9 +66,9 @@ func (c *Store) ListPods() []*v1.Pod {
 //
 // Returns:
 //
-//	*utils.PodArray: PodArray wrapper for a slice of Pod objects
+//	types.PodList: PodArray wrapper for a slice of Pod objects
 //	error: Error if model doesn't exist
-func (c *Store) ListPodsByModel(modelName string) (*utils.PodArray, error) {
+func (c *Store) ListPodsByModel(modelName string) (types.PodList, error) {
 	meta, ok := c.metaModels.Load(modelName)
 	if !ok {
 		return nil, fmt.Errorf("model does not exist in the cache: %s", modelName)

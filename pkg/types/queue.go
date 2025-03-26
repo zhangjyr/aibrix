@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package utils
+package types
 
 import (
 	"time"
@@ -22,7 +22,7 @@ import (
 
 type GlobalQueue[V any] interface {
 	Enqueue(V, time.Time) error
-	Peek(time.Time, *PodArray) (V, error)
+	Peek(time.Time, PodList) (V, error)
 	Dequeue() (V, error)
 	Len() int
 }
@@ -37,7 +37,7 @@ func (q *SimpleQueue[V]) Enqueue(c V, _ time.Time) error {
 	return nil
 }
 
-func (q *SimpleQueue[V]) Peek(_ time.Time, _ *PodArray) (c V, err error) {
+func (q *SimpleQueue[V]) Peek(_ time.Time, _ PodList) (c V, err error) {
 	if len(q.queue) == 0 {
 		return
 	}

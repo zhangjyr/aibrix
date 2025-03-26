@@ -69,7 +69,7 @@ var _ = Describe("PodArray", func() {
 			go func(name string) {
 				defer wg.Done()
 				var podsByDeployment []*v1.Pod
-				Expect(func() { podsByDeployment = podArray.PodsByDeployments(name) }).ShouldNot(Panic())
+				Expect(func() { podsByDeployment = podArray.ListByIndex(name) }).ShouldNot(Panic())
 				Expect(len(podsByDeployment)).To(Equal(5))
 			}(deploymentName)
 		}

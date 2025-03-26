@@ -44,7 +44,7 @@ type SLOQueue struct {
 	types.Router
 
 	modelName string
-	subs      utils.SyncMap[string, *utils.SimpleQueue[*types.RoutingContext]]
+	subs      utils.SyncMap[string, *types.SimpleQueue[*types.RoutingContext]]
 	features  utils.SyncMap[string, types.RequestFeatures]
 	subpool   sync.Pool
 
@@ -58,13 +58,13 @@ func NewSLOQueue(base types.Router, modelName string) (router *SLOQueue) {
 		Router:    base,
 		modelName: modelName,
 	}
-	router.subpool.New = func() any { return &utils.SimpleQueue[*types.RoutingContext]{} }
+	router.subpool.New = func() any { return &types.SimpleQueue[*types.RoutingContext]{} }
 	router.expandDequeueCandidatesLocked(10) // Arbitarily reserve 10 slots
 	return router
 }
 
 func (q *SLOQueue) Enqueue(c *types.RoutingContext, currentTime time.Time) error {
-	newQueue := q.subpool.Get().(*utils.SimpleQueue[*types.RoutingContext])
+	newQueue := q.subpool.Get().(*types.SimpleQueue[*types.RoutingContext])
 	features, err := c.Features()
 	if err != nil {
 		return err
@@ -81,7 +81,7 @@ func (q *SLOQueue) Enqueue(c *types.RoutingContext, currentTime time.Time) error
 	return nil
 }
 
-func (q *SLOQueue) Peek(currentTime time.Time, pods *utils.PodArray) (req *types.RoutingContext, err error) {
+func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (req *types.RoutingContext, err error) {
 	// Most implementation goes here.
 
 	// Dedup deployments
@@ -89,7 +89,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods *utils.PodArray) (req *types
 	if err != nil {
 		return nil, err
 	}
-	deployments := pods.Deployments()
+	deployments := pods.Indexes()
 	deploymentProfiles := make([]*cache.ModelGPUProfile, len(deployments))
 	for i, deploymentName := range deployments {
 		deploymentProfiles[i], err = c.GetModelProfileByDeploymentName(deploymentName, q.modelName)
@@ -102,7 +102,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods *utils.PodArray) (req *types
 
 	// Refill candidates
 	q.dequeueCandidates = q.dequeueCandidates[:0]
-	q.subs.Range(func(key string, sub *utils.SimpleQueue[*types.RoutingContext]) bool {
+	q.subs.Range(func(key string, sub *types.SimpleQueue[*types.RoutingContext]) bool {
 		if sub.Len() > 0 {
 			r, _ := sub.Peek(currentTime, pods)
 			// Reuse a dequeue candidate
@@ -154,7 +154,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods *utils.PodArray) (req *types
 	for _, candidate := range q.dequeueCandidates {
 		q.lastSubKey = candidate.SubKey
 		if monogenousGPURouting {
-			q.lastPodCandidate, _ = q.Router.Route(candidate.RoutingContext, &utils.PodArray{Pods: pods.PodsByDeployments(candidate.ProfileKey)})
+			q.lastPodCandidate, _ = q.Router.Route(candidate.RoutingContext, &utils.PodArray{Pods: pods.ListByIndex(candidate.ProfileKey)})
 		} else {
 			q.lastPodCandidate, _ = q.Router.Route(candidate.RoutingContext, pods)
 		}
@@ -177,14 +177,14 @@ func (q *SLOQueue) Dequeue() (*types.RoutingContext, error) {
 }
 
 func (q *SLOQueue) Len() (total int) {
-	q.subs.Range(func(_ string, sub *utils.SimpleQueue[*types.RoutingContext]) bool {
+	q.subs.Range(func(_ string, sub *types.SimpleQueue[*types.RoutingContext]) bool {
 		total += sub.Len()
 		return true
 	})
 	return
 }
 
-func (q *SLOQueue) Route(ctx *types.RoutingContext, pods *utils.PodArray) (podIP string, err error) {
+func (q *SLOQueue) Route(ctx *types.RoutingContext, pods types.PodList) (podIP string, err error) {
 	if len(q.lastPodCandidate) == 0 {
 		return "", fmt.Errorf("call SLOQueue.Peek first")
 	}

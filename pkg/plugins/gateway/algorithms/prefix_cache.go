@@ -82,13 +82,13 @@ func NewPrefixCacheRouter() (types.Router, error) {
 	}, nil
 }
 
-func (p prefixCacheRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
-	readyPods := utils.FilterRoutablePods(pods.Pods)
+func (p prefixCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	readyPods := utils.FilterRoutablePods(pods.All())
 	if len(readyPods) == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 	if len(readyPods) == 1 {
-		for _, pod := range pods.Pods {
+		for _, pod := range readyPods {
 			ctx.SetTargetPod(pod)
 			return ctx.TargetAddress(), nil
 		}

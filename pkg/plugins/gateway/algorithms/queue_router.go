@@ -22,7 +22,6 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	"k8s.io/klog/v2"
 )
 
@@ -42,29 +41,15 @@ func init() {
 
 type queueRouter struct {
 	router         types.Router
-	queue          utils.GlobalQueue[*types.RoutingContext]
-	chRouteTrigger chan *utils.PodArray
-
-	// providers             []*Producer
-	// dequeueCandidates     []*CandidateCustomer
-	// lastSubCandidate      int
-	// lastConsumerCandidate *ConsumerQueue
-	// lastPeek              float64
-
-	// // Feature switch
-	// peekDelay             float64
-	// queueOverallSLO       bool
-	// monogenousGPURouting  bool
-	// useProfileServiceTime bool
-
-	// provider CappedLoadProvider
+	queue          types.GlobalQueue[*types.RoutingContext]
+	chRouteTrigger chan types.PodList
 }
 
-func NewQueueRouter(backend types.Router, queue utils.GlobalQueue[*types.RoutingContext]) (types.Router, error) {
+func NewQueueRouter(backend types.Router, queue types.GlobalQueue[*types.RoutingContext]) (types.Router, error) {
 	router := &queueRouter{
 		router:         backend,
 		queue:          queue,
-		chRouteTrigger: make(chan *utils.PodArray),
+		chRouteTrigger: make(chan types.PodList),
 	}
 
 	go router.serve()
@@ -94,8 +79,8 @@ func NewLeastLoadSLORouter(modelName string) (types.Router, error) {
 	return NewQueueRouter(sloQueue, sloQueue)
 }
 
-func (r *queueRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
-	if len(pods.Pods) == 0 {
+func (r *queueRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
@@ -116,7 +101,7 @@ func (r *queueRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (st
 	return ctx.TargetAddress(), nil
 }
 
-func (r *queueRouter) tryRoute(pods *utils.PodArray) {
+func (r *queueRouter) tryRoute(pods types.PodList) {
 	select {
 	case r.chRouteTrigger <- pods:
 	default:

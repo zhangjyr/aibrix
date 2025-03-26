@@ -87,9 +87,8 @@ func (reg *Registry[V]) Store(key string, value V) {
 	}
 
 	_, exist := reg.registry[key]
-	stale := len(reg.values) != len(reg.registry)
 	reg.registry[key] = value
-	if !exist && !stale {
+	if reg.valid && !exist {
 		reg.values, reg.valid = append(reg.values, value), true // atomic set
 	} else {
 		// clear and wait regenerate
@@ -166,12 +165,13 @@ func (reg *Registry[V]) updateArrayLocked() ([]V, bool) {
 	reconstructed := false
 	if !reg.valid && reg.registry != nil {
 		if cap(reg.values) < len(reg.registry) {
-			reg.values = make([]V, 0, len(reg.registry))
+			reg.values = make([]V, 0, len(reg.registry)*2)
 		}
 		for _, pod := range reg.registry {
 			reg.values = append(reg.values, pod)
 		}
 		reconstructed = true
+		reg.valid = true // atomic set
 	}
 
 	return reg.values, reconstructed

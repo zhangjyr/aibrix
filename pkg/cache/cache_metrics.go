@@ -345,13 +345,13 @@ func (c *Store) updatePodRecord(pod *Pod, modelName string, metricName string, s
 }
 
 func (c *Store) updateModelMetrics() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// c.mu.Lock()
+	// defer c.mu.Unlock()
 
-	if c.prometheusApi == nil {
-		klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
-		return
-	}
+	// if c.prometheusApi == nil {
+	// 	klog.V(4).InfoS("Prometheus api is not initialized, PROMETHEUS_ENDPOINT is not configured, skip fetching prometheus metrics")
+	// 	return
+	// }
 }
 
 func (c *Store) aggregateMetrics() {

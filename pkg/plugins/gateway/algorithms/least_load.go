@@ -22,7 +22,6 @@ import (
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -51,8 +50,8 @@ func NewLeastLoadPullingRouter(provider cache.CappedLoadProvider) (types.Router,
 	}, nil
 }
 
-func (r *leastLoadRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray) (string, error) {
-	if len(pods.Pods) == 0 {
+func (r *leastLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
 
@@ -62,7 +61,7 @@ func (r *leastLoadRouter) Route(ctx *types.RoutingContext, pods *utils.PodArray)
 		minUtil = r.cappedProvider.Cap()
 	}
 
-	for _, pod := range pods.Pods {
+	for _, pod := range pods.All() {
 		if pod.Status.PodIP == "" {
 			// Pod not ready.
 			continue

@@ -184,7 +184,7 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 	}
 
 	if ctx != nil {
-		c.addPodStats(ctx)
+		c.addPodStats(ctx, requestID)
 	}
 	return
 }
@@ -198,7 +198,7 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 //		traceTerm: Trace term identifier
 func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
 	if ctx != nil {
-		c.donePodStats(ctx)
+		c.donePodStats(ctx, requestID)
 	}
 
 	meta, ok := c.metaModels.Load(modelName)
@@ -223,7 +223,7 @@ func (c *Store) DoneRequestCount(ctx *types.RoutingContext, requestID string, mo
 //	traceTerm: Trace term identifier
 func (c *Store) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens, outputTokens, traceTerm int64) {
 	if ctx != nil {
-		c.donePodStats(ctx)
+		c.donePodStats(ctx, requestID)
 	}
 
 	meta, ok := c.metaModels.Load(modelName)

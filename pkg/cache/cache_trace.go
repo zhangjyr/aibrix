@@ -43,27 +43,27 @@ func (c *Store) getRequestTrace(modelName string) *RequestTrace {
 	return newer
 }
 
-func (c *Store) addPodStats(ctx *types.RoutingContext) {
+func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 	if !ctx.HasRouted() {
-		klog.Warning("request has not been routed, please route request first")
+		klog.Warningf("request has not been routed, please route request first, requestID: %s", requestID)
 		return
 	}
 	pod := ctx.TargetPod()
 
 	metaPod, ok := c.metaPods.Load(pod.Name)
 	if !ok {
-		klog.Warningf("can't find routing pod: %s", pod.Name)
+		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return
 	}
 	requests := atomic.AddInt32(&metaPod.runningRequests, 1)
 	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
-		klog.Warningf("can't update realtime metric: %s", metrics.RealtimeNumRequestsRunning)
+		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNumRequestsRunning, pod.Name, requestID)
 	}
 }
 
-func (c *Store) donePodStats(ctx *types.RoutingContext) {
+func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 	if !ctx.HasRouted() {
-		klog.Warning("request has not been routed, please route request first")
+		klog.Warningf("request has not been routed, please route request first, requestID: %s", requestID)
 		return
 	}
 	pod := ctx.TargetPod()
@@ -71,12 +71,12 @@ func (c *Store) donePodStats(ctx *types.RoutingContext) {
 	// Now that pendingLoadProvider must be set.
 	metaPod, ok := c.metaPods.Load(pod.Name)
 	if !ok {
-		klog.Warningf("can't find routing pod: %s", pod.Name)
+		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return
 	}
 	requests := atomic.AddInt32(&metaPod.runningRequests, -1)
 	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
-		klog.Warningf("can't update realtime metric: %s", metrics.RealtimeNumRequestsRunning)
+		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNumRequestsRunning, pod.Name, requestID)
 	}
 }
 

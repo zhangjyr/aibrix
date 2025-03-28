@@ -28,11 +28,11 @@ import (
 )
 
 var (
-	RouterLeastBusyTime types.RoutingAlgorithms = "least-busy-time"
+	RouterLeastBusyTime types.RoutingAlgorithm = "least-busy-time"
 )
 
 func init() {
-	Register(RouterLeastBusyTime, func(*types.RoutingContext) (types.Router, error) { return NewLeastBusyTimeRouter() })
+	RegisterDelayedConstructor(RouterLeastBusyTime, NewLeastBusyTimeRouter)
 }
 
 type leastBusyTimeRouter struct {

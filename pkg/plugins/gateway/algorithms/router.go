@@ -26,9 +26,9 @@ const (
 )
 
 // Validate validates if user provided routing routers is supported by gateway
-func Validate(algorithms string) (types.RoutingAlgorithms, bool) {
-	if _, ok := routerRegistry[types.RoutingAlgorithms(algorithms)]; ok {
-		return types.RoutingAlgorithms(algorithms), ok
+func Validate(algorithms string) (types.RoutingAlgorithm, bool) {
+	if _, ok := routerRegistry[types.RoutingAlgorithm(algorithms)]; ok {
+		return types.RoutingAlgorithm(algorithms), ok
 	} else {
 		return RouterNotSet, false
 	}
@@ -36,7 +36,7 @@ func Validate(algorithms string) (types.RoutingAlgorithms, bool) {
 
 // Select the user provided router provider supported by gateway, no error reported and fallback to random router
 // Call Validate before this function to ensure expected behavior.
-func Select(algorithms types.RoutingAlgorithms) types.RouterProviderFunc {
+func Select(algorithms types.RoutingAlgorithm) types.RouterProviderFunc {
 	if provider, ok := routerRegistry[algorithms]; ok {
 		return provider
 	} else {
@@ -45,8 +45,33 @@ func Select(algorithms types.RoutingAlgorithms) types.RouterProviderFunc {
 	}
 }
 
-func Register(algorithms types.RoutingAlgorithms, router types.RouterProviderFunc) {
-	routerRegistry[algorithms] = router
+func Register(algorithm types.RoutingAlgorithm, provider types.RouterProviderFunc) {
+	routerRegistry[algorithm] = provider
+	klog.Infof("Registered router for %s", algorithm)
 }
 
-var routerRegistry = map[types.RoutingAlgorithms]types.RouterProviderFunc{}
+func RegisterDelayed(algorithm types.RoutingAlgorithm, delayedProvider types.RouterProviderRegistrationFunc) {
+	routerDelayedRegistry[algorithm] = delayedProvider
+}
+
+func RegisterDelayedConstructor(algorithm types.RoutingAlgorithm, routerConstructor types.RouterConstructor) {
+	routerDelayedRegistry[algorithm] = func() types.RouterProviderFunc {
+		router, err := routerConstructor()
+		if err != nil {
+			klog.Errorf("Failed to construct router for %s: %v", algorithm, err)
+			return nil
+		}
+		return func(_ *types.RoutingContext) (types.Router, error) {
+			return router, nil
+		}
+	}
+}
+
+func Init() {
+	for key, delayed := range routerDelayedRegistry {
+		Register(key, delayed())
+	}
+}
+
+var routerRegistry = map[types.RoutingAlgorithm]types.RouterProviderFunc{}
+var routerDelayedRegistry = map[types.RoutingAlgorithm]types.RouterProviderRegistrationFunc{}

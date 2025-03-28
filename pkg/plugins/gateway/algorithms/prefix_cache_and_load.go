@@ -31,11 +31,11 @@ import (
 )
 
 var (
-	RouterPrefixCacheAndLoad types.RoutingAlgorithms = "prefix-cache-and-load"
+	RouterPrefixCacheAndLoad types.RoutingAlgorithm = "prefix-cache-and-load"
 )
 
 func init() {
-	Register(RouterPrefixCacheAndLoad, func(*types.RoutingContext) (types.Router, error) { return NewPrefixCacheAndLoadRouter() })
+	RegisterDelayedConstructor(RouterPrefixCacheAndLoad, NewPrefixCacheAndLoadRouter)
 }
 
 const (

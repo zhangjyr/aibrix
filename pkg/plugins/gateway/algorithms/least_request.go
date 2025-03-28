@@ -30,11 +30,11 @@ import (
 )
 
 var (
-	RouterLeastRequest types.RoutingAlgorithms = "least-request"
+	RouterLeastRequest types.RoutingAlgorithm = "least-request"
 )
 
 func init() {
-	Register(RouterLeastRequest, func(*types.RoutingContext) (types.Router, error) { return NewLeastRequestRouter() })
+	RegisterDelayedConstructor(RouterLeastRequest, NewLeastRequestRouter)
 }
 
 type leastRequestRouter struct {

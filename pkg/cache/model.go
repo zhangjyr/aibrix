@@ -25,7 +25,7 @@ import (
 type ModelRouterProviderFunc func(modelName string) (types.Router, error)
 
 type Model struct {
-	Pods *CustomizedRegistry[*v1.Pod, *utils.PodArray]
+	Pods *utils.CustomizedRegistry[*v1.Pod, *utils.PodArray]
 	// Metrics utils.SyncMap[string, metrics.MetricValue] // reserved
 	OutputPredictor types.OutputPredictor
 	QueueRouter     types.Router

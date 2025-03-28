@@ -30,11 +30,11 @@ import (
 )
 
 var (
-	RouterThroughput types.RoutingAlgorithms = "throughput"
+	RouterThroughput types.RoutingAlgorithm = "throughput"
 )
 
 func init() {
-	Register(RouterThroughput, func(*types.RoutingContext) (types.Router, error) { return NewThroughputRouter() })
+	RegisterDelayedConstructor(RouterThroughput, NewThroughputRouter)
 }
 
 type throughputRouter struct {

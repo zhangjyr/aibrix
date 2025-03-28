@@ -144,7 +144,8 @@ func FilterReadyPod(pod *v1.Pod) bool {
 	return pod.Status.PodIP != "" && !IsPodTerminating(pod) && IsPodReady(pod)
 }
 
-// CountRoutablePods filters and returns the number of pods that have a valid PodIP.
+// CountRoutablePods filters and returns the number of pods that are routable.
+// A pod is routable if it have a valid PodIP and not in terminating state.
 func CountRoutablePods(pods []*v1.Pod) (cnt int) {
 	for _, pod := range pods {
 		if !FilterReadyPod(pod) {
@@ -155,7 +156,8 @@ func CountRoutablePods(pods []*v1.Pod) (cnt int) {
 	return
 }
 
-// FilterRoutablePods filters and returns a list of pods that have a valid PodIP.
+// FilterRoutablePods filters and returns a list of pods that are routable.
+// A pod is routable if it have a valid PodIP and not in terminating state.
 func FilterRoutablePods(pods []*v1.Pod) []*v1.Pod {
 	readyPods := make([]*v1.Pod, 0, len(pods))
 	for _, pod := range pods {
@@ -167,7 +169,8 @@ func FilterRoutablePods(pods []*v1.Pod) []*v1.Pod {
 	return readyPods
 }
 
-// FilterRoutablePods filters and returns a list of pods that have a valid PodIP.
+// FilterRoutablePodsInPlace filters a list of pods that are routable.
+// A pod is routable if it have a valid PodIP and not in terminating state.
 func FilterRoutablePodsInPlace(pods []*v1.Pod) []*v1.Pod {
 	readyCnt := 0
 	for i, pod := range pods {

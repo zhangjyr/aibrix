@@ -128,6 +128,14 @@ func NewTestCacheWithPodsMetrics(pods []*v1.Pod, podMetrics map[string]map[strin
 	return c
 }
 
+// InitForTest initializes the cache store for testing purposes
+func InitForTest() *Store {
+	once.Do(func() {
+		store = &Store{initialized: true}
+	})
+	return store
+}
+
 // Init initializes the cache store (singleton pattern)
 // Parameters:
 //

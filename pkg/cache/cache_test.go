@@ -34,12 +34,6 @@ import (
 	"k8s.io/klog/v2"
 )
 
-var dummyPod = &v1.Pod{
-	ObjectMeta: metav1.ObjectMeta{
-		Name: "testpod",
-	},
-}
-
 func getReadyPod(podName string, modelName string, id int) *v1.Pod {
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

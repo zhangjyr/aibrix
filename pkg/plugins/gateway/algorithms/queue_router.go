@@ -26,7 +26,7 @@ import (
 )
 
 var (
-	RouterSLORouter types.RoutingAlgorithms = "slo-router"
+	RouterSLORouter types.RoutingAlgorithm = "slo-router"
 )
 
 func init() {

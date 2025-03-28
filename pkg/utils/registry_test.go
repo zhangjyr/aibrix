@@ -14,12 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package cache
+package utils
 
 import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -133,16 +132,16 @@ var _ = Describe("Registry", func() {
 	})
 
 	Context("CustomizedRegisty", func() {
-		var registry *CustomizedRegistry[*v1.Pod, *utils.PodArray]
+		var registry *CustomizedRegistry[*v1.Pod, *PodArray]
 
 		BeforeEach(func() {
-			registry = NewRegistryWithArrayProvider(func(arr []*v1.Pod) *utils.PodArray {
-				return &utils.PodArray{Pods: arr}
+			registry = NewRegistryWithArrayProvider[*v1.Pod, *PodArray](func(arr []*v1.Pod) *PodArray {
+				return &PodArray{Pods: arr}
 			})
 		})
 
 		It("should nil customized registry status accessible", func() {
-			var registry *CustomizedRegistry[*v1.Pod, *utils.PodArray]
+			var registry *CustomizedRegistry[*v1.Pod, *PodArray]
 			Expect(registry.Len()).To(Equal(0))
 			Expect(registry.Array().Len()).To(Equal(0))
 			Expect(registry.Array()).To(BeNil())

@@ -31,7 +31,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
-func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingAlgorithm types.RoutingAlgorithms) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
+func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *extProcPb.ProcessingRequest, user utils.User, routingAlgorithm types.RoutingAlgorithm) (*extProcPb.ProcessingResponse, string, *types.RoutingContext, bool, int64) {
 	klog.InfoS("-- In RequestBody processing ...", "requestID", requestID)
 	var model string
 	var routingCtx *types.RoutingContext
@@ -124,10 +124,9 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 					RawValue: []byte(targetPodIP),
 				},
 			})
-		klog.InfoS("request start", "requestID", requestID, "model", model, "routingStrategy", routingAlgorithm, "targetPodIP", targetPodIP)
+		klog.InfoS("request start", "requestID", requestID, "model", model, "routingAlgorithm", routingAlgorithm, "targetPodIP", targetPodIP)
 	}
 
-	// enableGPUOptimizerTracing will be check in AddRequestCount
 	term = s.cache.AddRequestCount(routingCtx, requestID, model)
 
 	return &extProcPb.ProcessingResponse{

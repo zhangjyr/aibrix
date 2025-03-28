@@ -25,11 +25,11 @@ import (
 )
 
 var (
-	RouterRandom types.RoutingAlgorithms = "random"
+	RouterRandom types.RoutingAlgorithm = "random"
 )
 
 func init() {
-	Register(RouterRandom, func(*types.RoutingContext) (types.Router, error) { return NewRandomRouter() })
+	RegisterDelayedConstructor(RouterRandom, NewRandomRouter)
 }
 
 type randomRouter struct {

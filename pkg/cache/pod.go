@@ -24,7 +24,7 @@ import (
 
 type Pod struct {
 	*v1.Pod
-	Models       *Registry[string]
+	Models       *utils.Registry[string]
 	Metrics      utils.SyncMap[string, metrics.MetricValue]
 	ModelMetrics utils.SyncMap[string, metrics.MetricValue] // Key: model_name:metric_name
 

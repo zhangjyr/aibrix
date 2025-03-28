@@ -30,3 +30,9 @@ type RouterProvider interface {
 
 // RouterProviderFunc provides a stateless way to get a router
 type RouterProviderFunc func(*RoutingContext) (Router, error)
+
+// RouterProviderRegistrationFunc provides a way to register RouterProviderFunc
+type RouterProviderRegistrationFunc func() RouterProviderFunc
+
+// RouterConstructor defines a constructor for a router.
+type RouterConstructor func() (Router, error)

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/utils"
@@ -31,45 +32,45 @@ const podMetricPort = "8000"
 type RequestFeatures []float64
 
 // RoutingAlgorithms defines the routing algorithms
-type RoutingAlgorithms string
+type RoutingAlgorithm string
+
+var nilPod = &v1.Pod{}
 
 // RoutingContext encapsulates the context information required for routing.
 // It can be extended with more fields as needed in the future.
 type RoutingContext struct {
 	context.Context
-	Algorithm   RoutingAlgorithms
+	Algorithm   RoutingAlgorithm
 	Model       string
 	Message     string
 	RequestTime time.Time
 	PendingLoad float64
 
-	chTargetPod chan *v1.Pod
-	targetPod   *v1.Pod
-	tokens      []int
-	predictor   OutputPredictor
+	targetPodSet chan struct{}
+	targetPod    atomic.Pointer[v1.Pod]
+	debugDelay   time.Duration
+	tokens       []int
+	predictor    OutputPredictor
 }
 
 var requestPool = sync.Pool{
-	New: func() any {
-		return &RoutingContext{
-			chTargetPod: make(chan *v1.Pod),
-		}
-	},
+	New: func() any { return &RoutingContext{} },
 }
 
-func (alg RoutingAlgorithms) NewContext(ctx context.Context, model string, message string, predictor OutputPredictor) *RoutingContext {
+func (alg RoutingAlgorithm) NewContext(ctx context.Context, model string, message string, predictor OutputPredictor) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
 	request.reset(ctx, alg, model, message, predictor)
 	return request
 }
 
-func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithms, model string, message string, predictor OutputPredictor) *RoutingContext {
+func NewRoutingContext(ctx context.Context, algorithm RoutingAlgorithm, model string, message string, predictor OutputPredictor) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
-	request.reset(ctx, algorithms, model, message, predictor)
+	request.reset(ctx, algorithm, model, message, predictor)
 	return request
 }
 
 func (r *RoutingContext) Delete() {
+	r.SetTargetPod(nil) // Unblock waiting TargetPod() call
 	requestPool.Put(r)
 }
 
@@ -120,22 +121,20 @@ func (r *RoutingContext) Features() (RequestFeatures, error) {
 }
 
 func (r *RoutingContext) SetTargetPod(pod *v1.Pod) {
-	r.targetPod = pod
-	// Notify possible waiting PodIP() call, abundon if no waiting.
-	select {
-	case r.chTargetPod <- pod:
-	default:
+	if r.targetPod.CompareAndSwap(nilPod, pod) { // Use CompareAndSwap to ensure close channel only once
+		close(r.targetPodSet)
 	}
 }
 
 func (r *RoutingContext) TargetPod() *v1.Pod {
-	if r.targetPod == nil {
-		r.targetPod = <-r.chTargetPod
-		// Notify next waiting PodIP() call, abundon if no waiting.
-		r.SetTargetPod(r.targetPod)
+	targetPod := r.targetPod.Load()
+	if targetPod == nilPod {
+		r.debugWait()
+		<-r.targetPodSet // No blocking if targetPod is set after last "targetPod == nil"
+		targetPod = r.targetPod.Load()
 	}
 
-	return r.targetPod
+	return targetPod
 }
 
 func (r *RoutingContext) TargetAddress() string {
@@ -143,18 +142,26 @@ func (r *RoutingContext) TargetAddress() string {
 }
 
 func (r *RoutingContext) HasRouted() bool {
-	return r.targetPod != nil
+	return r.targetPod.Load() != nilPod
 }
 
 func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
 	return fmt.Sprintf("%v:%v", pod.Status.PodIP, podMetricPort)
 }
 
-func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithms, model string, message string, predictor OutputPredictor) {
+func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model string, message string, predictor OutputPredictor) {
 	r.Context = ctx
 	r.Algorithm = algorithms
 	r.Model = model
 	r.Message = message
 	r.tokens = nil
 	r.predictor = predictor
+	r.targetPodSet = make(chan struct{}) // Initialize channel
+	r.targetPod.Store(nilPod)
+}
+
+func (r *RoutingContext) debugWait() {
+	if r.debugDelay > 0 {
+		time.Sleep(r.debugDelay)
+	}
 }

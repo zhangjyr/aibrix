@@ -29,11 +29,11 @@ import (
 )
 
 var (
-	RouterLeastKvCache types.RoutingAlgorithms = "least-kv-cache"
+	RouterLeastKvCache types.RoutingAlgorithm = "least-kv-cache"
 )
 
 func init() {
-	Register(RouterLeastKvCache, func(*types.RoutingContext) (types.Router, error) { return NewLeastKvCacheRouter() })
+	RegisterDelayedConstructor(RouterLeastKvCache, NewLeastKvCacheRouter)
 }
 
 type leastKvCacheRouter struct {

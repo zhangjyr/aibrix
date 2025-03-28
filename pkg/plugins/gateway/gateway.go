@@ -54,6 +54,9 @@ func NewServer(redisClient *redis.Client, client kubernetes.Interface) *Server {
 	}
 	r := ratelimiter.NewRedisAccountRateLimiter("aibrix", redisClient, 1*time.Minute)
 
+	// Initialize the routers
+	routing.Init()
+
 	return &Server{
 		redisClient:         redisClient,
 		ratelimiter:         r,
@@ -68,7 +71,7 @@ func (s *Server) Process(srv extProcPb.ExternalProcessor_ProcessServer) error {
 	var rpm, traceTerm int64
 	var respErrorCode int
 	var model string
-	var routingAlgorithm types.RoutingAlgorithms
+	var routingAlgorithm types.RoutingAlgorithm
 	var routerCtx *types.RoutingContext
 	var stream, isRespError bool
 	ctx := srv.Context()

@@ -122,7 +122,6 @@ func (c *Store) updatePod(oldObj interface{}, newObj interface{}) {
 	newModelName, newOk := newPod.Labels[modelIdentifier]
 
 	if !oldOk && !existed && !newOk {
-		// klog.InfoS("ignored pod without model label", "old pod", oldPod.Name, "old pod existence", existed, "new pod", newPod.Name)
 		return // No model information to track in either old or new pod
 	}
 
@@ -230,7 +229,7 @@ func (c *Store) addPodLocked(pod *v1.Pod) *Pod {
 	if c.bufferPod == nil {
 		c.bufferPod = &Pod{
 			Pod:    pod,
-			Models: NewRegistry[string](),
+			Models: utils.NewRegistry[string](),
 		}
 	} else {
 		c.bufferPod.Pod = pod
@@ -255,7 +254,7 @@ func (c *Store) addPodAndModelMappingLockedByName(podName, modelName string) {
 func (c *Store) addPodAndModelMappingLocked(metaPod *Pod, modelName string) {
 	if c.bufferModel == nil {
 		c.bufferModel = &Model{
-			Pods:            NewRegistryWithArrayProvider(func(arr []*v1.Pod) *utils.PodArray { return &utils.PodArray{Pods: arr} }),
+			Pods:            utils.NewRegistryWithArrayProvider(func(arr []*v1.Pod) *utils.PodArray { return &utils.PodArray{Pods: arr} }),
 			OutputPredictor: NewSimmpleOutputPredictor(maxInputTokens, maxOutputTokens, movingWindow),
 		}
 	}

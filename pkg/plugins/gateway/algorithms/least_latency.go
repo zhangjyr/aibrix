@@ -29,11 +29,11 @@ import (
 )
 
 var (
-	RouterLeastLatency types.RoutingAlgorithms = "least-latency"
+	RouterLeastLatency types.RoutingAlgorithm = "least-latency"
 )
 
 func init() {
-	Register(RouterLeastLatency, func(*types.RoutingContext) (types.Router, error) { return NewLeastExpectedLatencyRouter() })
+	RegisterDelayedConstructor(RouterLeastLatency, NewLeastExpectedLatencyRouter)
 }
 
 type leastExpectedLatencyRouter struct {

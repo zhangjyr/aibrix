@@ -30,6 +30,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestStrategyRequiresCache(t *testing.T) {
+	req := "this is test message"
+	targetPod := getTargetPodFromChatCompletion(t, req, "least-request")
+	assert.NotEmpty(t, targetPod, "least request target pod is empty")
+}
+
 func TestRandomRouting(t *testing.T) {
 	histogram := make(map[string]int)
 	iterration := 100
@@ -82,9 +88,9 @@ func TestPrefixCacheRouting(t *testing.T) {
 	assert.NotEqual(t, 5, count)
 }
 
-func getTargetPodFromChatCompletion(t *testing.T, message string, routingStrategy string) string {
+func getTargetPodFromChatCompletion(t *testing.T, message string, strategy string) string {
 	var dst *http.Response
-	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, routingStrategy, option.WithResponseInto(&dst))
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, strategy, option.WithResponseInto(&dst))
 
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
 		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{

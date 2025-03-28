@@ -56,7 +56,9 @@ func (c *Store) addPodStats(ctx *types.RoutingContext) {
 		return
 	}
 	requests := atomic.AddInt32(&metaPod.runningRequests, 1)
-	c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)})
+	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
+		klog.Warningf("can't update realtime metric: %s", metrics.RealtimeNumRequestsRunning)
+	}
 }
 
 func (c *Store) donePodStats(ctx *types.RoutingContext) {
@@ -73,7 +75,9 @@ func (c *Store) donePodStats(ctx *types.RoutingContext) {
 		return
 	}
 	requests := atomic.AddInt32(&metaPod.runningRequests, -1)
-	c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)})
+	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
+		klog.Warningf("can't update realtime metric: %s", metrics.RealtimeNumRequestsRunning)
+	}
 }
 
 func (c *Store) writeRequestTraceToStorage(roundT int64) {

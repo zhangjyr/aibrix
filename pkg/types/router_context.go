@@ -29,12 +29,12 @@ import (
 
 const podMetricPort = "8000"
 
+var nilPod = &v1.Pod{}
+
 type RequestFeatures []float64
 
 // RoutingAlgorithms defines the routing algorithms
 type RoutingAlgorithm string
-
-var nilPod = &v1.Pod{}
 
 // RoutingContext encapsulates the context information required for routing.
 // It can be extended with more fields as needed in the future.

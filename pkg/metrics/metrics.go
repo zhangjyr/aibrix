@@ -46,7 +46,9 @@ const (
 	MaxLora                              = "max_lora"
 	WaitingLoraAdapters                  = "waiting_lora_adapters"
 	RunningLoraAdapters                  = "running_lora_adapters"
-	NormalizedPendings                   = "normalized_pendings"
+	// Realtime metrics
+	RealtimeNumRequestsRunning = "realtime_num_requests_running"
+	RealtimeNormalizedPendings = "Realtime_normalized_pendings"
 )
 
 var (

@@ -28,7 +28,7 @@ type PendingLoadProvider struct {
 }
 
 func NewPendingLoadProvider() (*PendingLoadProvider, error) {
-	cache, err := NewCachedLoadProvider(metrics.NormalizedPendings)
+	cache, err := NewCachedLoadProvider(metrics.RealtimeNormalizedPendings)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +39,7 @@ func NewPendingLoadProvider() (*PendingLoadProvider, error) {
 
 func newPendingLoadProvider(cache Cache) *PendingLoadProvider {
 	return &PendingLoadProvider{
-		CachedLoadProvider: newCachedLoadProvider(cache, metrics.NormalizedPendings),
+		CachedLoadProvider: newCachedLoadProvider(cache, metrics.RealtimeNormalizedPendings),
 	}
 }
 

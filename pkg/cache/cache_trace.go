@@ -43,57 +43,70 @@ func (c *Store) getRequestTrace(modelName string) *RequestTrace {
 	return newer
 }
 
-func (c *Store) addRequestLoad(ctx *types.RoutingContext) {
+func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 	if !ctx.HasRouted() {
-		klog.Warning("request has not been routed, please route request first")
+		klog.Warningf("request has not been routed, please route request first, requestID: %s", requestID)
 		return
 	}
 	pod := ctx.TargetPod()
-
-	// Update pending load
-	if c.pendingLoadProvider == nil {
-		return
-	}
-
-	var err error
-	ctx.PendingLoad, err = c.pendingLoadProvider.GetConsumption(ctx, pod)
-	if err != nil {
-		klog.Errorf("error on track request load consumption: %v", err)
-		return
-	}
 
 	metaPod, ok := c.metaPods.Load(pod.Name)
 	if !ok {
-		klog.Warningf("can't find routing pod: %s", pod.Name)
+		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return
 	}
-	utilization := metaPod.pendingLoadUtilization.Add(ctx.PendingLoad)
-	c.updatePodRecord(metaPod, ctx.Model, metrics.NormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization})
+
+	// Update running requests
+	requests := atomic.AddInt32(&metaPod.runningRequests, 1)
+	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
+		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNumRequestsRunning, pod.Name, requestID)
+	}
+
+	// Update pending load
+	if c.pendingLoadProvider != nil {
+		var err error
+		ctx.PendingLoad, err = c.pendingLoadProvider.GetConsumption(ctx, pod)
+		if err != nil {
+			klog.Errorf("error on track request load consumption: %v", err)
+		} else {
+			utilization := metaPod.pendingLoadUtilization.Add(ctx.PendingLoad)
+			if c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization}) != nil {
+				klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNormalizedPendings, pod.Name, requestID)
+			}
+		}
+	}
 }
 
-func (c *Store) doneRequestLoad(ctx *types.RoutingContext) {
+func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 	if !ctx.HasRouted() {
-		klog.Warning("request has not been routed, please route request first")
+		klog.Warningf("request has not been routed, please route request first, requestID: %s", requestID)
 		return
 	}
 	pod := ctx.TargetPod()
-
-	if ctx.PendingLoad == 0.0 {
-		return
-	}
 
 	// Now that pendingLoadProvider must be set.
 	metaPod, ok := c.metaPods.Load(pod.Name)
 	if !ok {
-		klog.Warningf("can't find routing pod: %s", pod.Name)
+		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return
 	}
-	utilization := metaPod.pendingLoadUtilization.Add(-ctx.PendingLoad)
-	c.updatePodRecord(metaPod, ctx.Model, metrics.NormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization})
-	// Trigger scheduling by calling QueueRouter.Route with nil input request.
-	if utilization < c.pendingLoadProvider.Cap() {
-		if metaModel, ok := c.metaModels.Load(ctx.Model); ok && metaModel.QueueRouter != nil {
-			metaModel.QueueRouter.Route(nil, metaModel.Pods.Array())
+
+	// Update running requests
+	requests := atomic.AddInt32(&metaPod.runningRequests, -1)
+	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
+		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNumRequestsRunning, pod.Name, requestID)
+	}
+
+	// Update pending load
+	if ctx.PendingLoad != 0.0 {
+		utilization := metaPod.pendingLoadUtilization.Add(-ctx.PendingLoad)
+		if c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization}) != nil {
+			klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNormalizedPendings, pod.Name, requestID)
+		}
+		if utilization < c.pendingLoadProvider.Cap() {
+			if metaModel, ok := c.metaModels.Load(ctx.Model); ok && metaModel.QueueRouter != nil {
+				metaModel.QueueRouter.Route(nil, metaModel.Pods.Array())
+			}
 		}
 	}
 }

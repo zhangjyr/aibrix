@@ -23,6 +23,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"k8s.io/klog/v2"
 )
 
 const MovingInterval = 10 * time.Second
@@ -34,15 +36,18 @@ type SimmpleOutputPredictor struct {
 	inputBuckets  int
 	outputBuckets int
 
-	mu sync.RWMutex
+	mu   sync.RWMutex
+	rand func(int32) int32
 }
 
-type outputDistribution []int32 // Inputs:Output distribution
+// Inputs/Output distribution
+type outputDistribution []int32
 
 func (hist outputDistribution) reset(distributions outputDistribution, sums []int32, outputBuckets int) {
 	inputBucket := 0
 	leftOutputBucket := outputBuckets
-	for i := range hist {
+	var i int
+	for i = 0; i < len(hist)-1; i++ {
 		atomic.AddInt32(&sums[inputBucket], -hist[i])
 		atomic.AddInt32(&distributions[i], -hist[i])
 		hist[i] = 0
@@ -52,21 +57,46 @@ func (hist outputDistribution) reset(distributions outputDistribution, sums []in
 			leftOutputBucket = outputBuckets
 		}
 	}
+	// Reset skip slot
+	hist[i] = 0
+}
+
+func (hist outputDistribution) setSkipped(skipped int32) {
+	hist[len(hist)-1] = skipped
+}
+
+func (hist outputDistribution) getSkipped() int32 {
+	return hist[len(hist)-1]
 }
 
 type rotatingHistory struct {
-	window        []outputDistribution
+	window        []outputDistribution // input tokens * output tokens + 1 (skip slot)
 	head          int
 	tail          int
 	headTimestamp time.Time
+	// History size of the window. The head itself is not counted.
+	// The size could be larger than window size due to skipping
+	size int32
 }
 
-func (hist *rotatingHistory) forwardLocked(ts time.Time) int {
+func (hist *rotatingHistory) Tail() outputDistribution {
+	return hist.window[hist.tail]
+}
+
+func (hist *rotatingHistory) Head() outputDistribution {
+	return hist.window[hist.head]
+}
+
+func (hist *rotatingHistory) Size() int32 {
+	return atomic.LoadInt32(&hist.size)
+}
+
+func (hist *rotatingHistory) forwardLocked(ts time.Time) int32 {
 	if ts.Sub(hist.headTimestamp) < MovingInterval {
 		return 0
 	}
 
-	forwarded := 0
+	forwarded := int32(0)
 	newHeadTimestamp := hist.headTimestamp
 	for ts.Sub(newHeadTimestamp) >= MovingInterval {
 		forwarded++
@@ -75,8 +105,16 @@ func (hist *rotatingHistory) forwardLocked(ts time.Time) int {
 	// Assert: new head is reset.
 	hist.head = (hist.head + 1) % len(hist.window)
 	hist.headTimestamp = newHeadTimestamp
+	hist.window[hist.head].setSkipped(forwarded)
+	atomic.AddInt32(&hist.size, forwarded)
 
 	return forwarded
+}
+
+func (hist *rotatingHistory) resetTail(distributions outputDistribution, sums []int32, outputBuckets int) {
+	hist.Tail().reset(distributions, sums, outputBuckets)
+	hist.tail = (hist.tail + 1) % len(hist.window)
+	atomic.AddInt32(&hist.size, -hist.Tail().getSkipped())
 }
 
 func NewSimmpleOutputPredictor(maxInputTokens, maxOutputTokens int, window time.Duration) *SimmpleOutputPredictor {
@@ -85,8 +123,8 @@ func NewSimmpleOutputPredictor(maxInputTokens, maxOutputTokens int, window time.
 	if window%MovingInterval > 0 {
 		extraSlot++
 	}
-	inputBuckets := int(math.Ceil(math.Log2(float64(maxInputTokens))))
-	outputBuckets := int(math.Ceil(math.Log2(float64(maxOutputTokens))))
+	inputBuckets := int(math.Ceil(math.Log2(float64(maxInputTokens + 1))))
+	outputBuckets := int(math.Ceil(math.Log2(float64(maxOutputTokens + 1))))
 	predictor := &SimmpleOutputPredictor{
 		history: rotatingHistory{
 			window:        make([]outputDistribution, int(window/MovingInterval)+extraSlot),
@@ -96,17 +134,19 @@ func NewSimmpleOutputPredictor(maxInputTokens, maxOutputTokens int, window time.
 		inputsSums:    make([]int32, inputBuckets),
 		inputBuckets:  inputBuckets,
 		outputBuckets: outputBuckets,
+		rand:          rand.Int31n,
 	}
 	for i := 0; i < len(predictor.history.window); i++ {
-		predictor.history.window[i] = make(outputDistribution, inputBuckets*outputBuckets)
+		predictor.history.window[i] = make(outputDistribution, inputBuckets*outputBuckets+1)
 	}
 	return predictor
 }
 
-func (p *SimmpleOutputPredictor) AddTrace(inputTokens, outputTokens int, cnt int32) {
-	p.tryRotate()
+func (p *SimmpleOutputPredictor) AddTraceWithTimestamp(inputTokens, outputTokens int, cnt int32, ts time.Time) {
+	p.tryRotate(ts)
 
-	idx := p.bucket2idx(p.token2bucket(inputTokens, p.inputBuckets), p.token2bucket(outputTokens, p.outputBuckets))
+	inputBucket := p.token2bucket(inputTokens, p.inputBuckets)
+	idx := p.bucket2idx(inputBucket, p.token2bucket(outputTokens, p.outputBuckets))
 
 	// Avoid operations during rotating
 	p.mu.RLock()
@@ -114,13 +154,22 @@ func (p *SimmpleOutputPredictor) AddTrace(inputTokens, outputTokens int, cnt int
 
 	// Add summary first and history next to avoid possible negative summary on rotating.
 	atomic.AddInt32(&p.inputs[idx], cnt)
+	atomic.AddInt32(&p.inputsSums[inputBucket], cnt)
 	atomic.AddInt32(&p.history.window[p.history.head][idx], cnt)
+}
+
+func (p *SimmpleOutputPredictor) AddTrace(inputTokens, outputTokens int, cnt int32) {
+	p.AddTraceWithTimestamp(inputTokens, outputTokens, cnt, time.Now())
 }
 
 func (p *SimmpleOutputPredictor) Predict(inputTokens int) int {
 	inputBucket := p.token2bucket(inputTokens, p.inputBuckets)
+	randRange := atomic.LoadInt32(&p.inputsSums[inputBucket])
+	if randRange == int32(0) {
+		return 0
+	}
 	// Do weighted random
-	cursor := rand.Int31n(atomic.LoadInt32(&p.inputsSums[inputBucket]))
+	cursor := p.rand(randRange)
 	accumulation := int32(0)
 	scanRange := (inputBucket + 1) * p.outputBuckets
 	for i := scanRange - p.outputBuckets; i < scanRange; i++ {
@@ -147,9 +196,7 @@ func (p *SimmpleOutputPredictor) token2bucket(tokens int, limit int) int {
 	return bucket
 }
 
-func (p *SimmpleOutputPredictor) tryRotate() {
-	ts := time.Now()
-
+func (p *SimmpleOutputPredictor) tryRotate(ts time.Time) {
 	if ts.Sub(p.history.headTimestamp) < MovingInterval {
 		return
 	}
@@ -157,32 +204,30 @@ func (p *SimmpleOutputPredictor) tryRotate() {
 	runtime.Gosched() // allow rotate first.
 }
 
-func (p *SimmpleOutputPredictor) rotate(ts time.Time) {
+func (p *SimmpleOutputPredictor) rotate(ts time.Time) bool {
+	window := int32(len(p.history.window) - 1)
+	if p.history.Size() > window {
+		klog.Error("unexpected no spare time slot in SimmpleOutputPredictor")
+		return false
+	}
+
+	// log.Printf("size %d", p.history.size)
 	p.mu.Lock()
-	tail := p.history.tail // Keep a copy to make multiple reference consistent
-	spares := tail - p.history.head
-	if spares < 0 {
-		spares = tail + len(p.history.window) - p.history.head
-	}
-	if spares < 1 {
-		// No spare history slot, abandon the current attempt.
-		p.mu.Unlock()
-		return
-	}
+	defer p.mu.Unlock()
+
 	// Calculate how many intervals we need to forward.
 	// This is usually 1, for sparse workloads, this can be > 1.
-	forwarded := p.history.forwardLocked(ts)
-	p.mu.Unlock()
-
-	// We keep at least 1 spare history (so summary can be updated concurrently with new data)
-	if spares > forwarded {
-		return
+	if p.history.forwardLocked(ts) == 0 {
+		// Already forwarded
+		return true
 	}
 
 	// Remove olded data from summary and reset history of number min(forwarded, len(p.history.window) - 1)
-	// Noted the read window size is len(p.history.window) - 1, and extra one is for new data only.
-	for i := 0; i < forwarded && i < len(p.history.window)-1; i++ {
-		p.history.window[p.history.tail].reset(p.inputs, p.inputsSums, p.outputBuckets)
-		p.history.tail = (p.history.tail + 1) % len(p.history.window)
+	// Noted that the
+	// 1. read window size is len(p.history.window) - 1
+	// 2. history.Size() should keep smaller than window because Head is not counted.
+	for p.history.Size() >= window {
+		p.history.resetTail(p.inputs, p.inputsSums, p.outputBuckets)
 	}
+	return true
 }

@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package routingalgorithms
+package queue
 
 import (
 	"fmt"
@@ -44,7 +44,7 @@ type SLOQueue struct {
 	types.Router
 
 	modelName string
-	subs      utils.SyncMap[string, *types.SimpleQueue[*types.RoutingContext]]
+	subs      utils.SyncMap[string, types.RouterQueue[*types.RoutingContext]]
 	features  utils.SyncMap[string, types.RequestFeatures]
 	subpool   sync.Pool
 
@@ -58,13 +58,13 @@ func NewSLOQueue(base types.Router, modelName string) (router *SLOQueue) {
 		Router:    base,
 		modelName: modelName,
 	}
-	router.subpool.New = func() any { return &types.SimpleQueue[*types.RoutingContext]{} }
+	router.subpool.New = func() any { return &SimpleQueue[*types.RoutingContext]{} }
 	router.expandDequeueCandidatesLocked(10) // Arbitarily reserve 10 slots
 	return router
 }
 
 func (q *SLOQueue) Enqueue(c *types.RoutingContext, currentTime time.Time) error {
-	newQueue := q.subpool.Get().(*types.SimpleQueue[*types.RoutingContext])
+	newQueue := q.subpool.Get().(types.RouterQueue[*types.RoutingContext])
 	features, err := c.Features()
 	if err != nil {
 		return err
@@ -102,7 +102,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (req *types.R
 
 	// Refill candidates
 	q.dequeueCandidates = q.dequeueCandidates[:0]
-	q.subs.Range(func(key string, sub *types.SimpleQueue[*types.RoutingContext]) bool {
+	q.subs.Range(func(key string, sub types.RouterQueue[*types.RoutingContext]) bool {
 		if sub.Len() > 0 {
 			r, _ := sub.Peek(currentTime, pods)
 			// Reuse a dequeue candidate
@@ -166,18 +166,18 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (req *types.R
 	return nil, nil
 }
 
-func (q *SLOQueue) Dequeue() (*types.RoutingContext, error) {
+func (q *SLOQueue) Dequeue(ts time.Time) (*types.RoutingContext, error) {
 	if len(q.lastPodCandidate) == 0 {
 		return nil, fmt.Errorf("call SLOQueue.Peek first")
 	}
 	sub, _ := q.subs.Load(q.lastSubKey)
 	q.lastSubKey = ""
 	q.lastPodCandidate = ""
-	return sub.Dequeue()
+	return sub.Dequeue(ts)
 }
 
 func (q *SLOQueue) Len() (total int) {
-	q.subs.Range(func(_ string, sub *types.SimpleQueue[*types.RoutingContext]) bool {
+	q.subs.Range(func(_ string, sub types.RouterQueue[*types.RoutingContext]) bool {
 		total += sub.Len()
 		return true
 	})
@@ -210,7 +210,7 @@ func (q *SLOQueue) expandDequeueCandidatesLocked(limit int) {
 		copy(candidates, dequeueCandidates)
 	}
 	for i := len(dequeueCandidates); i < len(candidates); i++ {
-		dequeueCandidates[i] = &candidateRouterRequest{}
+		candidates[i] = &candidateRouterRequest{}
 	}
 	q.dequeueCandidates = candidates[:len(q.dequeueCandidates)]
 }

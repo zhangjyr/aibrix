@@ -17,42 +17,19 @@ limitations under the License.
 package types
 
 import (
+	"errors"
 	"time"
 )
 
-type GlobalQueue[V any] interface {
+const DefaultQueueCapacity = 1024
+
+var (
+	ErrQueueEmpty = errors.New("queue is empty")
+)
+
+type RouterQueue[V comparable] interface {
 	Enqueue(V, time.Time) error
 	Peek(time.Time, PodList) (V, error)
-	Dequeue() (V, error)
+	Dequeue(time.Time) (V, error)
 	Len() int
-}
-
-type SimpleQueue[V any] struct {
-	queue []V
-}
-
-func (q *SimpleQueue[V]) Enqueue(c V, _ time.Time) error {
-	// c.LastEnqueueTime = currentTime
-	q.queue = append(q.queue, c)
-	return nil
-}
-
-func (q *SimpleQueue[V]) Peek(_ time.Time, _ PodList) (c V, err error) {
-	if len(q.queue) == 0 {
-		return
-	}
-	return q.queue[0], nil
-}
-
-func (q *SimpleQueue[V]) Dequeue() (c V, err error) {
-	if len(q.queue) == 0 {
-		return
-	}
-	c = q.queue[0]
-	q.queue = q.queue[1:]
-	return
-}
-
-func (q *SimpleQueue[V]) Len() int {
-	return len(q.queue)
 }

@@ -30,6 +30,7 @@ import (
 
 const (
 	expireWriteRequestTraceIntervalInMins = 10
+	traceLogInterval                      = 1 * time.Second
 )
 
 func (c *Store) getRequestTrace(modelName string) *RequestTrace {
@@ -59,21 +60,26 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 	// Update running requests
 	requests := atomic.AddInt32(&metaPod.runningRequests, 1)
 	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
-		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNumRequestsRunning, pod.Name, requestID)
+		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNumRequestsRunning, metaPod.Name, requestID)
 	}
 
 	// Update pending load
+	var utilization float64
 	if c.pendingLoadProvider != nil {
 		var err error
 		ctx.PendingLoad, err = c.pendingLoadProvider.GetConsumption(ctx, pod)
 		if err != nil {
 			klog.Errorf("error on track request load consumption: %v", err)
 		} else {
-			utilization := metaPod.pendingLoadUtilization.Add(ctx.PendingLoad)
+			utilization = metaPod.pendingLoadUtilization.Add(ctx.PendingLoad)
 			if c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization}) != nil {
-				klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNormalizedPendings, pod.Name, requestID)
+				klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNormalizedPendings, metaPod.Name, requestID)
 			}
 		}
+	}
+
+	if metaPod.CanLogPodTrace() {
+		klog.V(5).InfoS("pod stats updated.", "pod", metaPod.Name, "running requests", requests, "pending load", utilization)
 	}
 }
 
@@ -98,6 +104,7 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 	}
 
 	// Update pending load
+	var utilization float64
 	if ctx.PendingLoad != 0.0 {
 		utilization := metaPod.pendingLoadUtilization.Add(-ctx.PendingLoad)
 		if c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization}) != nil {
@@ -108,6 +115,10 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 				metaModel.QueueRouter.Route(nil, metaModel.Pods.Array())
 			}
 		}
+	}
+
+	if metaPod.CanLogPodTrace() {
+		klog.V(5).InfoS("pod stats updated.", "pod", metaPod.Name, "running requests", requests, "pending load", utilization)
 	}
 }
 

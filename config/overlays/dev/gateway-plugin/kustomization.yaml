@@ -8,6 +8,11 @@ namePrefix: aibrix-
 resources:
 - ../../../gateway/gateway-plugin
 
+images:
+- name: gateway-plugins
+  newName: aibrix/gateway-plugins
+  newTag: nightly
+
 patches:
 - patch: |-  # Use the '|' and '-' for inline patching
     apiVersion: apps/v1

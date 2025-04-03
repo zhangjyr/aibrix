@@ -21,12 +21,13 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
+	"github.com/vllm-project/aibrix/pkg/plugins/gateway/queue"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"k8s.io/klog/v2"
 )
 
 var (
-	RouterSLORouter types.RoutingAlgorithm = "slo-router"
+	RouterSLORouter types.RoutingAlgorithm = "slo"
 )
 
 func init() {
@@ -41,11 +42,11 @@ func init() {
 
 type queueRouter struct {
 	router         types.Router
-	queue          types.GlobalQueue[*types.RoutingContext]
+	queue          types.RouterQueue[*types.RoutingContext]
 	chRouteTrigger chan types.PodList
 }
 
-func NewQueueRouter(backend types.Router, queue types.GlobalQueue[*types.RoutingContext]) (types.Router, error) {
+func NewQueueRouter(backend types.Router, queue types.RouterQueue[*types.RoutingContext]) (types.Router, error) {
 	router := &queueRouter{
 		router:         backend,
 		queue:          queue,
@@ -64,7 +65,7 @@ func NewPackSLORouter(modelName string) (types.Router, error) {
 	}
 
 	loadRouter, _ := NewPackLoadRouter(loadProvider)
-	sloQueue := NewSLOQueue(loadRouter, modelName)
+	sloQueue := queue.NewSLOQueue(loadRouter, modelName)
 	return NewQueueRouter(sloQueue, sloQueue)
 }
 
@@ -75,7 +76,7 @@ func NewLeastLoadSLORouter(modelName string) (types.Router, error) {
 	}
 
 	loadRouter, _ := NewLeastLoadPullingRouter(loadProvider)
-	sloQueue := NewSLOQueue(loadRouter, modelName)
+	sloQueue := queue.NewSLOQueue(loadRouter, modelName)
 	return NewQueueRouter(sloQueue, sloQueue)
 }
 
@@ -124,7 +125,7 @@ func (r *queueRouter) serve() {
 			// Ignore err
 			if err == nil {
 				// req.SetTargetPod() should have called in Route()
-				dequeued, err := r.queue.Dequeue()
+				dequeued, err := r.queue.Dequeue(time.Now())
 				if err != nil {
 					klog.Errorf("error on dequeue request queue: %v", err)
 				} else if dequeued != ctx {

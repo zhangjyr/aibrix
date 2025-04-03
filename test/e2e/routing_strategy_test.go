@@ -62,6 +62,16 @@ func TestRandomRouting(t *testing.T) {
 		"stand deviation of pod distribution should be less than 20%%, but got %f, mean %f", stddev, mean)
 }
 
+func TestSLORouting(t *testing.T) {
+	iterration := 10
+
+	for i := 0; i < iterration; i++ {
+		req := "hello test"
+		targetPod := getTargetPodFromChatCompletion(t, req, "slo")
+		assert.NotEmpty(t, targetPod, "target pod should not be empty")
+	}
+}
+
 func TestPrefixCacheRouting(t *testing.T) {
 	// #1 request - cache first time request
 	req := "this is first message"

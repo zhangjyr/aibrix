@@ -17,12 +17,19 @@ limitations under the License.
 package routingalgorithms
 
 import (
+	"errors"
+
 	"github.com/vllm-project/aibrix/pkg/types"
 	"k8s.io/klog/v2"
 )
 
 const (
 	RouterNotSet = ""
+)
+
+var (
+	ErrFallbackNotSupported  = errors.New("router not support fallback")
+	ErrFallbackNotRegistered = errors.New("fallback router not registered")
 )
 
 // Validate validates if user provided routing routers is supported by gateway
@@ -65,6 +72,18 @@ func RegisterDelayedConstructor(algorithm types.RoutingAlgorithm, routerConstruc
 			return router, nil
 		}
 	}
+}
+
+func SetFallback(router types.Router, fallback types.RoutingAlgorithm) error {
+	if r, ok := router.(types.FallbackRouter); ok {
+		if provider, ok := routerRegistry[fallback]; ok {
+			return ErrFallbackNotRegistered
+		} else {
+			r.SetFallback(provider)
+		}
+		return nil
+	}
+	return ErrFallbackNotSupported
 }
 
 func Init() {

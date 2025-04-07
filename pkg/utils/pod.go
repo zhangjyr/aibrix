@@ -19,6 +19,7 @@ package utils
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	"k8s.io/klog/v2"
 
@@ -31,6 +32,12 @@ import (
 const (
 	NAMESPACE = "aibrix-system"
 )
+
+var DeploymentIdentifier string = getDeploymentIdentifier()
+
+func getDeploymentIdentifier() string {
+	return LoadEnv("AIBRIX_POD_DEPLOYMENT_LABEL", "app.kubernetes.io/name")
+}
 
 // IsPodTerminating check if pod is in terminating status via whether the deletion timestamp is set
 func IsPodTerminating(pod *v1.Pod) bool {
@@ -200,4 +207,29 @@ func FilterPods(pods []v1.Pod, filterFn filterPod) []v1.Pod {
 		}
 	}
 	return filtered
+}
+
+func DeploymentNameFromPod(pod *v1.Pod) string {
+	if dpName, ok := pod.Labels[DeploymentIdentifier]; ok {
+		return dpName
+	}
+
+	// Try load from ReplicaSet
+	ownerReferences := pod.OwnerReferences
+	if len(ownerReferences) > 0 {
+		for _, ownerRef := range ownerReferences {
+			if ownerRef.Kind == "ReplicaSet" {
+				replicasetName := ownerRef.Name
+				re := regexp.MustCompile(`^(.*)-\w+$`)
+				matches := re.FindStringSubmatch(replicasetName)
+				if len(matches) > 1 {
+					return matches[1]
+				} else {
+					return ""
+				}
+			}
+		}
+	}
+
+	return ""
 }

@@ -157,10 +157,10 @@ var _ = Describe("SimmpleOutputPredictor", func() {
 		It("should not panic on predict with no history", func() {
 			var output int
 			Expect(func() {
-				output = p.Predict(1)
+				output = p.Predict(16)
 			}).ShouldNot(Panic())
 
-			Expect(output).To(Equal(0))
+			Expect(output).To(Equal(16)) // Default to input tokens
 		})
 
 		It("should predict the only output", func() {

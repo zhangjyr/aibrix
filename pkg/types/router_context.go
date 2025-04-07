@@ -48,6 +48,7 @@ type RoutingContext struct {
 
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
+	lastError    error
 	debugDelay   time.Duration
 	tokens       []int
 	predictor    OutputPredictor
@@ -126,6 +127,11 @@ func (r *RoutingContext) SetTargetPod(pod *v1.Pod) {
 	}
 }
 
+func (r *RoutingContext) SetError(err error) {
+	r.lastError = err
+	r.SetTargetPod(nil)
+}
+
 func (r *RoutingContext) TargetPod() *v1.Pod {
 	targetPod := r.targetPod.Load()
 	if targetPod == nilPod {
@@ -137,12 +143,24 @@ func (r *RoutingContext) TargetPod() *v1.Pod {
 	return targetPod
 }
 
+func (r *RoutingContext) GetError() error {
+	if r.TargetPod() == nil {
+		return r.lastError
+	}
+	return nil
+}
+
 func (r *RoutingContext) TargetAddress() string {
+	pod := r.TargetPod()
+	if pod == nil {
+		return ""
+	}
 	return r.targetAddress(r.TargetPod())
 }
 
 func (r *RoutingContext) HasRouted() bool {
-	return r.targetPod.Load() != nilPod
+	pod := r.targetPod.Load()
+	return pod != nilPod && pod != nil
 }
 
 func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
@@ -158,6 +176,7 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.predictor = predictor
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
+	r.lastError = nil
 }
 
 func (r *RoutingContext) debugWait() {

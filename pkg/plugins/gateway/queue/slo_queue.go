@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,7 +32,9 @@ import (
 )
 
 const (
-	monogenousGPURouting bool = false
+	monogenousGPURouting  bool = false
+	initialTotalSubQueues int  = 8  // Expect no more than 8 subqueues
+	initialSubQueueSize   int  = 64 // Support maximum 128 pending request per sub-queue within one expansion.
 )
 
 type candidateRouterRequest struct {
@@ -45,12 +49,11 @@ type SLOQueue struct {
 
 	modelName string
 	subs      utils.SyncMap[string, types.RouterQueue[*types.RoutingContext]]
-	features  utils.SyncMap[string, types.RequestFeatures]
-	subpool   sync.Pool
+	// features  utils.SyncMap[string, types.RequestFeatures]
+	subpool sync.Pool
 
-	dequeueCandidates []*candidateRouterRequest
-	lastSubKey        string
-	lastPodCandidate  string
+	dequeueCandidates   []*candidateRouterRequest
+	lastCandidateSubKey string
 }
 
 func NewSLOQueue(base types.Router, modelName string) (router *SLOQueue) {
@@ -58,8 +61,8 @@ func NewSLOQueue(base types.Router, modelName string) (router *SLOQueue) {
 		Router:    base,
 		modelName: modelName,
 	}
-	router.subpool.New = func() any { return &SimpleQueue[*types.RoutingContext]{} }
-	router.expandDequeueCandidatesLocked(10) // Arbitarily reserve 10 slots
+	router.subpool.New = func() any { return NewSimpleQueue[*types.RoutingContext](initialSubQueueSize) }
+	router.expandDequeueCandidatesLocked(initialTotalSubQueues)
 	return router
 }
 
@@ -74,14 +77,17 @@ func (q *SLOQueue) Enqueue(c *types.RoutingContext, currentTime time.Time) error
 	sub, loaded := q.subs.LoadOrStore(key, newQueue)
 	if loaded {
 		q.subpool.Put(newQueue)
-	} else {
-		q.features.Store(key, features)
 	}
+	// else {
+	// 	q.features.Store(key, features)
+	// }
+	// nolint: errcheck
 	sub.Enqueue(c, currentTime)
+	q.debugSub(fmt.Sprintf("%s request enqueued", c.Model))
 	return nil
 }
 
-func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (req *types.RoutingContext, err error) {
+func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.RoutingContext, error) {
 	// Most implementation goes here.
 
 	// Dedup deployments
@@ -91,26 +97,50 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (req *types.R
 	}
 	deployments := pods.Indexes()
 	deploymentProfiles := make([]*cache.ModelGPUProfile, len(deployments))
+	availableProfiles := 0
 	for i, deploymentName := range deployments {
 		deploymentProfiles[i], err = c.GetModelProfileByDeploymentName(deploymentName, q.modelName)
 		if err != nil {
-			klog.Error(err)
+			klog.Warning(err)
 			// Note that deployments[deploymentName] is set and will not try again.
 			// We simply ignore this deployment.
+			continue
 		}
+		availableProfiles++
 	}
+	if availableProfiles == 0 {
+		klog.Warningf("no available slo profiles for model %s, fall back to simple queue", q.modelName)
+	}
+	// Clear error
+	err = nil
 
 	// Refill candidates
 	q.dequeueCandidates = q.dequeueCandidates[:0]
+	q.debugSub(fmt.Sprintf("peeking %s requests", q.modelName))
 	q.subs.Range(func(key string, sub types.RouterQueue[*types.RoutingContext]) bool {
 		if sub.Len() > 0 {
 			r, _ := sub.Peek(currentTime, pods)
+			if availableProfiles == 0 {
+				// No slo profiles, fall back to simple queue by comparing arrival time
+				if len(q.dequeueCandidates) == 0 {
+					q.validateDequeueCandidatesLocked(1)
+					q.dequeueCandidates = q.dequeueCandidates[:1]
+				} else if q.dequeueCandidates[0].RoutingContext.RequestTime.Before(r.RequestTime) {
+					// Skip this subqueue
+					return true
+				}
+				// Update ealiest candidate
+				q.dequeueCandidates[0].RoutingContext = r
+				q.dequeueCandidates[0].SubKey = key
+				q.dequeueCandidates[0].ProfileKey = ""
+				return true
+			}
 			// Reuse a dequeue candidate
 			idx := len(q.dequeueCandidates)
 			q.validateDequeueCandidatesLocked(idx + 1)
 			q.dequeueCandidates = q.dequeueCandidates[:idx+1]
 			// Reset values
-			q.dequeueCandidates[idx].RoutingContext = req
+			q.dequeueCandidates[idx].RoutingContext = r
 			q.dequeueCandidates[idx].SubKey = key
 			q.dequeueCandidates[idx].ProfileKey = ""
 			// Use a relaxer SLO
@@ -139,6 +169,14 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (req *types.R
 		return nil, err
 	}
 
+	// Only candidate
+	if len(q.dequeueCandidates) == 0 {
+		return nil, types.ErrQueueEmpty
+	} else if len(q.dequeueCandidates) == 1 {
+		q.lastCandidateSubKey = q.dequeueCandidates[0].SubKey
+		return q.dequeueCandidates[0].RoutingContext, nil
+	}
+
 	// Sort by rank
 	sort.Slice(q.dequeueCandidates, func(i, j int) bool {
 		// Keep original order for no slo violation
@@ -150,15 +188,16 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (req *types.R
 	})
 
 	// Start from ealiest
-	q.lastPodCandidate = ""
 	for _, candidate := range q.dequeueCandidates {
-		q.lastSubKey = candidate.SubKey
 		if monogenousGPURouting {
-			q.lastPodCandidate, _ = q.Router.Route(candidate.RoutingContext, &utils.PodArray{Pods: pods.ListByIndex(candidate.ProfileKey)})
+			//nolint:errcheck
+			q.Router.Route(candidate.RoutingContext, &utils.PodArray{Pods: pods.ListByIndex(candidate.ProfileKey)})
 		} else {
-			q.lastPodCandidate, _ = q.Router.Route(candidate.RoutingContext, pods)
+			//nolint:errcheck
+			q.Router.Route(candidate.RoutingContext, pods)
 		}
-		if len(q.lastPodCandidate) != 0 {
+		if candidate.RoutingContext.HasRouted() {
+			q.lastCandidateSubKey = candidate.SubKey
 			return candidate.RoutingContext, nil
 		}
 	}
@@ -167,12 +206,12 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (req *types.R
 }
 
 func (q *SLOQueue) Dequeue(ts time.Time) (*types.RoutingContext, error) {
-	if len(q.lastPodCandidate) == 0 {
+	if len(q.lastCandidateSubKey) == 0 {
 		return nil, fmt.Errorf("call SLOQueue.Peek first")
 	}
-	sub, _ := q.subs.Load(q.lastSubKey)
-	q.lastSubKey = ""
-	q.lastPodCandidate = ""
+	sub, _ := q.subs.Load(q.lastCandidateSubKey)
+	q.lastCandidateSubKey = ""
+	defer q.debugSub(fmt.Sprintf("%s request dequeued from sub %s", q.modelName, q.lastCandidateSubKey))
 	return sub.Dequeue(ts)
 }
 
@@ -184,11 +223,12 @@ func (q *SLOQueue) Len() (total int) {
 	return
 }
 
-func (q *SLOQueue) Route(ctx *types.RoutingContext, pods types.PodList) (podIP string, err error) {
-	if len(q.lastPodCandidate) == 0 {
-		return "", fmt.Errorf("call SLOQueue.Peek first")
+func (q *SLOQueue) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	// Ctx is not routed if no profiles is found during Peek.
+	if !ctx.HasRouted() {
+		return q.Router.Route(ctx, pods)
 	}
-	return q.lastPodCandidate, nil
+	return ctx.TargetAddress(), nil
 }
 
 func (q *SLOQueue) validateDequeueCandidatesLocked(size int) {
@@ -270,4 +310,23 @@ func (q *SLOQueue) rankTTFT(currentTime time.Time, req *types.RoutingContext, pr
 
 func (q *SLOQueue) higherRank(rank1 float64, rank2 float64) float64 {
 	return rank1 - rank2
+}
+
+func (q *SLOQueue) debugSub(msg string) {
+	if !klog.V(4).Enabled() {
+		return
+	}
+
+	var logMsg strings.Builder
+	logMsg.WriteString(msg)
+	logMsg.WriteRune(',')
+	logMsg.WriteString("SLOQueue subs stats:")
+	q.subs.Range(func(key string, sub types.RouterQueue[*types.RoutingContext]) bool {
+		logMsg.WriteString(key)
+		logMsg.WriteRune('(')
+		logMsg.WriteString(strconv.Itoa(sub.Len()))
+		logMsg.WriteRune(')')
+		return true
+	})
+	klog.V(4).Infof(logMsg.String())
 }

@@ -47,6 +47,15 @@ func (p *PendingLoadProvider) Cap() float64 {
 	return 1.0
 }
 
+func (p *PendingLoadProvider) GetUtilization(ctx *types.RoutingContext, pod *v1.Pod) (float64, error) {
+	util, err := p.CachedLoadProvider.GetUtilization(ctx, pod)
+	if IsError(err, ErrorTypeMetricNotFound) {
+		return 0.0, nil
+	} else {
+		return util, err
+	}
+}
+
 func (p *PendingLoadProvider) GetConsumption(ctx *types.RoutingContext, pod *v1.Pod) (float64, error) {
 	profile, err := p.Cache().GetModelProfileByPod(pod, ctx.Model)
 	if err != nil {

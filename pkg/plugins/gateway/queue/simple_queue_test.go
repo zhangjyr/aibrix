@@ -38,7 +38,9 @@ var _ = Describe("SimpleQueue", func() {
 
 	Describe("Basic Operations", func() {
 		It("should enqueue and dequeue items", func() {
+			// nolint:errcheck
 			queue.Enqueue(1, time.Now())
+			// nolint:errcheck
 			queue.Enqueue(2, time.Now())
 
 			val, err := queue.Dequeue(time.Now())
@@ -53,6 +55,7 @@ var _ = Describe("SimpleQueue", func() {
 		})
 
 		It("should peek without removal", func() {
+			// nolint:errcheck
 			queue.Enqueue(42, time.Now())
 			val, err := queue.Peek(time.Now(), nil)
 			Expect(err).ToNot(HaveOccurred())
@@ -75,12 +78,14 @@ var _ = Describe("SimpleQueue", func() {
 		BeforeEach(func() {
 			// Fill first
 			for i := 0; i < queue.Cap(); i++ {
+				// nolint: errcheck
 				queue.Enqueue(i+1, time.Now())
 			}
 		})
 
 		It("should expand when capacity is exceeded", func() {
 			initialCap := queue.Cap()
+			// nolint: errcheck
 			queue.Enqueue(initialCap, time.Now()) // Trigger expansion
 
 			Eventually(queue.Cap()).Should(Equal(initialCap * 2))
@@ -91,9 +96,11 @@ var _ = Describe("SimpleQueue", func() {
 			initialCap := queue.Cap()
 			// Dequeue to reduce utilization
 			for i := 0; i < initialCap/2; i++ {
+				// nolint:errcheck
 				queue.Dequeue(time.Now())
 			}
 
+			// nolint:errcheck
 			queue.Enqueue(initialCap, time.Now()) // Should trigger packing
 
 			Expect(queue.Cap()).To(Equal(initialCap))
@@ -116,6 +123,7 @@ var _ = Describe("SimpleQueue", func() {
 				go func(n int) {
 					defer wg.Done()
 					for j := 0; j < perWorker; j++ {
+						// nolint: errcheck
 						queue.Enqueue(n*perWorker+j+1, time.Now()) // start with 1
 						enqueued <- n*perWorker + j + 1
 					}
@@ -188,6 +196,7 @@ var _ = Describe("SimpleQueue", func() {
 			go func() {
 				defer wg.Done()
 				for i := 0; i < total; i++ {
+					// nolint: errcheck
 					queue.Enqueue(i, time.Now())
 				}
 			}()
@@ -196,6 +205,7 @@ var _ = Describe("SimpleQueue", func() {
 			go func() {
 				defer wg.Done()
 				for i := 0; i < total; i++ {
+					// nolint: errcheck
 					queue.Dequeue(time.Now())
 				}
 			}()
@@ -208,6 +218,7 @@ var _ = Describe("SimpleQueue", func() {
 	Describe("Edge Cases", func() {
 		It("should not handle nil values", func() {
 			q := NewSimpleQueue[*int](2)
+			// nolint: errcheck
 			err := q.Enqueue(nil, time.Now())
 			Expect(err).To(BeIdenticalTo(ErrZeroValueNotSupported))
 		})

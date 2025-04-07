@@ -258,10 +258,10 @@ func (c *Store) AddSubscriber(subscriber metrics.MetricSubscriber) {
 }
 
 func (c *Store) GetModelProfileByPod(pod *v1.Pod, modelName string) (*ModelGPUProfile, error) {
-	deploymentName, ok := pod.Labels[utils.DeploymentIdentifier]
-	if !ok {
-		// Handle the case where the label is not found (e.g., log an error)
-		return nil, fmt.Errorf("deployment name label not found on pod %s", pod.Name)
+	deploymentName := utils.DeploymentNameFromPod(pod)
+	if len(deploymentName) == 0 {
+		// Handle the case where the deployment name is not found (e.g., log an error)
+		return nil, fmt.Errorf("deployment name not found on pod %s", pod.Name)
 	}
 
 	key := ModelGPUProfileKey(modelName, deploymentName)

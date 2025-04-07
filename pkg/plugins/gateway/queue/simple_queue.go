@@ -132,7 +132,7 @@ func (q *SimpleQueue[V]) Cap() int {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
-	return int(cap(q.queue))
+	return cap(q.queue)
 }
 
 func (q *SimpleQueue[V]) expand(triggerCursor int32) int32 {

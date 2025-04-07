@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
-	"github.com/vllm-project/aibrix/pkg/plugins/gateway/queue"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"k8s.io/klog/v2"
 )
@@ -58,28 +57,6 @@ func NewQueueRouter(backend types.Router, queue types.RouterQueue[*types.Routing
 	return router, nil
 }
 
-func NewPackSLORouter(modelName string) (types.Router, error) {
-	loadProvider, err := cache.NewPendingLoadProvider()
-	if err != nil {
-		return nil, err
-	}
-
-	loadRouter, _ := NewPackLoadRouter(loadProvider)
-	sloQueue := queue.NewSLOQueue(loadRouter, modelName)
-	return NewQueueRouter(sloQueue, sloQueue)
-}
-
-func NewLeastLoadSLORouter(modelName string) (types.Router, error) {
-	loadProvider, err := cache.NewPendingLoadProvider()
-	if err != nil {
-		return nil, err
-	}
-
-	loadRouter, _ := NewLeastLoadPullingRouter(loadProvider)
-	sloQueue := queue.NewSLOQueue(loadRouter, modelName)
-	return NewQueueRouter(sloQueue, sloQueue)
-}
-
 func (r *queueRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
 	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods to forward request")
@@ -92,14 +69,18 @@ func (r *queueRouter) Route(ctx *types.RoutingContext, pods types.PodList) (stri
 
 	now := time.Now()
 	ctx.RequestTime = now
-	r.queue.Enqueue(ctx, now)
+	if err := r.queue.Enqueue(ctx, now); err != nil {
+		return "", err
+	}
 
 	r.tryRoute(pods) // Simply trigger a possible dequeue
 
 	targetPod := ctx.TargetPod() // Will wait
+	if targetPod != nil {
+		klog.V(4).Infof("targetPod for routing: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
+	}
 
-	klog.V(4).Infof("targetPod: %s(%s)", targetPod.Name, targetPod.Status.PodIP)
-	return ctx.TargetAddress(), nil
+	return ctx.TargetAddress(), ctx.GetError()
 }
 
 func (r *queueRouter) tryRoute(pods types.PodList) {
@@ -116,21 +97,25 @@ func (r *queueRouter) serve() {
 
 		for {
 			ctx, err := r.queue.Peek(time.Now(), pods)
-			if ctx == nil || err != nil {
+			if err != nil && err != types.ErrQueueEmpty {
 				klog.Errorf("error on peek request queue: %v", err)
+				break
+			} else if ctx == nil {
+				// Nothing to route, this happens if the queue is not empty, but no pod is available to be routed.
 				break
 			}
 
 			_, err = r.router.Route(ctx, pods)
-			// Ignore err
-			if err == nil {
-				// req.SetTargetPod() should have called in Route()
-				dequeued, err := r.queue.Dequeue(time.Now())
-				if err != nil {
-					klog.Errorf("error on dequeue request queue: %v", err)
-				} else if dequeued != ctx {
-					klog.Error("unexpected request dequeued")
-				}
+			if err != nil {
+				// Necessary if Router has not set the error. No harm to set twice.
+				ctx.SetError(err)
+			}
+			// req.SetTargetPod() should have called in Route()
+			dequeued, err := r.queue.Dequeue(time.Now())
+			if err != nil {
+				klog.Errorf("error on dequeue request queue: %v", err)
+			} else if dequeued != ctx {
+				klog.Error("unexpected request dequeued")
 			}
 		}
 	}

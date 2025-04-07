@@ -36,6 +36,8 @@ func NewPackLoadRouter(provider cache.CappedLoadProvider) (types.Router, error) 
 }
 
 func (r *packLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+	klog.V(4).Info("Routing using packLoadRouter", "candidates", pods.Len())
+
 	if pods.Len() == 0 {
 		return "", fmt.Errorf("no pods to forward request")
 	}
@@ -47,23 +49,23 @@ func (r *packLoadRouter) Route(ctx *types.RoutingContext, pods types.PodList) (s
 	for _, pod := range pods.All() {
 		if pod.Status.PodIP == "" {
 			// Pod not ready.
+			klog.V(4).InfoS("Skipped pod due to missing PodIP in packLoadRouter", "pod", pod.Name, "PodIP", pod.Status.PodIP)
 			continue
 		}
 
 		util, err := r.provider.GetUtilization(ctx, pod)
 		if err != nil {
-			klog.Error(err)
+			klog.V(4).InfoS("Skipped pod due to fail to get utilization in packLoadRouter", "pod", pod.Name, "error", err)
 			continue
 		}
-
-		klog.V(4).Infof("pod: %v, podIP: %v, util: %.2f",
-			pod.Name, pod.Status.PodIP, util)
 
 		consumption, err := r.provider.GetConsumption(ctx, pod)
 		if err != nil {
-			klog.Error(err)
+			klog.V(4).InfoS("Skipped pod due to fail to get consumption in packLoadRouter", "pod", pod.Name, "error", err)
 			continue
 		}
+
+		klog.V(4).Infof("pod: %v, podIP: %v, consumption: %.2f, util: %.2f", pod.Name, pod.Status.PodIP, consumption, util)
 
 		util += consumption
 		if util > maxUtil && util <= capUtil {

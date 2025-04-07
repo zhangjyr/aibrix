@@ -59,8 +59,8 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 
 	// Update running requests
 	requests := atomic.AddInt32(&metaPod.runningRequests, 1)
-	if err := c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
-		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNumRequestsRunning, metaPod.Name, requestID)
+	if err := c.updatePodRecord(metaPod, "", metrics.RealtimeNumRequestsRunning, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: float64(requests)}); err != nil {
+		klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s, err: %v", metrics.RealtimeNumRequestsRunning, metaPod.Name, requestID, err)
 	}
 
 	// Update pending load
@@ -72,8 +72,8 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 			klog.Errorf("error on track request load consumption: %v", err)
 		} else {
 			utilization = metaPod.pendingLoadUtilization.Add(ctx.PendingLoad)
-			if c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization}) != nil {
-				klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNormalizedPendings, metaPod.Name, requestID)
+			if c.updatePodRecord(metaPod, "", metrics.RealtimeNormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization}) != nil {
+				klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s, err: %v", metrics.RealtimeNormalizedPendings, metaPod.Name, requestID, err)
 			}
 		}
 	}
@@ -111,7 +111,9 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 			klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNormalizedPendings, pod.Name, requestID)
 		}
 		if utilization < c.pendingLoadProvider.Cap() {
+			// Notify queue router to try route with pending requests.
 			if metaModel, ok := c.metaModels.Load(ctx.Model); ok && metaModel.QueueRouter != nil {
+				// nolint: errcheck
 				metaModel.QueueRouter.Route(nil, metaModel.Pods.Array())
 			}
 		}

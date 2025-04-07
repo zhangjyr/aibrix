@@ -166,7 +166,7 @@ func (p *SimmpleOutputPredictor) Predict(inputTokens int) int {
 	inputBucket := p.token2bucket(inputTokens, p.inputBuckets)
 	randRange := atomic.LoadInt32(&p.inputsSums[inputBucket])
 	if randRange == int32(0) {
-		return 0
+		return inputTokens // No history, return input tokens
 	}
 	// Do weighted random
 	cursor := p.rand(randRange)

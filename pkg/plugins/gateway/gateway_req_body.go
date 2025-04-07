@@ -98,8 +98,7 @@ func (s *Server) HandleRequestBody(ctx context.Context, requestID string, req *e
 			return extErr, model, routingCtx, stream, term
 		}
 
-		predictor, _ := s.cache.GetOutputPredictor(model) // Ignore error here, will handle in RouterRequest if necessary
-		routingCtx = routingAlgorithm.NewContext(ctx, model, message, predictor)
+		routingCtx = routingAlgorithm.NewContext(ctx, requestID, model, message)
 
 		targetPodIP, err := s.selectTargetPod(routingCtx, podsArr)
 		if targetPodIP == "" || err != nil {

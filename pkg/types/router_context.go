@@ -41,10 +41,13 @@ type RoutingAlgorithm string
 type RoutingContext struct {
 	context.Context
 	Algorithm   RoutingAlgorithm
+	RequestID   string
 	Model       string
 	Message     string
-	RequestTime time.Time
-	PendingLoad float64
+	RequestTime time.Time // Time when the routing context is created.
+	PendingLoad float64   // Normalized pending load of request, available after AddRequestCount call.
+	TraceTerm   int64     // Trace term identifier, available after AddRequestCount call.
+	RoutedTime  time.Time
 
 	targetPodSet chan struct{}
 	targetPod    atomic.Pointer[v1.Pod]
@@ -52,22 +55,29 @@ type RoutingContext struct {
 	debugDelay   time.Duration
 	tokens       []int
 	predictor    OutputPredictor
+	statsUpdated int32 // Use to flag if in-memory realtime statistics has been updated for the request.
 }
 
 var requestPool = sync.Pool{
 	New: func() any { return &RoutingContext{} },
 }
 
-func (alg RoutingAlgorithm) NewContext(ctx context.Context, model string, message string, predictor OutputPredictor) *RoutingContext {
+func (alg RoutingAlgorithm) NewContext(ctx context.Context, requestID, model, message string) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
-	request.reset(ctx, alg, model, message, predictor)
+	request.reset(ctx, alg, requestID, model, message)
 	return request
 }
 
-func NewRoutingContext(ctx context.Context, algorithm RoutingAlgorithm, model string, message string, predictor OutputPredictor) *RoutingContext {
+func NewRoutingContext(ctx context.Context, algorithm RoutingAlgorithm, requestID, model, message string) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
-	request.reset(ctx, algorithm, model, message, predictor)
+	request.reset(ctx, algorithm, requestID, model, message)
 	return request
+}
+
+func (r *RoutingContext) SetOutputPreditor(predictor OutputPredictor) (old OutputPredictor) {
+	old = r.predictor
+	r.predictor = predictor
+	return
 }
 
 func (r *RoutingContext) Delete() {
@@ -123,6 +133,7 @@ func (r *RoutingContext) Features() (RequestFeatures, error) {
 
 func (r *RoutingContext) SetTargetPod(pod *v1.Pod) {
 	if r.targetPod.CompareAndSwap(nilPod, pod) { // Use CompareAndSwap to ensure close channel only once
+		r.RoutedTime = time.Now()
 		close(r.targetPodSet)
 	}
 }
@@ -163,17 +174,27 @@ func (r *RoutingContext) HasRouted() bool {
 	return pod != nilPod && pod != nil
 }
 
+func (r *RoutingContext) CanUpdateStats() bool {
+	return atomic.CompareAndSwapInt32(&r.statsUpdated, 0, 1)
+}
+
+func (r *RoutingContext) GetRoutingDelay() time.Duration {
+	return r.RoutedTime.Sub(r.RequestTime)
+}
+
 func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
 	return fmt.Sprintf("%v:%v", pod.Status.PodIP, podMetricPort)
 }
 
-func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model string, message string, predictor OutputPredictor) {
+func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, requestID string, model string, message string) {
 	r.Context = ctx
 	r.Algorithm = algorithms
+	r.RequestID = requestID
 	r.Model = model
 	r.Message = message
+	r.RequestTime = time.Now()
 	r.tokens = nil
-	r.predictor = predictor
+	r.predictor = nil
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 	r.lastError = nil

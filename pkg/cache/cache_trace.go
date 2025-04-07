@@ -79,7 +79,7 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 	}
 
 	if metaPod.CanLogPodTrace() {
-		klog.V(5).InfoS("pod stats updated.", "pod", metaPod.Name, "running requests", requests, "pending load", utilization)
+		klog.V(5).InfoS("pod stats updated.", "pod", metaPod.Name, "running_requests", requests, "pending_load", utilization)
 	}
 }
 

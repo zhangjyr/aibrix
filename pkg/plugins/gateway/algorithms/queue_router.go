@@ -35,6 +35,7 @@ func init() {
 		if err != nil {
 			return nil, err
 		}
+
 		return c.GetRouter(ctx)
 	})
 }
@@ -42,13 +43,20 @@ func init() {
 type queueRouter struct {
 	router         types.Router
 	queue          types.RouterQueue[*types.RoutingContext]
+	cache          cache.Cache
 	chRouteTrigger chan types.PodList
 }
 
 func NewQueueRouter(backend types.Router, queue types.RouterQueue[*types.RoutingContext]) (types.Router, error) {
+	c, err := cache.Get()
+	if err != nil {
+		return nil, err
+	}
+
 	router := &queueRouter{
 		router:         backend,
 		queue:          queue,
+		cache:          c,
 		chRouteTrigger: make(chan types.PodList),
 	}
 
@@ -102,6 +110,9 @@ func (r *queueRouter) serve() {
 				break
 			} else if ctx == nil {
 				// Nothing to route, this happens if the queue is not empty, but no pod is available to be routed.
+				// A pod can be unavailable if:
+				// 1. The pod is not ready.
+				// 2. The pod has reached its max capacity.
 				break
 			}
 
@@ -109,6 +120,10 @@ func (r *queueRouter) serve() {
 			if err != nil {
 				// Necessary if Router has not set the error. No harm to set twice.
 				ctx.SetError(err)
+			} else {
+				// Add request count here to make real-time metrics update and read serial.
+				// Noted, AddRequestCount should implement the idempotence.
+				r.cache.AddRequestCount(ctx, ctx.RequestID, ctx.Model)
 			}
 			// req.SetTargetPod() should have called in Route()
 			dequeued, err := r.queue.Dequeue(time.Now())

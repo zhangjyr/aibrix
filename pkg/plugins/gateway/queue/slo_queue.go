@@ -46,6 +46,7 @@ type candidateRouterRequest struct {
 
 type SLOQueue struct {
 	types.Router
+	cache cache.Cache
 
 	modelName string
 	subs      utils.SyncMap[string, types.RouterQueue[*types.RoutingContext]]
@@ -56,19 +57,33 @@ type SLOQueue struct {
 	lastCandidateSubKey string
 }
 
-func NewSLOQueue(base types.Router, modelName string) (router *SLOQueue) {
+func NewSLOQueue(base types.Router, modelName string) (router *SLOQueue, err error) {
+	// Dedup deployments
+	c, err := cache.Get()
+	if err != nil {
+		return nil, err
+	}
+
 	router = &SLOQueue{
 		Router:    base,
+		cache:     c,
 		modelName: modelName,
 	}
 	router.subpool.New = func() any { return NewSimpleQueue[*types.RoutingContext](initialSubQueueSize) }
 	router.expandDequeueCandidatesLocked(initialTotalSubQueues)
-	return router
+	return router, nil
 }
 
-func (q *SLOQueue) Enqueue(c *types.RoutingContext, currentTime time.Time) error {
+func (q *SLOQueue) Enqueue(ctx *types.RoutingContext, currentTime time.Time) error {
+	// Set output predictor first
+	if predictor, err := q.cache.GetOutputPredictor(ctx.Model); err != nil {
+		return err
+	} else {
+		ctx.SetOutputPreditor(predictor)
+	}
+
 	newQueue := q.subpool.Get().(types.RouterQueue[*types.RoutingContext])
-	features, err := c.Features()
+	features, err := ctx.Features()
 	if err != nil {
 		return err
 	}
@@ -82,24 +97,20 @@ func (q *SLOQueue) Enqueue(c *types.RoutingContext, currentTime time.Time) error
 	// 	q.features.Store(key, features)
 	// }
 	// nolint: errcheck
-	sub.Enqueue(c, currentTime)
-	q.debugSub(fmt.Sprintf("%s request enqueued", c.Model))
+	sub.Enqueue(ctx, currentTime)
+	q.debugSub(fmt.Sprintf("%s request enqueued", ctx.Model))
 	return nil
 }
 
 func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.RoutingContext, error) {
 	// Most implementation goes here.
+	var err error
 
-	// Dedup deployments
-	c, err := cache.Get()
-	if err != nil {
-		return nil, err
-	}
 	deployments := pods.Indexes()
 	deploymentProfiles := make([]*cache.ModelGPUProfile, len(deployments))
 	availableProfiles := 0
 	for i, deploymentName := range deployments {
-		deploymentProfiles[i], err = c.GetModelProfileByDeploymentName(deploymentName, q.modelName)
+		deploymentProfiles[i], err = q.cache.GetModelProfileByDeploymentName(deploymentName, q.modelName)
 		if err != nil {
 			klog.Warning(err)
 			// Note that deployments[deploymentName] is set and will not try again.

@@ -167,12 +167,21 @@ func (c *Store) GetMetricValueByPodModel(podName, modelName string, metricName s
 //
 //	int64: Trace term identifier
 func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) (traceTerm int64) {
+	if ctx != nil && !ctx.CanUpdateStats() {
+		// Current implementation assumes AddRequestCount() will not be called concurrently.
+		// TODO: Implment "wait for trace term" logic if AddRequestCount() is called concurrently.
+		return ctx.TraceTerm
+	}
+
 	if enableGPUOptimizerTracing {
 		success := false
 		for {
 			trace := c.getRequestTrace(modelName)
 			// TODO: use non-empty key if we have output prediction to decide buckets early.
 			if traceTerm, success = trace.AddRequest(requestID, ""); success {
+				if ctx != nil {
+					ctx.TraceTerm = traceTerm
+				}
 				break
 			}
 			// In case AddRequest return false, it has been recycled and we want to retry.
@@ -187,7 +196,7 @@ func (c *Store) AddRequestCount(ctx *types.RoutingContext, requestID string, mod
 	if ctx != nil {
 		c.addPodStats(ctx, requestID)
 	}
-	return
+	return traceTerm
 }
 
 // DoneRequestCount completes request tracking

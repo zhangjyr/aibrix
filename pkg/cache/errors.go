@@ -28,9 +28,9 @@ type Error interface {
 }
 
 func IsError(err error, errCategory error) bool {
-	switch err.(type) {
+	switch e := err.(type) {
 	case Error:
-		return err.(Error).ErrorType() == errCategory
+		return e.ErrorType() == errCategory
 	default:
 		return err == errCategory
 	}

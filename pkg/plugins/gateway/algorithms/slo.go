@@ -42,9 +42,14 @@ func NewPackSLORouter(modelName string) (types.Router, error) {
 	}
 
 	loadRouter, _ := NewPackLoadRouter(loadProvider)
-	sloQueue := queue.NewSLOQueue(loadRouter, modelName)
+	sloQueue, err := queue.NewSLOQueue(loadRouter, modelName)
+	if err != nil {
+		return nil, err
+	}
 	router := &SLORouter{SLOQueue: sloQueue}
-	SetFallback(router, RouterLeastRequest)
+	if err := SetFallback(router, RouterLeastRequest); err != nil {
+		return nil, err
+	}
 	return NewQueueRouter(router, sloQueue)
 }
 
@@ -55,8 +60,13 @@ func NewLeastLoadSLORouter(modelName string) (types.Router, error) {
 	}
 
 	loadRouter, _ := NewLeastLoadPullingRouter(loadProvider)
-	sloQueue := queue.NewSLOQueue(loadRouter, modelName)
+	sloQueue, err := queue.NewSLOQueue(loadRouter, modelName)
+	if err != nil {
+		return nil, err
+	}
 	router := &SLORouter{SLOQueue: sloQueue}
-	SetFallback(router, RouterLeastRequest)
+	if err := SetFallback(router, RouterLeastRequest); err != nil {
+		return nil, err
+	}
 	return NewQueueRouter(router, sloQueue)
 }

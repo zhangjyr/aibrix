@@ -44,14 +44,29 @@ func shouldNotBlock(cb func(), duration time.Duration) {
 	Eventually(block, duration).Should(Receive(BeFalse()))
 }
 
+type testOutputPredictor struct {
+}
+
+func (p *testOutputPredictor) AddTrace(inputTokens, outputTokens int, cnt int32) {
+	// Do nothing
+}
+
+func (p *testOutputPredictor) Predict(promptLen int) (outputLen int) {
+	return promptLen
+}
+
 var _ = Describe("RouterContext", func() {
 	It("should initialize correctly", func() {
+		predictor := &testOutputPredictor{}
 		ctx := context.Background()
-		rctx := NewRoutingContext(ctx, "algorithm", "model", "message", nil)
+		rctx := NewRoutingContext(ctx, "algorithm", "id", "model", "message")
+		rctx.SetOutputPreditor(predictor)
 		Expect(rctx.Context).To(BeIdenticalTo(ctx))
 		Expect(rctx.Algorithm).To(Equal(RoutingAlgorithm("algorithm")))
+		Expect(rctx.RequestID).To(Equal("id"))
 		Expect(rctx.Model).To(Equal("model"))
 		Expect(rctx.Message).To(Equal("message"))
+		Expect(rctx.predictor).To(BeIdenticalTo(predictor))
 		shouldBlock(func() { rctx.TargetPod() }, 100*time.Millisecond)
 		Expect(rctx.targetPod.Load()).To(BeIdenticalTo(nilPod))
 		Expect(rctx.lastError).To(BeNil())
@@ -62,12 +77,14 @@ var _ = Describe("RouterContext", func() {
 
 		rctx.Delete()
 		ctx2 := context.Background()
-		rctx2 := NewRoutingContext(ctx2, "algorithm2", "model2", "message2", nil)
+		rctx2 := NewRoutingContext(ctx2, "algorithm2", "id2", "model2", "message2")
 		Expect(rctx2).To(BeIdenticalTo(rctx)) // routing context reused
 		Expect(rctx2.Context).To(BeIdenticalTo(ctx2))
 		Expect(rctx2.Algorithm).To(Equal(RoutingAlgorithm("algorithm2")))
+		Expect(rctx.RequestID).To(Equal("id2"))
 		Expect(rctx2.Model).To(Equal("model2"))
 		Expect(rctx2.Message).To(Equal("message2"))
+		Expect(rctx.predictor).To(BeNil())
 		shouldBlock(func() { rctx.TargetPod() }, 100*time.Millisecond)
 		Expect(rctx.targetPod.Load()).To(BeIdenticalTo(nilPod))
 		Expect(rctx.lastError).To(BeNil()) // No blocking
@@ -76,14 +93,14 @@ var _ = Describe("RouterContext", func() {
 	})
 
 	It("should SetTargetPod accept nil", func() {
-		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", nil)
+		ctx := NewRoutingContext(context.Background(), "algorithm", "id", "model", "message")
 		ctx.SetTargetPod(nil)
 		shouldNotBlock(func() { ctx.TargetPod() }, 100*time.Millisecond)
 		Expect(ctx.TargetPod()).To(BeNil())
 	})
 
 	It("should SetTargetPod twice ok but will not change original value", func() {
-		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", nil)
+		ctx := NewRoutingContext(context.Background(), "algorithm", "id", "model", "message")
 		pod := &v1.Pod{}
 		ctx.SetTargetPod(pod)
 		Expect(ctx.TargetPod()).To(BeIdenticalTo(pod))
@@ -95,7 +112,7 @@ var _ = Describe("RouterContext", func() {
 	})
 
 	It("should SetError also SetTargetPod", func() {
-		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", nil)
+		ctx := NewRoutingContext(context.Background(), "algorithm", "id", "model", "message")
 		err := fmt.Errorf("test error")
 		ctx.SetError(err)
 		shouldNotBlock(func() { ctx.TargetPod() }, 100*time.Millisecond)
@@ -104,25 +121,25 @@ var _ = Describe("RouterContext", func() {
 	})
 
 	It("should HasRouted() indicate correctly", func() {
-		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", nil)
+		ctx := NewRoutingContext(context.Background(), "algorithm", "id", "model", "message")
 		Expect(ctx.HasRouted()).To(BeFalse())
 
 		ctx.SetTargetPod(&v1.Pod{})
 		Expect(ctx.HasRouted()).To(BeTrue())
 
-		ctx = NewRoutingContext(context.Background(), "algorithm", "model", "message", nil)
+		ctx = NewRoutingContext(context.Background(), "algorithm", "id", "model", "message")
 		ctx.SetTargetPod(nil)
 		Expect(ctx.HasRouted()).To(BeFalse())
 	})
 
 	It("should reset without SetTargetPod()", func() {
-		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", nil)
+		ctx := NewRoutingContext(context.Background(), "algorithm", "id", "model", "message")
 		ctx.Delete()
 		shouldNotBlock(func() { ctx.TargetPod() }, 100*time.Millisecond)
 	})
 
 	It("should TargetPod block and unblock successfully", func() {
-		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", nil)
+		ctx := NewRoutingContext(context.Background(), "algorithm", "id", "model", "message")
 		ctx.debugDelay = 100 * time.Millisecond
 		shouldBlock(func() { ctx.TargetPod() }, 30*time.Millisecond)
 
@@ -133,7 +150,7 @@ var _ = Describe("RouterContext", func() {
 	})
 
 	It("should GetError block and unblock successfully", func() {
-		ctx := NewRoutingContext(context.Background(), "algorithm", "model", "message", nil)
+		ctx := NewRoutingContext(context.Background(), "algorithm", "id", "model", "message")
 		ctx.debugDelay = 100 * time.Millisecond
 		// nolint: errcheck
 		shouldBlock(func() { ctx.GetError() }, 30*time.Millisecond)

@@ -36,11 +36,11 @@ func podsFromCache(c *cache.Store) *utils.PodArray {
 }
 
 func requestContext(model string) *types.RoutingContext {
-	return types.NewRoutingContext(context.Background(), RouterNotSet, model, "", nil)
+	return types.NewRoutingContext(context.Background(), RouterNotSet, "id", model, "")
 }
 
 func requestContextWithMessage(model string, message string) *types.RoutingContext {
-	return types.NewRoutingContext(context.Background(), RouterNotSet, model, message, nil)
+	return types.NewRoutingContext(context.Background(), RouterNotSet, "id", model, message)
 }
 
 func TestNoPods(t *testing.T) {

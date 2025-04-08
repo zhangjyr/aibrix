@@ -48,7 +48,7 @@ const (
 	RunningLoraAdapters                  = "running_lora_adapters"
 	// Realtime metrics
 	RealtimeNumRequestsRunning = "realtime_num_requests_running"
-	RealtimeNormalizedPendings = "Realtime_normalized_pendings"
+	RealtimeNormalizedPendings = "realtime_normalized_pendings"
 )
 
 var (

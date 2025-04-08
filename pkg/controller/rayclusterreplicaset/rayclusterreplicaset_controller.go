@@ -22,21 +22,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vllm-project/aibrix/pkg/controller/util/expectation"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-
 	rayclusterv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
-	"github.com/vllm-project/aibrix/pkg/config"
-	"k8s.io/client-go/tools/record"
-	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/config"
+	"github.com/vllm-project/aibrix/pkg/controller/util/expectation"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 var (
@@ -48,9 +47,7 @@ var (
 // Add creates a new RayClusterReplicaSet Controller and adds it to the Manager with default RBAC.
 // The Manager will set fields on the Controller and Start it when the Manager is Started.
 func Add(mgr manager.Manager, runtimeConfig config.RuntimeConfig) error {
-	// TODO: check crd exists or not. If not, we should fail here directly without moving forward.
-	// This is used to validate whether kuberay is installed now.
-
+	klog.InfoS("Starting raycluster-replicaset-controller")
 	r, err := newReconciler(mgr, runtimeConfig)
 	if err != nil {
 		return err
@@ -77,9 +74,12 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		For(&orchestrationv1alpha1.RayClusterReplicaSet{}).
 		Owns(&rayclusterv1.RayCluster{}).
 		Complete(r)
+	if err != nil {
+		return err
+	}
 
 	klog.V(4).InfoS("Finished to add raycluster-replicaset-controller")
-	return err
+	return nil
 }
 
 var _ reconcile.Reconciler = &RayClusterReplicaSetReconciler{}

@@ -41,9 +41,9 @@ type RoutingAlgorithm string
 type RoutingContext struct {
 	context.Context
 	Algorithm   RoutingAlgorithm
-	RequestID   string
 	Model       string
 	Message     string
+	RequestID   string
 	RequestTime time.Time // Time when the routing context is created.
 	PendingLoad float64   // Normalized pending load of request, available after AddRequestCount call.
 	TraceTerm   int64     // Trace term identifier, available after AddRequestCount call.
@@ -62,15 +62,15 @@ var requestPool = sync.Pool{
 	New: func() any { return &RoutingContext{} },
 }
 
-func (alg RoutingAlgorithm) NewContext(ctx context.Context, requestID, model, message string) *RoutingContext {
+func (alg RoutingAlgorithm) NewContext(ctx context.Context, model, message, requestID string) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
-	request.reset(ctx, alg, requestID, model, message)
+	request.reset(ctx, alg, model, message, requestID)
 	return request
 }
 
-func NewRoutingContext(ctx context.Context, algorithm RoutingAlgorithm, requestID, model, message string) *RoutingContext {
+func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID string) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
-	request.reset(ctx, algorithm, requestID, model, message)
+	request.reset(ctx, algorithms, model, message, requestID)
 	return request
 }
 
@@ -186,12 +186,12 @@ func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
 	return fmt.Sprintf("%v:%v", pod.Status.PodIP, podMetricPort)
 }
 
-func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, requestID string, model string, message string) {
+func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID string) {
 	r.Context = ctx
 	r.Algorithm = algorithms
-	r.RequestID = requestID
 	r.Model = model
 	r.Message = message
+	r.RequestID = requestID
 	r.RequestTime = time.Now()
 	r.tokens = nil
 	r.predictor = nil

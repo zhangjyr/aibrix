@@ -119,7 +119,17 @@ func (m *ModelRouter) addRouteFromDeployment(obj interface{}) {
 }
 
 func (m *ModelRouter) deleteRouteFromDeployment(obj interface{}) {
-	deployment := obj.(*appsv1.Deployment)
+	deployment, ok := obj.(*appsv1.Deployment)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		deployment, ok = tombstone.Obj.(*appsv1.Deployment)
+		if !ok {
+			return
+		}
+	}
 	m.deleteHTTPRoute(deployment.Namespace, deployment.Labels)
 }
 
@@ -129,7 +139,17 @@ func (m *ModelRouter) addRouteFromModelAdapter(obj interface{}) {
 }
 
 func (m *ModelRouter) deleteRouteFromModelAdapter(obj interface{}) {
-	modelAdapter := obj.(*modelv1alpha1.ModelAdapter)
+	modelAdapter, ok := obj.(*modelv1alpha1.ModelAdapter)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		modelAdapter, ok = tombstone.Obj.(*modelv1alpha1.ModelAdapter)
+		if !ok {
+			return
+		}
+	}
 	m.deleteHTTPRoute(modelAdapter.Namespace, modelAdapter.Labels)
 }
 
@@ -139,7 +159,17 @@ func (m *ModelRouter) addRouteFromRayClusterFleet(obj interface{}) {
 }
 
 func (m *ModelRouter) deleteRouteFromRayClusterFleet(obj interface{}) {
-	fleet := obj.(*orchestrationv1alpha1.RayClusterFleet)
+	fleet, ok := obj.(*orchestrationv1alpha1.RayClusterFleet)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		fleet, ok = tombstone.Obj.(*orchestrationv1alpha1.RayClusterFleet)
+		if !ok {
+			return
+		}
+	}
 	m.deleteHTTPRoute(fleet.Namespace, fleet.Labels)
 }
 
@@ -151,8 +181,8 @@ func (m *ModelRouter) createHTTPRoute(namespace string, labels map[string]string
 
 	modelPort, err := strconv.ParseInt(labels[modelPortIdentifier], 10, 32)
 	if err != nil {
-		klog.Warningf("failed to par5se model port: %v", err)
-		klog.Infof("pelase ensure %s is configured, default port %d will be used", modelPortIdentifier, defaultModelServingPort)
+		klog.Warningf("failed to parse model port: %v", err)
+		klog.Infof("please ensure %s is configured, default port %d will be used", modelPortIdentifier, defaultModelServingPort)
 		modelPort = defaultModelServingPort
 	}
 

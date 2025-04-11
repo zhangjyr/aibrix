@@ -59,7 +59,7 @@ func TestRandomRouting(t *testing.T) {
 	stddev := math.Sqrt(sumSquared/float64(len(histogram)) - mean*mean)
 
 	assert.True(t, stddev/mean < 0.2,
-		"stand deviation of pod distribution should be less than 20%%, but got %f, mean %f", stddev, mean)
+		"standard deviation of pod distribution should be less than 20%%, but got %f, mean %f", stddev, mean)
 }
 
 func TestPrefixCacheRouting(t *testing.T) {
@@ -79,7 +79,7 @@ func TestPrefixCacheRouting(t *testing.T) {
 		generateMessage := fmt.Sprintf("ensure test message is longer than 128 bytes!! this is %v message! 这是测试消息！",
 			rand.Intn(1000))
 		targetPod3 := getTargetPodFromChatCompletion(t, generateMessage, "prefix-cache")
-		fmt.Printf("req: %s, target pod from #3 request: %v\n", req, targetPod3)
+		fmt.Printf("req: %s, target pod from #3 request: %v\n", generateMessage, targetPod3)
 		if targetPod != targetPod3 {
 			break
 		}

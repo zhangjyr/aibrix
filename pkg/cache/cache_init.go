@@ -108,7 +108,9 @@ func New(redisClient *redis.Client, prometheusApi prometheusv1.API, modelRouterP
 func NewTestCacheWithPods(pods []*v1.Pod, model string) *Store {
 	c := &Store{}
 	for _, pod := range pods {
-		pod.Labels = make(map[string]string)
+		if pod.Labels == nil {
+			pod.Labels = make(map[string]string)
+		}
 		pod.Labels[modelIdentifier] = model
 		c.addPod(pod)
 	}
@@ -130,11 +132,16 @@ func NewTestCacheWithPodsMetrics(pods []*v1.Pod, model string, podMetrics map[st
 	return c
 }
 
-// InitForTest initializes the cache store for testing purposes
+// InitForTest initializes the cache store for testing purposes, it can be repeated call for reset.
 func InitForTest() *Store {
-	once.Do(func() {
-		store = &Store{initialized: true}
-	})
+	store = &Store{initialized: true}
+	return store
+}
+
+// InitWithInstanceForTest initializes the cache store with initialized instance for testing purposes, it can be repeated call for reset.
+func InitWithInstanceForTest(st *Store) *Store {
+	st.initialized = true
+	store = st
 	return store
 }
 

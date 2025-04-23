@@ -26,6 +26,12 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
+var (
+	ErrProfileNoThroughput = fmt.Errorf("profile has no throughput data")
+	ErrProfileNoE2E        = fmt.Errorf("profile has no E2E latency data")
+	ErrProfileNoTTFT       = fmt.Errorf("profile has no TTFT data")
+)
+
 const ModelGPUNameTemplate = "aibrix:profile_%s_%s"
 
 // Assuming indexes are of equal distances, the signature_tolerance
@@ -146,20 +152,33 @@ func (pf *ModelGPUProfile) getValue(ref [][]float64, signature ...int) (float64,
 	if len(signature) < 2 {
 		return 0.0, fmt.Errorf("too few signature dimensions: %v", signature)
 	} else if signature[0] >= len(ref) || signature[1] >= len(ref[signature[0]]) {
-		return 0.0, fmt.Errorf("signature out of bound: %v", signature)
+		delim2 := 0
+		if len(ref) > 0 {
+			delim2 = len(ref[0])
+		}
+		return 0.0, fmt.Errorf("signature out of bound: %v / [%d %d]", signature, len(ref), delim2)
 	}
 
 	return ref[signature[0]][signature[1]], nil
 }
 
 func (pf *ModelGPUProfile) ThroughputRPS(signature ...int) (float64, error) {
+	if pf.Tputs == nil {
+		return 0.0, ErrProfileNoThroughput
+	}
 	return pf.getValue(pf.Tputs, signature...)
 }
 
 func (pf *ModelGPUProfile) LatencySeconds(signature ...int) (float64, error) {
+	if pf.E2E == nil {
+		return 0.0, ErrProfileNoE2E
+	}
 	return pf.getValue(pf.E2E, signature...)
 }
 
 func (pf *ModelGPUProfile) TTFTSeconds(signature ...int) (float64, error) {
+	if pf.TTFT == nil {
+		return 0.0, ErrProfileNoTTFT
+	}
 	return pf.getValue(pf.TTFT, signature...)
 }

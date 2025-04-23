@@ -76,10 +76,10 @@ func RegisterDelayedConstructor(algorithm types.RoutingAlgorithm, routerConstruc
 
 func SetFallback(router types.Router, fallback types.RoutingAlgorithm) error {
 	if r, ok := router.(types.FallbackRouter); ok {
-		if provider, ok := routerRegistry[fallback]; ok {
+		if provider, ok := routerRegistry[fallback]; !ok {
 			return ErrFallbackNotRegistered
 		} else {
-			r.SetFallback(provider)
+			r.SetFallback(fallback, provider)
 		}
 		return nil
 	}

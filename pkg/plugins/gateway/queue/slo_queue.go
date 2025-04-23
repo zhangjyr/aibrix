@@ -97,6 +97,7 @@ func (q *SLOQueue) Enqueue(ctx *types.RoutingContext, currentTime time.Time) err
 	// 	q.features.Store(key, features)
 	// }
 	// nolint: errcheck
+
 	sub.Enqueue(ctx, currentTime)
 	q.debugSub(fmt.Sprintf("%s request enqueued", ctx.Model))
 	return nil
@@ -128,23 +129,33 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 	// Refill candidates
 	q.dequeueCandidates = q.dequeueCandidates[:0]
 	q.debugSub(fmt.Sprintf("peeking %s requests", q.modelName))
+	// Define fallback handler to handle cases like:
+	// 1. No available profiles.
+	// 2. Profile does not provide SLO info.
+	// Fallback handler emulate a FIFO queue by comparing arrival time
+	fallbackHandler := func(key string, subReq *types.RoutingContext) bool {
+		if len(q.dequeueCandidates) == 0 {
+			q.validateDequeueCandidatesLocked(1)
+			q.dequeueCandidates = q.dequeueCandidates[:1]
+		} else if q.dequeueCandidates[0].RoutingContext.RequestTime.Before(subReq.RequestTime) {
+			// Skip this subqueue
+			return true
+		}
+		// Update ealiest candidate
+		q.dequeueCandidates[0].RoutingContext = subReq
+		q.dequeueCandidates[0].SubKey = key
+		q.dequeueCandidates[0].ProfileKey = ""
+		return true
+	}
 	q.subs.Range(func(key string, sub types.RouterQueue[*types.RoutingContext]) bool {
 		if sub.Len() > 0 {
 			r, _ := sub.Peek(currentTime, pods)
+			// Keep fallback decision in case anything wrong.
+			fbRet := fallbackHandler(key, r)
+			// Fallback case 1: No available profiles.
 			if availableProfiles == 0 {
-				// No slo profiles, fall back to simple queue by comparing arrival time
-				if len(q.dequeueCandidates) == 0 {
-					q.validateDequeueCandidatesLocked(1)
-					q.dequeueCandidates = q.dequeueCandidates[:1]
-				} else if q.dequeueCandidates[0].RoutingContext.RequestTime.Before(r.RequestTime) {
-					// Skip this subqueue
-					return true
-				}
-				// Update ealiest candidate
-				q.dequeueCandidates[0].RoutingContext = r
-				q.dequeueCandidates[0].SubKey = key
-				q.dequeueCandidates[0].ProfileKey = ""
-				return true
+				klog.Warningf("SLOQueue found no profile available for request %s of model %s, fallback to FIFO queue", r.RequestID, r.Model)
+				return fbRet
 			}
 			// Reuse a dequeue candidate
 			idx := len(q.dequeueCandidates)
@@ -161,9 +172,11 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 					continue
 				}
 				rank, rankErr := q.rank(currentTime, r, profile)
+				// Fallback case 2: Profile does not provide SLO info.
 				if rankErr != nil {
 					err = rankErr
-					return false
+					klog.Warningf("SLOQueue failed to get SLO info for request %s with profile %s: %v, fallback to FIFO queue", r.RequestID, profile.Deployment, rankErr)
+					return fbRet
 				}
 				// if q.queueOverallSLO {
 				// 	rank = q.queueRank(currentTime, &q.Subs[i], j)
@@ -177,13 +190,14 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		return true
 	})
 	if err != nil {
-		return nil, err
+		// Apply fallback decision by just keep the first one.
+		q.dequeueCandidates = q.dequeueCandidates[:1]
 	}
 
-	// Only candidate
 	if len(q.dequeueCandidates) == 0 {
 		return nil, types.ErrQueueEmpty
 	} else if len(q.dequeueCandidates) == 1 {
+		// Only candidate
 		q.lastCandidateSubKey = q.dequeueCandidates[0].SubKey
 		return q.dequeueCandidates[0].RoutingContext, nil
 	}
@@ -254,6 +268,9 @@ func (q *SLOQueue) expandDequeueCandidatesLocked(limit int) {
 	if limit == 0 {
 		limit = 2 * cap(q.dequeueCandidates)
 	}
+	if limit < initialTotalSubQueues {
+		limit = initialTotalSubQueues
+	}
 	candidates := make([]*candidateRouterRequest, limit)
 	var dequeueCandidates []*candidateRouterRequest
 	if cap(q.dequeueCandidates) > 0 {
@@ -274,8 +291,14 @@ func (q *SLOQueue) featuresKey(features types.RequestFeatures) string {
 }
 
 func (q *SLOQueue) rank(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile) (rank float64, err error) {
-	features, _ := req.Features() // Since req are in the queue, Features() must be called before without an error.
-	signature, _ := profile.GetSignature(features...)
+	features, err := req.Features() // Since req are in the queue, Features() must be called before without an error.
+	if err != nil {
+		return 0.0, err
+	}
+	signature, err := profile.GetSignature(features...)
+	if err != nil {
+		return 0.0, err
+	}
 	if profile.SLOs.TTFT > 0.0 {
 		rank, err = q.rankTTFT(currentTime, req, profile, signature)
 		if err != nil {
@@ -291,7 +314,7 @@ func (q *SLOQueue) rank(currentTime time.Time, req *types.RoutingContext, profil
 }
 
 func (q *SLOQueue) rankE2E(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
-	target := profile.SLOs.E2E // TODO: We should make  SLO.E2E always available
+	target := profile.SLOs.E2E // TODO: We should make SLO.E2E always available
 	expected, err := profile.LatencySeconds(signature...)
 	if err != nil {
 		return 0.0, err
@@ -300,7 +323,7 @@ func (q *SLOQueue) rankE2E(currentTime time.Time, req *types.RoutingContext, pro
 }
 
 func (q *SLOQueue) rankTTFT(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
-	target := profile.SLOs.TTFT // TODO: We should make  SLO.E2E always available
+	target := profile.SLOs.TTFT
 	expected, err := profile.TTFTSeconds(signature...)
 	if err != nil {
 		return 0.0, err

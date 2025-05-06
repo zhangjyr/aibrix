@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package kvcache
+package backends
 
 import (
 	"context"
@@ -22,16 +22,26 @@ import (
 	"fmt"
 
 	orchestrationv1alpha1 "github.com/vllm-project/aibrix/api/orchestration/v1alpha1"
+	"github.com/vllm-project/aibrix/pkg/constants"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// reconcileCentralizedMode is used for kv backend with metadata store, solutions like Vineyard.
-func (r *KVCacheReconciler) reconcileCentralizedMode(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) (ctrl.Result, error) {
+type VineyardReconciler struct {
+	*BaseReconciler
+}
+
+func NewVineyardReconciler(c client.Client) *VineyardReconciler {
+	return &VineyardReconciler{&BaseReconciler{Client: c}}
+}
+
+func (r VineyardReconciler) Reconcile(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) (reconcile.Result, error) {
 	// Handle metadata Pods like etcd or redis in future.
 	err := r.reconcileMetadataService(ctx, kvCache)
 	if err != nil {
@@ -53,7 +63,7 @@ func (r *KVCacheReconciler) reconcileCentralizedMode(ctx context.Context, kvCach
 	return ctrl.Result{}, nil
 }
 
-func (r *KVCacheReconciler) reconcileMetadataService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
+func (r *VineyardReconciler) reconcileMetadataService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
 	if kvCache.Spec.Metadata != nil && kvCache.Spec.Metadata.Etcd == nil && kvCache.Spec.Metadata.Redis == nil {
 		return errors.New("either etcd or redis configuration is required")
 	}
@@ -62,14 +72,10 @@ func (r *KVCacheReconciler) reconcileMetadataService(ctx context.Context, kvCach
 		return r.reconcileEtcdService(ctx, kvCache)
 	}
 
-	if kvCache.Spec.Metadata.Redis != nil {
-		return r.reconcileRedisService(ctx, kvCache)
-	}
-
 	return nil
 }
 
-func (r *KVCacheReconciler) reconcileEtcdService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
+func (r *VineyardReconciler) reconcileEtcdService(ctx context.Context, kvCache *orchestrationv1alpha1.KVCache) error {
 	// We only support etcd at this moment, redis will be supported later.
 	replicas := int(kvCache.Spec.Metadata.Etcd.Replicas)
 
@@ -111,9 +117,9 @@ func buildEtcdPod(kvCache *orchestrationv1alpha1.KVCache, etcdPodName string) *c
 			Name:      etcdPodName,
 			Namespace: kvCache.Namespace,
 			Labels: map[string]string{
-				KVCacheLabelKeyIdentifier:    kvCache.Name,
-				KVCacheLabelKeyRole:          KVCacheLabelValueRoleMetadata,
-				KVCacheLabelKeyMetadataIndex: etcdPodName,
+				constants.KVCacheLabelKeyIdentifier:    kvCache.Name,
+				constants.KVCacheLabelKeyRole:          constants.KVCacheLabelValueRoleMetadata,
+				constants.KVCacheLabelKeyMetadataIndex: etcdPodName,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(kvCache, orchestrationv1alpha1.GroupVersion.WithKind("KVCache")),
@@ -158,9 +164,9 @@ func buildEtcdPodService(etcdPodName string, kvCache *orchestrationv1alpha1.KVCa
 			Name:      etcdPodName,
 			Namespace: kvCache.Namespace,
 			Labels: map[string]string{
-				KVCacheLabelKeyIdentifier:    kvCache.Name,
-				KVCacheLabelKeyRole:          KVCacheLabelValueRoleMetadata,
-				KVCacheLabelKeyMetadataIndex: etcdPodName,
+				constants.KVCacheLabelKeyIdentifier:    kvCache.Name,
+				constants.KVCacheLabelKeyRole:          constants.KVCacheLabelValueRoleMetadata,
+				constants.KVCacheLabelKeyMetadataIndex: etcdPodName,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(kvCache, orchestrationv1alpha1.GroupVersion.WithKind("KVCache")),
@@ -172,9 +178,9 @@ func buildEtcdPodService(etcdPodName string, kvCache *orchestrationv1alpha1.KVCa
 				{Name: "server", Port: 2380, TargetPort: intstr.FromInt32(2380), Protocol: corev1.ProtocolTCP},
 			},
 			Selector: map[string]string{
-				KVCacheLabelKeyIdentifier:    kvCache.Name,
-				KVCacheLabelKeyRole:          KVCacheLabelValueRoleMetadata,
-				KVCacheLabelKeyMetadataIndex: etcdPodName,
+				constants.KVCacheLabelKeyIdentifier:    kvCache.Name,
+				constants.KVCacheLabelKeyRole:          constants.KVCacheLabelValueRoleMetadata,
+				constants.KVCacheLabelKeyMetadataIndex: etcdPodName,
 			},
 			Type: corev1.ServiceTypeClusterIP,
 		},
@@ -188,8 +194,8 @@ func buildEtcdAggregateService(kvCache *orchestrationv1alpha1.KVCache) *corev1.S
 			Name:      fmt.Sprintf("%s-etcd-service", kvCache.Name),
 			Namespace: kvCache.Namespace,
 			Labels: map[string]string{
-				KVCacheLabelKeyIdentifier: kvCache.Name,
-				KVCacheLabelKeyRole:       KVCacheLabelValueRoleMetadata,
+				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleMetadata,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(kvCache, orchestrationv1alpha1.GroupVersion.WithKind("KVCache")),
@@ -200,8 +206,8 @@ func buildEtcdAggregateService(kvCache *orchestrationv1alpha1.KVCache) *corev1.S
 				{Name: "etcd-port", Port: 2379, TargetPort: intstr.FromInt32(2379), Protocol: corev1.ProtocolTCP},
 			},
 			Selector: map[string]string{
-				KVCacheLabelKeyIdentifier: kvCache.Name,
-				KVCacheLabelKeyRole:       KVCacheLabelValueRoleMetadata,
+				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleMetadata,
 			},
 			Type: corev1.ServiceTypeClusterIP,
 		},
@@ -225,9 +231,9 @@ func buildVineyardDeployment(kvCache *orchestrationv1alpha1.KVCache) *appsv1.Dep
 
 	affinity := corev1.Affinity{}
 
-	if value, ok := kvCache.Annotations[KVCacheAnnotationNodeAffinityGPUType]; ok {
-		matchKey := KVCacheAnnotationNodeAffinityDefaultKey
-		if key, exist := kvCache.Annotations[KVCacheAnnotationNodeAffinityKey]; exist {
+	if value, ok := kvCache.Annotations[constants.KVCacheAnnotationNodeAffinityGPUType]; ok {
+		matchKey := constants.KVCacheAnnotationNodeAffinityDefaultKey
+		if key, exist := kvCache.Annotations[constants.KVCacheAnnotationNodeAffinityKey]; exist {
 			matchKey = key
 		}
 
@@ -249,7 +255,7 @@ func buildVineyardDeployment(kvCache *orchestrationv1alpha1.KVCache) *appsv1.Dep
 		affinity.NodeAffinity = nodeAffinity
 	}
 
-	if value, ok := kvCache.Annotations[KVCacheAnnotationPodAffinityKey]; ok {
+	if value, ok := kvCache.Annotations[constants.KVCacheAnnotationPodAffinityKey]; ok {
 		podAffinity := &corev1.PodAffinity{
 			RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
 				{
@@ -269,14 +275,14 @@ func buildVineyardDeployment(kvCache *orchestrationv1alpha1.KVCache) *appsv1.Dep
 		affinity.PodAffinity = podAffinity
 	}
 
-	if _, ok := kvCache.Annotations[KVCacheAnnotationPodAntiAffinity]; ok {
+	if _, ok := kvCache.Annotations[constants.KVCacheAnnotationPodAntiAffinity]; ok {
 		podAntiAffinity := &corev1.PodAntiAffinity{
 			RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
 				{
 					LabelSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
-							KVCacheLabelKeyIdentifier: kvCache.Name,
-							KVCacheLabelKeyRole:       KVCacheLabelValueRoleCache,
+							constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+							constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
 						},
 					},
 					TopologyKey: "kubernetes.io/hostname",
@@ -291,8 +297,8 @@ func buildVineyardDeployment(kvCache *orchestrationv1alpha1.KVCache) *appsv1.Dep
 			Name:      kvCache.Name,
 			Namespace: kvCache.Namespace,
 			Labels: map[string]string{
-				KVCacheLabelKeyIdentifier: kvCache.Name,
-				KVCacheLabelKeyRole:       "cache",
+				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+				constants.KVCacheLabelKeyRole:       "cache",
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(kvCache, orchestrationv1alpha1.GroupVersion.WithKind("KVCache")),
@@ -303,15 +309,15 @@ func buildVineyardDeployment(kvCache *orchestrationv1alpha1.KVCache) *appsv1.Dep
 			Selector: &metav1.LabelSelector{
 				// TODO: update metadata
 				MatchLabels: map[string]string{
-					KVCacheLabelKeyIdentifier: kvCache.Name,
-					KVCacheLabelKeyRole:       KVCacheLabelValueRoleCache,
+					constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+					constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
 				},
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						KVCacheLabelKeyIdentifier: kvCache.Name,
-						KVCacheLabelKeyRole:       KVCacheLabelValueRoleCache,
+						constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+						constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -409,7 +415,7 @@ func buildVineyardRpcService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Ser
 			Name:      fmt.Sprintf("%s-rpc", kvCache.Name),
 			Namespace: kvCache.Namespace,
 			Labels: map[string]string{
-				KVCacheLabelKeyIdentifier: kvCache.Name,
+				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(kvCache, orchestrationv1alpha1.GroupVersion.WithKind("KVCache")),
@@ -420,8 +426,8 @@ func buildVineyardRpcService(kvCache *orchestrationv1alpha1.KVCache) *corev1.Ser
 				{Name: "vineyard-rpc", Port: 9600, TargetPort: intstr.FromInt32(9600), Protocol: corev1.ProtocolTCP},
 			},
 			Selector: map[string]string{
-				KVCacheLabelKeyIdentifier: kvCache.Name,
-				KVCacheLabelKeyRole:       KVCacheLabelValueRoleCache,
+				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
+				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
 			},
 			Type: corev1.ServiceTypeClusterIP,
 		},

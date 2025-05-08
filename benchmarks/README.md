@@ -13,9 +13,22 @@ The diagram below shows the end-to-end steps of AIBrix benchmakrs. Our component
 Currently, the benchmark scenarios are still under construction and the current benchmark script ```benchmark.sh``` performs all steps up to the AIBrix workload format and trigger benchmark client without extra steps setting up benchmark environment for different scenarios. 
 All default shared environment variables can be found in ```config```. 
 
+
+## Preliminary
+
+Make sure you set these environment variables before you start. 
+
+```bash
+export KUBECONFIG=${kube_config_path}
+kubectl -n envoy-gateway-system port-forward ${service_name} 8888:80 &
+export api_key="${your_api_key}"
+```
+
+
+## Run benchmark end-to-end
 To run all steps using the default setting, try
 
-```
+```bash
 ./benchmark.sh all
 ```
 
@@ -27,12 +40,12 @@ As shown in the diagram above, the workload generator would expect would accept 
 A synthetic dataset format need to be in one of the two formats:
 
 1. Plain format (no sessions)
-```
+```json
 {"prompt": "XXXX"}
 {"prompt": "YYYY"}
 ```
 2. Session format
-```
+```json
 {"session_id": 0, "prompts": ["XXX", "YYY"]}
 {"session_id": 1, "prompts": ["AAA", "BBB", "CCC"]}
 ```
@@ -40,8 +53,8 @@ The dataset generator either generates a prompt dataset, or convert an existing 
 
 
 To run dataset generation, do
-```
-./benchmark dataset
+```bash
+./benchmark.sh dataset
 ```
 
 Currently, we support four types of dataset:
@@ -85,8 +98,29 @@ Workload generator specifies time and requests to be dispatched of a workload. A
 
 
 Workload generator could be run by:
+```bash
+./benchmark.sh workload
 ```
-./benchmark workload
+
+Ths workload generator would produce a workload file that looks like the following. The logical timestamp is associated with list of prompts that need to be dispatched at the same time. 
+
+```json
+{
+    "timestamp": 19, 
+    "requests": 
+    [
+        {
+            "prompt": "I need to understand data science for my startup idea. Can you help? Could you also explain how this relates to natural language processing? For context, I have experience with cybersecurity but I'm new to this specific area. I've been trying to understand this concept for months and would appreciate a clear explanation. I'm asking because I need to deploy a machine learning model for a project. For context, I have experience with cryptocurrency but I'm new to this specific area. Could you", 
+            "prompt_length": 101, 
+            "output_length": null,
+            "session_id": 0
+        },
+        {
+            "prompt": "...."
+            ......
+        }
+    ]
+}
 ```
 
 Details of workload generator could be found [here](generator/workload-generator/README.md).
@@ -94,8 +128,8 @@ Details of workload generator could be found [here](generator/workload-generator
 
 
 ## Run workload using client
-```
-./benchmark client
+```bash
+./benchmark.sh client
 ```
 
 The benchmark client supports both batch and streaming mode. Streaming mode  supports intra-request metrics like TTFT/TPOT. Configure endpoint and target model via [config/base.sh](config/base.sh).
@@ -105,8 +139,8 @@ The benchmark client supports both batch and streaming mode. Streaming mode  sup
 ## Run analysis
 
 Run analysis on benchmark result using: 
-```
-./benchmark analysis
+```bash
+./benchmark.sh analysis
 ```
 Configure path and performance target via [config/base.sh](config/base.sh).
 

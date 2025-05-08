@@ -31,6 +31,7 @@ generate_dataset() {
         synthetic_shared)
             source config/dataset/synthetic_shared.sh
             CMD="python generator/dataset-generator/synthetic_prefix_sharing_dataset.py \
+                --tokenizer "$TOKENIZER" \
                 --app-name \"$PROMPT_TYPE\" \
                 --prompt-length \"$PROMPT_LENGTH\" \
                 --prompt-length-std \"$PROMPT_STD\" \
@@ -48,6 +49,8 @@ generate_dataset() {
         synthetic_multiturn)
             source config/dataset/synthetic_multiturn.sh
             python generator/dataset-generator/multiturn_prefix_sharing_dataset.py \
+                --tokenizer "$TOKENIZER" \
+                --shared-prefix-len "$SHARED_PREFIX_LENGTH" \
                 --prompt-length-mean "$PROMPT_LENGTH" \
                 --prompt-length-std "$PROMPT_STD" \
                 --num-turns-mean "$NUM_TURNS" \
@@ -178,6 +181,7 @@ run_client() {
         --model \"$TARGET_MODEL\" \
         --api-key \"$API_KEY\" \
         --time-scale \"$TIME_SCALE\" \
+        --routing-strategy \"$ROUTING_STRATEGY\" \
         --output-file-path \"$CLIENT_OUTPUT/output.jsonl\""
 
     [ "$STREAMING_ENABLED" = "true" ] && CMD+=" --streaming"

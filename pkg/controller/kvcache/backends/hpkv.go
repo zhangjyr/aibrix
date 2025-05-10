@@ -27,6 +27,7 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -75,6 +76,18 @@ func (HpKVBackend) ValidateObject(kvCache *orchestrationv1alpha1.KVCache) error 
 		return errors.New("either etcd or redis configuration is required")
 	}
 	return nil
+}
+
+func (b HpKVBackend) BuildWatcherPodServiceAccount(kvCache *orchestrationv1alpha1.KVCache) *corev1.ServiceAccount {
+	return buildServiceAccount(kvCache)
+}
+
+func (b HpKVBackend) BuildWatcherPodRole(kvCache *orchestrationv1alpha1.KVCache) *rbacv1.Role {
+	return buildRole(kvCache)
+}
+
+func (b HpKVBackend) BuildWatcherPodRoleBinding(kvCache *orchestrationv1alpha1.KVCache) *rbacv1.RoleBinding {
+	return buildRoleBinding(kvCache)
 }
 
 func (HpKVBackend) BuildWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod {
@@ -131,6 +144,11 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 				constants.KVCacheLabelKeyIdentifier: kvCache.Name,
 				constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleKVWatcher,
 			},
+			Annotations: map[string]string{
+				"prometheus.io/scrape": "true",
+				"prometheus.io/port":   "8000",
+				"prometheus.io/path":   "/metrics",
+			},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(kvCache, orchestrationv1alpha1.GroupVersion.WithKind("KVCache")),
 			},
@@ -163,7 +181,7 @@ func buildKVCacheWatcherPod(kvCache *orchestrationv1alpha1.KVCache) *corev1.Pod 
 					Resources: kvCache.Spec.Watcher.Resources,
 				},
 			},
-			ServiceAccountName: "kvcache-watcher-sa",
+			ServiceAccountName: kvCache.Name,
 		},
 	}
 
@@ -202,6 +220,24 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 		envs = append(envs, kvCache.Spec.Cache.Env...)
 	}
 
+	annotations := map[string]string{
+		"prometheus.io/scrape": "true",
+		"prometheus.io/port":   strconv.Itoa(params.AdminPort),
+		"prometheus.io/path":   "/metrics",
+	}
+	rdmaKey := corev1.ResourceName("vke.volcengine.com/rdma")
+	if _, ok := kvCache.Spec.Cache.Resources.Limits[rdmaKey]; ok {
+		annotations["k8s.volcengine.com/pod-networks"] = `
+[
+  {
+    "cniConf": {
+      "name": "rdma"
+    }
+  }
+]
+`
+	}
+
 	kvCacheServerArgs := []string{
 		"-a", "$AIBRIX_KVCACHE_RDMA_IP",
 		"-p", "$AIBRIX_KVCACHE_RDMA_PORT",
@@ -238,17 +274,7 @@ func buildCacheStatefulSet(kvCache *orchestrationv1alpha1.KVCache) *appsv1.State
 						constants.KVCacheLabelKeyIdentifier: kvCache.Name,
 						constants.KVCacheLabelKeyRole:       constants.KVCacheLabelValueRoleCache,
 					},
-					Annotations: map[string]string{
-						"k8s.volcengine.com/pod-networks": `
-[
-  {
-    "cniConf": {
-      "name": "rdma"
-    }
-  }
-]
-`,
-					},
+					Annotations: annotations,
 				},
 				Spec: corev1.PodSpec{
 					//HostNetwork: true, // CNI doesn't need hostNetwork:true. in that case, RDMA ip won't be injected.

@@ -31,16 +31,29 @@ func TestBaseModelInference(t *testing.T) {
 	initializeClient(context.Background(), t)
 
 	client := createOpenAIClient(gatewayURL, apiKey)
+	completion, err := client.Completions.New(context.TODO(), openai.CompletionNewParams{
+		Prompt: openai.CompletionNewParamsPromptUnion{
+			OfString: openai.String("Say this is a test"),
+		},
+		Model: modelName,
+	})
+	if err != nil {
+		t.Fatalf("completions failed: %v", err)
+	}
+	assert.Equal(t, modelName, completion.Model)
+	assert.NotEmpty(t, completion.Choices, "completion has no choices returned")
+	assert.NotEmpty(t, completion.Choices[0].Text, "chat completion has no message returned")
+	assert.Greater(t, completion.Usage.CompletionTokens, int64(0), "completion tokens are more than zero")
+
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
-		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("Say this is a test"),
-		}),
-		Model: openai.F(modelName),
+		},
+		Model: modelName,
 	})
 	if err != nil {
 		t.Fatalf("chat completions failed: %v", err)
 	}
-
 	assert.Equal(t, modelName, chatCompletion.Model)
 	assert.NotEmpty(t, chatCompletion.Choices, "chat completion has no choices returned")
 	assert.NotNil(t, chatCompletion.Choices[0].Message.Content, "chat completion has no message returned")
@@ -77,7 +90,7 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			var client *openai.Client
+			var client openai.Client
 			if tc.routingStrategy != "" {
 				var dst *http.Response
 				client = createOpenAIClientWithRoutingStrategy(gatewayURL, tc.apiKey,
@@ -87,10 +100,10 @@ func TestBaseModelInferenceFailures(t *testing.T) {
 			}
 
 			_, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
-				Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+				Messages: []openai.ChatCompletionMessageParamUnion{
 					openai.UserMessage("Say this is a test"),
-				}),
-				Model: openai.F(tc.modelName),
+				},
+				Model: tc.modelName,
 			})
 
 			assert.Error(t, err)

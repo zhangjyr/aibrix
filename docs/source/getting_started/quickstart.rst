@@ -89,6 +89,62 @@ Depending on where you deployed the AIBrix, you can use either of the following 
         ]
     }'
 
+.. code-block:: python
+
+    from openai import OpenAI
+    
+    client = OpenAI(base_url="http://${ENDPOINT}/v1", api_key="OPENAI_API_KEY",
+                    default_headers={'routing-strategy': 'least-request'})
+
+    completion = client.chat.completions.create(
+        model="deepseek-r1-distill-llama-8b",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "What is the capital of California?"}
+        ]
+    )
+    print(completion.choices[0].message.content)
+
+.. code-block:: go
+
+    # multiturn conversation
+    package main
+
+    import (
+        "context"
+
+        "github.com/openai/openai-go"
+        "github.com/openai/openai-go/option"
+    )
+
+    func main() {
+        client := openai.NewClient(
+            option.WithBaseURL("http://${ENDPOINT}:8888/v1"),
+            option.WithAPIKey("OPENAI_API_KEY"),
+            option.WithHeader("routing-strategy", "prefix-cache"),
+        )
+        chatCompletion, _ := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+            Messages: []openai.ChatCompletionMessageParamUnion{
+                openai.SystemMessage("You are a helpful assistant."),
+                openai.UserMessage("What is the capital of California?"),
+            },
+            Model: "deepseek-r1-distill-llama-8b",
+        })
+        println(chatCompletion.Choices[0].Message.Content)
+
+        chatCompletion, _ = client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+            Messages: []openai.ChatCompletionMessageParamUnion{
+                openai.SystemMessage("You are a helpful assistant."),
+                openai.UserMessage("What is the capital of California?"),
+                openai.AssistantMessage(chatCompletion.Choices[0].Message.Content),
+                openai.UserMessage("What is the largest county of california?"),
+            },
+            Model: "deepseek-r1-distill-llama-8b",
+        })
+        println(chatCompletion.Choices[0].Message.Content)
+    }
+
+
 If you meet problems exposing external IPs, feel free to debug with following commands. `101.18.0.4` is the ip of the gateway service.
 
 .. code-block:: bash
@@ -97,3 +153,5 @@ If you meet problems exposing external IPs, feel free to debug with following co
     NAME                                     TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)                                   AGE
     envoy-aibrix-system-aibrix-eg-903790dc   LoadBalancer   10.96.239.246   101.18.0.4    80:32079/TCP                              10d
     envoy-gateway                            ClusterIP      10.96.166.226   <none>        18000/TCP,18001/TCP,18002/TCP,19001/TCP   10d
+
+Please also follow `debugging guidelines <https://aibrix.readthedocs.io/latest/features/gateway-plugins.html#debugging-guidelines>`_.

@@ -20,6 +20,7 @@ import (
 	"errors"
 
 	"github.com/vllm-project/aibrix/pkg/types"
+
 	"k8s.io/klog/v2"
 )
 

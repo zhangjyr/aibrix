@@ -118,7 +118,7 @@ var _ = Describe("SLOQueue", func() {
 			// Use a context with a timeout to ensure the function doesn't block indefinitely
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 			defer cancel()
-			req := RouterSLORouter.NewContext(ctx, model, "message", "request_id")
+			req := RouterSLORouter.NewContext(ctx, model, "message", "request_id", "")
 			_, err = router.Route(req, pods)
 			Expect(err).To(BeNil())
 			Expect(req.HasRouted()).To(BeTrue())

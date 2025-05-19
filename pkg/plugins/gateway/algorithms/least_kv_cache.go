@@ -25,7 +25,7 @@ import (
 	metrics "github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog/v2"
+	klog "k8s.io/klog/v2"
 )
 
 var (
@@ -51,28 +51,20 @@ func NewLeastKvCacheRouter() (types.Router, error) {
 	}, nil
 }
 
-func (r leastKvCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+func (r leastKvCacheRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	var targetPod *v1.Pod
 	minKvCache := math.MaxFloat64
 
-	if pods.Len() == 0 {
-		return "", fmt.Errorf("no pods to forward request")
-	}
-
-	for _, pod := range pods.All() {
-		if pod.Status.PodIP == "" {
-			continue
-		}
-
+	for _, pod := range readyPodList.All() {
 		// Due to metric refactor (pull/543) to better support lora and multi models,
 		// we change to use PodModelMetrics instead of PodMetrics in some scenarios.
 		// This works but doesn't look very promising, we can revisit this part later.
-		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.GPUCacheUsagePerc)
+		gpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.GPUCacheUsagePerc)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		cpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.CPUCacheUsagePerc)
+		cpuCache, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.CPUCacheUsagePerc)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -90,9 +82,8 @@ func (r leastKvCacheRouter) Route(ctx *types.RoutingContext, pods types.PodList)
 
 	// Use fallback if no valid metrics
 	if targetPod == nil {
-		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPod, err = selectRandomPod(pods.All(), rand.Intn)
+		targetPod, err = SelectRandomPodAsFallback(ctx, readyPodList.All(), rand.Intn)
 		if err != nil {
 			return "", err
 		}

@@ -44,6 +44,7 @@ type RoutingContext struct {
 	Model       string
 	Message     string
 	RequestID   string
+	User        *string
 	RequestTime time.Time // Time when the routing context is created.
 	PendingLoad float64   // Normalized pending load of request, available after AddRequestCount call.
 	TraceTerm   int64     // Trace term identifier, available after AddRequestCount call.
@@ -62,15 +63,15 @@ var requestPool = sync.Pool{
 	New: func() any { return &RoutingContext{} },
 }
 
-func (alg RoutingAlgorithm) NewContext(ctx context.Context, model, message, requestID string) *RoutingContext {
+func (alg RoutingAlgorithm) NewContext(ctx context.Context, model, message, requestID, user string) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
-	request.reset(ctx, alg, model, message, requestID)
+	request.reset(ctx, alg, model, message, requestID, user)
 	return request
 }
 
-func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID string) *RoutingContext {
+func NewRoutingContext(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID, user string) *RoutingContext {
 	request := requestPool.Get().(*RoutingContext)
-	request.reset(ctx, algorithms, model, message, requestID)
+	request.reset(ctx, algorithms, model, message, requestID, user)
 	return request
 }
 
@@ -195,7 +196,7 @@ func (r *RoutingContext) targetAddress(pod *v1.Pod) string {
 	return fmt.Sprintf("%v:%v", pod.Status.PodIP, podMetricPort)
 }
 
-func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID string) {
+func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm, model, message, requestID, user string) {
 	r.Context = ctx
 	r.Algorithm = algorithms
 	r.Model = model
@@ -204,6 +205,11 @@ func (r *RoutingContext) reset(ctx context.Context, algorithms RoutingAlgorithm,
 	r.RequestTime = time.Now()
 	r.tokens = nil
 	r.predictor = nil
+	if user != "" {
+		r.User = &user
+	} else {
+		r.User = nil
+	}
 	r.targetPodSet = make(chan struct{}) // Initialize channel
 	r.targetPod.Store(nilPod)
 	r.lastError = nil

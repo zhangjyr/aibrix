@@ -61,7 +61,7 @@ type Store struct {
 	numRequestsTraces   int32                                 // Request trace counter
 
 	// Pod related storage
-	metaPods utils.SyncMap[string, *Pod] // pod_name -> *Pod
+	metaPods utils.SyncMap[string, *Pod] // pod_namespace/pod_name -> *Pod
 
 	// Model related storage
 	metaModels utils.SyncMap[string, *Model] // model_name -> *Model
@@ -119,7 +119,11 @@ func NewTestCacheWithPods(pods []*v1.Pod, model string) *Store {
 
 func NewTestCacheWithPodsMetrics(pods []*v1.Pod, model string, podMetrics map[string]map[string]metrics.MetricValue) *Store {
 	c := NewTestCacheWithPods(pods, model)
-	c.metaPods.Range(func(podName string, metaPod *Pod) bool {
+	c.metaPods.Range(func(key string, metaPod *Pod) bool {
+		_, podName, ok := utils.ParsePodKey(key)
+		if !ok {
+			return true
+		}
 		if podmetrics, ok := podMetrics[podName]; ok {
 			for metricName, metric := range podmetrics {
 				if err := c.updatePodRecord(metaPod, model, metricName, metrics.PodMetricScope, metric); err != nil {
@@ -171,6 +175,7 @@ func InitForMetadata(config *rest.Config, stopCh <-chan struct{}, redisClient *r
 
 func InitForGateway(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client, modelRouterProvider ModelRouterProviderFunc) *Store {
 	once.Do(func() {
+		klog.Info("initialize cache for gateway")
 		store = New(redisClient, initPrometheusAPI(), modelRouterProvider)
 
 		// Initialize cache components

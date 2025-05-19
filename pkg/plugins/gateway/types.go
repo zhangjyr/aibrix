@@ -36,8 +36,8 @@ const (
 	HeaderErrorNoModelBackends  = "x-error-no-model-backends"
 
 	// Streaming Headers
+	HeaderErrorStream                    = "x-error-stream"
 	HeaderErrorStreaming                 = "x-error-streaming"
-	HeaderErrorNoStreamOptions           = "x-error-no-stream-options"
 	HeaderErrorStreamOptionsIncludeUsage = "x-error-no-stream-options-include-usage"
 
 	// Request & Target Headers
@@ -45,6 +45,7 @@ const (
 	HeaderTargetPod          = "target-pod"
 	HeaderRoutingStrategy    = "routing-strategy"
 	HeaderRequestID          = "request-id"
+	HeaderModel              = "model"
 
 	// RPM & TPM Update Errors
 	HeaderUpdateTPM        = "x-update-tpm"

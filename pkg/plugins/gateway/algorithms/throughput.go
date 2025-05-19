@@ -17,14 +17,13 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"fmt"
 	"math"
 	"math/rand"
 
 	"github.com/vllm-project/aibrix/pkg/cache"
 	"github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
-	"github.com/vllm-project/aibrix/pkg/utils"
+
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -52,26 +51,19 @@ func NewThroughputRouter() (types.Router, error) {
 	}, nil
 }
 
-func (r throughputRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
+func (r throughputRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
 	var targetPod *v1.Pod
 	minCount := math.MaxFloat64
 
-	if pods.Len() == 0 {
-		return "", fmt.Errorf("no pods to forward request")
-	}
-
-	readyPods := utils.FilterRoutablePods(pods.All())
-	if len(readyPods) == 0 {
-		return "", fmt.Errorf("no ready pods available for fallback")
-	}
+	readyPods := readyPodList.All()
 
 	for _, pod := range readyPods {
-		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgPromptThroughputToksPerS)
+		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgPromptThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
 		}
-		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
+		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, metrics.AvgGenerationThroughputToksPerS)
 		if err != nil {
 			klog.Error(err)
 			continue
@@ -90,18 +82,12 @@ func (r throughputRouter) Route(ctx *types.RoutingContext, pods types.PodList) (
 
 	// Use fallback if no valid metrics
 	if targetPod == nil {
-		klog.Warning("No pods with valid metrics found; selecting a pod randomly as fallback")
 		var err error
-		targetPod, err = selectRandomPod(pods.All(), rand.Intn)
+		targetPod, err = SelectRandomPodAsFallback(ctx, readyPods, rand.Intn)
 		if err != nil {
 			return "", err
 		}
 	}
-
-	if targetPod == nil {
-		return "", fmt.Errorf("no pods to forward request")
-	}
-
 	ctx.SetTargetPod(targetPod)
 	return ctx.TargetAddress(), nil
 }

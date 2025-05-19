@@ -13,6 +13,9 @@ from transformers import (AutoTokenizer, PreTrainedTokenizer,
 from datetime import datetime
 from collections import Counter
 
+def if_sessioned_dataset(df: pd.DataFrame):
+    return "session_id" in df.columns
+    
 def convert_to_stat_df(qps_file: str, 
                        input_file: str, 
                        output_file: str,
@@ -165,8 +168,7 @@ def get_tokenizer(
     return AutoTokenizer.from_pretrained(pretrained_model_name_or_path,
                                          trust_remote_code=trust_remote_code)
 
-def plot_workload(workload_name: str, 
-                  workload: list,
+def plot_workload(workload: list,
                   bin_size_sec: int = 1,
                   output_dir: str = None):
     """
@@ -174,7 +176,6 @@ def plot_workload(workload_name: str,
     Also plots a session timeline as a scatter plot.
 
     Args:
-        workload_name (str): Name of the workload.
         workload (list of dict): Workload entries with timestamps and request details.
         bin_size_sec (int): Size of each bin in seconds for aggregation.
         output_dir (str, optional): Directory path to save the plot.
@@ -228,6 +229,20 @@ def plot_workload(workload_name: str,
 
     # Plotting
     fig, axes = plt.subplots(4, 1, figsize=(12, 10))  # 4 vertically stacked plots
+    
+    def calculate_statistics(values):
+        values = [value for value in values if pd.notna(value) ]
+        if len(values) == 0:
+            return 0.0, 0.0, 0.0
+        values = sorted(values)
+        avg = sum(values) / len(values)
+        median = np.median(values)
+        percentile_99 = np.percentile(values, 99)
+        return avg, median, percentile_99
+    
+    logging.warning(f"num_requests statistics (mean, median, 99p): {calculate_statistics(binned_df['num_requests'])}")
+    logging.warning(f"total_prompt_tokens statistics (mean, median, 99p): {calculate_statistics(binned_df['total_prompt_tokens'])}")
+    logging.warning(f"total_output_tokens statistics (mean, median, 99p): {calculate_statistics(binned_df['total_output_tokens'])}")
 
     # Top 3 plots: workload stats
     if not df.empty:
@@ -256,8 +271,8 @@ def plot_workload(workload_name: str,
     # Save or show the plot
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-        plt.savefig(f"{output_dir}/{workload_name}.pdf")
-        logging.info(f'Saved workload plot to {output_dir}/{workload_name}.pdf')
+        plt.savefig(f"{output_dir}/workload.pdf")
+        logging.info(f'Saved workload plot to {output_dir}/workload.pdf')
     else:
         plt.show()
 

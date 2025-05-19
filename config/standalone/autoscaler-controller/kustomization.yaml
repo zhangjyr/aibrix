@@ -29,3 +29,10 @@ patches:
       version: v1
       kind: Deployment
       name: controller-manager
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: aibrix
+      app.kubernetes.io/component: aibrix-autoscaler-controller
+      app.kubernetes.io/version: nightly
+      app.kubernetes.io/managed-by: kubectl

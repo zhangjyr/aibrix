@@ -21,7 +21,7 @@ namePrefix: aibrix-orchestration-
 images:
   - name: controller
     newName: aibrix/controller-manager
-    newTag: v0.2.1
+    newTag: v0.3.0-rc.1
   - name: quay.io/kuberay/operator
     newName: aibrix/kuberay-operator
     newTag: v1.2.1-patch
@@ -51,3 +51,11 @@ patches:
         - kind: ServiceAccount
           name: aibrix-orchestration-kuberay-operator-leader-election
           namespace: aibrix-system
+          
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: aibrix
+      app.kubernetes.io/component: aibrix-distributed-inference-controller
+      app.kubernetes.io/version: nightly
+      app.kubernetes.io/managed-by: kubectl

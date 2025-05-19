@@ -1,7 +1,5 @@
 # Using Workload Generator
 
-## Generate workload file
-
 ### Prerequisite
 
 Our workload generator expects prompt collection files that follow one of the two data schema:
@@ -19,6 +17,37 @@ Our workload generator expects prompt collection files that follow one of the tw
 ...
 ```
 Please refer to [this](../dataset-generator/README.md) to create synthetic prompts or convert existing dataset to one of these formats before generating workloads. 
+
+
+Ths workload generator would produce a workload file that looks like the following. Each logical timestamp is associated with list of prompts that need to be dispatched at the same time. 
+
+```json
+{
+    "timestamp": 19, 
+    "requests": 
+    [
+        {
+            "prompt": "I need to understand data science for my startup idea. Can you help? Could you also explain how this relates to natural language processing? For context, I have experience with cybersecurity but I'm new to this specific area. I've been trying to understand this concept for months and would appreciate a clear explanation. I'm asking because I need to deploy a machine learning model for a project. For context, I have experience with cryptocurrency but I'm new to this specific area. Could you", 
+            "prompt_length": 101, 
+            "output_length": null,
+            "session_id": 0
+        },
+        {
+            "prompt": "...."
+            ......
+        }
+    ]
+}
+```
+
+And it will also generate figures to illustrate this workload.
+
+![workload-plot](workload-plot-example.png)
+
+
+## Generate workload file
+
+The workload generator currently supports the following workload types: static workload that supports static workload (QPS, input/output lengths), synthetic dynamic workload, grafana exported statistics, and actual LLM serving trace (Azure LLM trace). The output workload will be stored as a `workload.jsonl` under the output directory under `--output-dir`. 
 
 ### Generate a workload file based with constant target QPS (synthetic patterns)
 
@@ -45,19 +74,19 @@ Here `--interval-ms` specifies the granularity of concurrent dispatched requests
 
 The file would be stored under `output` folder based on the name of different patterns. And the plot illustrates the workload pattern will be under the `plot` directory. 
 
-## Generate a workload file based on internal load summary .csv file
+### Generate a workload file based on Grafana exported .csv statistics files.
 
 ```shell
 export TRAFFIC_FILE=${PATH_TO_TRAFFIC_FILE}
 export PROMPT_LEN_FILE=${PATH_TO_PROMPT_LEN_FILE}
 export COMPLETION_LEN_FILE=${PATH_TO_COMPLETION_LEN_FILE}
 
-python workload_generator.py --prompt-file $PROMPT_FILE --interval-ms 1000 --duration-ms 1800000 --trace-type internal --traffic-file "$TRAFFIC_FILE" --prompt-len-file "$PROMPT_LEN_FILE" --completion-len-file "$COMPLETION_LEN_FILE"  --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl --qps-scale 1.0 --output-scale 1.0 --input-scale 1.0 --internal-trace-type "maas" 
+python workload_generator.py --prompt-file $PROMPT_FILE --interval-ms 1000 --duration-ms 1800000 --trace-type stat --traffic-file "$TRAFFIC_FILE" --prompt-len-file "$PROMPT_LEN_FILE" --completion-len-file "$COMPLETION_LEN_FILE"  --model "Qwen/Qwen2.5-Coder-7B-Instruct" --output-dir "./output" --output-format jsonl --qps-scale 1.0 --output-scale 1.0 --input-scale 1.0 --stat-trace-type "maas" 
 ```
 
 The scaling factor here (e.g., `qps-scale`) scale down rate from the original trace to the desired rate, i.e., if the peak rate in the original file is 80 and the desired peak rate is 8, the scale is set to 10.0. 
 
-### `maas` trace type 
+#### `maas` trace type 
 - With `maas` trace type, the generator assumes the `$TRAFFIC_FILE` to be in the following format
 ```
 "Time","Total","Success","4xx Error"
@@ -69,12 +98,12 @@ The scaling factor here (e.g., `qps-scale`) scale down rate from the original tr
 "Time","P50","P70","P90","P99"
 ```
 
-- `"$PROMPT_LEN_FILE"` to be in the following format
+- `"$COMPLETION_LEN_FILE"` to be in the following format
 ```
 "Time","P50","P70","P95","P99"
 ```
 
-### `cloudide` trace type 
+#### `cloudide` trace type 
 - With `cloudide` trace type, the generator assumes the `$TRAFFIC_FILE` to be in the following format -- `"Rate"` column could have arbitrary names. 
 ```
 "Time","Rate"
@@ -85,12 +114,12 @@ The scaling factor here (e.g., `qps-scale`) scale down rate from the original tr
 "Time","recv_bytes","sent_bytes"
 ```
 
-- `"$PROMPT_LEN_FILE"` to be in the following format
+- `"$COMPLETION_LEN_FILE"` to be in the following format
 ```
 "Time","recv_bytes","sent_bytes"
 ```
 
-### Indicate the length of prompt/completion
+#### Indicate the length of prompt/completion
 In this case, you can also indicate the request's prompt length by the `--prompt-len-file` config, or the output length by the `--completion-len-file`,
 based on the parameters, the generator will select the proper length in the prompt_file to simulate the length of the real flow's load.
 
@@ -102,19 +131,10 @@ P50,P70,P99
 2000,4000,10000(same row size with traffic file)
 ```
 
-This generator generate workload file (in .json format) under `output` folder. The file would look like the following:
-```
-[
-    [["Prompt1", prompt_len_1, output_len_1, null],["Prompt2", prompt_len_2, output_len_2, null], ...],
-    [["Prompt3", prompt_len_3, output_len_3, null],["Prompt4", prompt_len_4, output_len_4, null], ...],
-    ...
-]
-```
-
 And the plot illustrates the workload pattern will be under the `plot` directory. 
 
 
-## Generate a workload file based on Azure LLM Trace
+### Generate a workload file based on Azure LLM Trace
 
 To produce a workload based on [Azure LLM Trace](https://github.com/Azure/AzurePublicDataset/tree/master/data), use the following commands:
 

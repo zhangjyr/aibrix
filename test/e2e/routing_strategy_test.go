@@ -19,7 +19,6 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"math"
 	"math/rand"
 	"net/http"
 	"testing"
@@ -49,17 +48,33 @@ func TestRandomRouting(t *testing.T) {
 
 	assert.True(t, len(histogram) > 1, "target pod distribution should be more than 1")
 
-	// Calculate the variance of the distribution stored in the histogram using sum and sum of squared values
-	sum := float64(iterration)
-	var sumSquared float64
+	// Collective the occurrence of each pod
+	occurrence := make([]float64, 0, len(histogram))
 	for _, count := range histogram {
-		sumSquared += float64(count) * float64(count)
+		occurrence = append(occurrence, float64(count))
 	}
-	mean := sum / float64(len(histogram))
-	stddev := math.Sqrt(sumSquared/float64(len(histogram)) - mean*mean)
 
-	assert.True(t, stddev/mean < 0.2,
-		"stand deviation of pod distribution should be less than 20%%, but got %f, mean %f", stddev, mean)
+	// Perform the Chi-Squared test
+	chi2Stat, df, err := chiSquaredGoodnessOfFit(occurrence, float64(iterration/len(occurrence)))
+	assert.NoError(t, err, "chi-squared test failed %v", err)
+	assert.Equal(t, 2, df, "degrees of freedom should be 2")
+
+	// Using a lower 1% significance level to make sure the null hypothesis is not rejected incorrectly
+	significanceLevel := 0.01
+
+	// We need to find the critical value for customed degrees of freedom (df)
+	// and significance level (alpha) from a Chi-Squared distribution table
+	// or a statistical calculator.
+	// For df = 2 ,
+	// common critical values are:
+	// Alpha = 0.10, Critical Value ≈ 4.605
+	// Alpha = 0.05, Critical Value ≈ 5.991
+	// Alpha = 0.01, Critical Value ≈ 9.210
+	assert.True(t, chi2Stat < 9.210,
+		`The observed frequencies (chiSquare: %.3f) are significantly different from the expected 
+		frequencies at the %.2f significance level. Suggesting the selection process is likely NOT random according 
+		to the expected distribution.`,
+		chi2Stat, significanceLevel)
 }
 
 func TestSLORouting(t *testing.T) {
@@ -72,24 +87,24 @@ func TestSLORouting(t *testing.T) {
 	}
 }
 
+// nolint:lll
 func TestPrefixCacheRouting(t *testing.T) {
 	// #1 request - cache first time request
-	req := "ensure test message is longer than 128 bytes!! this is first message! 这是测试消息！"
+	req := "prefix-cache routing algorithm test message, ensure test message is longer than 128 bytes!! this is first message! 这是测试消息！"
 	targetPod := getTargetPodFromChatCompletion(t, req, "prefix-cache")
-	fmt.Printf("req: %s, target pod: %v\n", req, targetPod)
+	t.Logf("req: %s, target pod: %v\n", req, targetPod)
 
 	// #2 request - reuse target pod from first time
 	targetPod2 := getTargetPodFromChatCompletion(t, req, "prefix-cache")
-	fmt.Printf("req: %s, target pod: %v\n", req, targetPod2)
+	t.Logf("req: %s, target pod: %v\n", req, targetPod2)
 	assert.Equal(t, targetPod, targetPod2)
 
 	// #3 request - new request, match to random pod
 	var count int
 	for count < 5 {
-		generateMessage := fmt.Sprintf("ensure test message is longer than 128 bytes!! this is %v message! 这是测试消息！",
-			rand.Intn(1000))
+		generateMessage := fmt.Sprintf("prefix-cache routing algorithm test message, ensure test message is longer than 128 bytes!! this is %v message! 这是测试消息！", rand.Intn(1000))
 		targetPod3 := getTargetPodFromChatCompletion(t, generateMessage, "prefix-cache")
-		fmt.Printf("req: %s, target pod from #3 request: %v\n", req, targetPod3)
+		t.Logf("req: %s, target pod from #3 request: %v\n", generateMessage, targetPod3)
 		if targetPod != targetPod3 {
 			break
 		}
@@ -99,18 +114,84 @@ func TestPrefixCacheRouting(t *testing.T) {
 	assert.NotEqual(t, 5, count)
 }
 
+// nolint:lll
+func TestMultiTurnConversation(t *testing.T) {
+	var dst *http.Response
+	var targetPod string
+	messages := []openai.ChatCompletionMessageParamUnion{}
+	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, "prefix-cache", option.WithResponseInto(&dst))
+
+	for i := 1; i <= 5; i++ {
+		input := fmt.Sprintf("Ensure test message is longer than 128 bytes!! This is test %d for multiturn conversation!! 这是多轮对话测试!! Have a good day!!", i)
+		messages = append(messages, openai.UserMessage(input))
+
+		chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
+			Messages: messages,
+			Model:    modelName,
+		})
+		require.NoError(t, err, "chat completitions failed %v", err)
+		assert.Greater(t, chatCompletion.Usage.CompletionTokens, int64(0), "chat completions usage tokens greater than 0")
+		assert.NotEmpty(t, chatCompletion.Choices[0].Message.Content)
+
+		messages = append(messages, openai.AssistantMessage(chatCompletion.Choices[0].Message.Content))
+		if i == 1 {
+			targetPod = dst.Header.Get("target-pod")
+		}
+
+		assert.Equal(t, targetPod, dst.Header.Get("target-pod"), "each multiturn conversation must route to same target pod")
+	}
+}
+
 func getTargetPodFromChatCompletion(t *testing.T, message string, strategy string) string {
 	var dst *http.Response
 	client := createOpenAIClientWithRoutingStrategy(gatewayURL, apiKey, strategy, option.WithResponseInto(&dst))
 
 	chatCompletion, err := client.Chat.Completions.New(context.TODO(), openai.ChatCompletionNewParams{
-		Messages: openai.F([]openai.ChatCompletionMessageParamUnion{
+		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage(message),
-		}),
-		Model: openai.F(modelName),
+		},
+		Model: modelName,
 	})
 	require.NoError(t, err, "chat completitions failed %v", err)
 	assert.Equal(t, modelName, chatCompletion.Model)
 
 	return dst.Header.Get("target-pod")
+}
+
+// ChiSquaredGoodnessOfFit calculates the chi-squared test statistic and degrees of freedom
+// for a goodness-of-fit test.
+// observed: A slice of observed frequencies for each category.
+// expected: A slice of expected frequencies for each category.
+// Returns the calculated chi-squared statistic and degrees of freedom.
+// Returns an error if the input slices are invalid (e.g., different lengths, negative values).
+func chiSquaredGoodnessOfFit(observed []float64, expected float64) (chi2Stat float64, degreesOfFreedom int, err error) {
+	// Validate inputs
+	if len(observed) == 0 {
+		return 0, 0, fmt.Errorf("input slices cannot be empty")
+	}
+
+	// Calculate the chi-squared statistic
+	chi2Stat = 0.0
+	for i := 0; i < len(observed); i++ {
+		if expected < 0 || observed[i] < 0 {
+			return 0, 0, fmt.Errorf("frequencies cannot be negative")
+		}
+		if expected == 0 {
+			// If expected frequency is 0, the term is typically skipped,
+			// but this can indicate issues with the model or data.
+			// For a strict goodness-of-fit, expected frequencies should ideally be > 0.
+			// We'll return an error here as it often suggests a problem.
+			return 0, 0, fmt.Errorf("expected frequency for category %d is zero, which is not allowed for this test", i)
+		}
+		diff := observed[i] - expected
+		chi2Stat += (diff * diff) / expected
+	}
+
+	// Calculate degrees of freedom
+	// For a goodness-of-fit test comparing observed frequencies to expected
+	// frequencies from a theoretical distribution, the degrees of freedom
+	// are typically the number of categories minus 1.
+	degreesOfFreedom = len(observed) - 1
+
+	return chi2Stat, degreesOfFreedom, nil
 }

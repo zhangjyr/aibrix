@@ -140,7 +140,7 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 		completionTokens = usage.CompletionTokens
 		// Count token per user.
 		if user.Name != "" {
-			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user), res.Usage.TotalTokens)
+			tpm, err := s.ratelimiter.Incr(ctx, fmt.Sprintf("%v_TPM_CURRENT", user.Name), res.Usage.TotalTokens)
 			if err != nil {
 				return generateErrorResponse(
 					envoyTypePb.StatusCode_InternalServerError,
@@ -164,10 +164,10 @@ func (s *Server) HandleResponseBody(ctx context.Context, requestID string, req *
 					},
 				},
 			)
-			requestEnd = fmt.Sprintf(requestEnd+"rpm: %s, tpm: %s, ", rpm, tpm)
+			requestEnd = fmt.Sprintf(requestEnd+"rpm: %d, tpm: %d, ", rpm, tpm)
 		}
 
-		if routerCtx != nil {
+		if routerCtx != nil && routerCtx.HasRouted() {
 			targetPodIP := routerCtx.TargetAddress()
 			headers = append(headers,
 				&configPb.HeaderValueOption{

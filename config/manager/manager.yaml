@@ -29,7 +29,7 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
-          - --metrics-bind-address=0
+          - --metrics-bind-address=:8080
           - --enable-runtime-sidecar
         image: controller:latest
         name: manager
@@ -67,6 +67,10 @@ metadata:
     control-plane: controller-manager
     app.kubernetes.io/name: aibrix
     app.kubernetes.io/managed-by: kustomize
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
   name: controller-manager-metrics-service
   namespace: system
 spec:

@@ -36,16 +36,16 @@ func NewLeastThroughputScheduler(c cache.Cache) Scheduler {
 	}
 }
 
-func (r leastThroughputScheduler) SelectPod(ctx context.Context, model string, pods []v1.Pod) (*v1.Pod, error) {
+func (r leastThroughputScheduler) SelectPod(ctx context.Context, model string, readyPods []v1.Pod) (*v1.Pod, error) {
 	selectedPod := v1.Pod{}
 	podThroughputMin := math.MaxFloat64
 
-	for _, pod := range pods {
-		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, model, metrics.AvgPromptThroughputToksPerMinPod)
+	for _, pod := range readyPods {
+		promptThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, model, metrics.AvgPromptThroughputToksPerMinPod)
 		if err != nil {
 			return nil, err
 		}
-		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, model, metrics.AvgGenerationThroughputToksPerMinPod)
+		generationThroughput, err := r.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, model, metrics.AvgGenerationThroughputToksPerMinPod)
 		if err != nil {
 			return nil, err
 		}

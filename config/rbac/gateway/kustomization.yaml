@@ -3,3 +3,7 @@ resources:
 - service_account_gateway.yaml
 - role_gateway.yaml
 - role_binding_gateway.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/component: aibrix-gateway-plugins

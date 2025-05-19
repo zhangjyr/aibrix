@@ -17,7 +17,6 @@ limitations under the License.
 package routingalgorithms
 
 import (
-	"fmt"
 	"math"
 	"math/rand"
 
@@ -26,7 +25,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog/v2"
 )
 
 var (
@@ -52,22 +50,18 @@ func NewLeastRequestRouter() (types.Router, error) {
 	}, nil
 }
 
-// Routes request based of least active request among input ready pods
-func (r leastRequestRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	targetPod := selectTargetPodWithLeastRequestCount(r.cache, pods.All())
+// Route request based of least active request among input ready pods
+func (r leastRequestRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	readyPods := readyPodList.All()
+	targetPod := selectTargetPodWithLeastRequestCount(r.cache, readyPods)
 
 	// Use fallback if no valid metrics
 	if targetPod == nil {
-		klog.Warning("no pods with valid metrics found for least-request routing strategy; selecting a pod randomly as fallback",
-			"requestID", ctx.RequestID)
 		var err error
-		targetPod, err = selectRandomPod(pods.All(), rand.Intn)
+		targetPod, err = SelectRandomPodAsFallback(ctx, readyPods, rand.Intn)
 		if err != nil {
 			return "", err
 		}
-	}
-	if targetPod == nil {
-		return "", fmt.Errorf("no pods to forward request")
 	}
 
 	ctx.SetTargetPod(targetPod)
@@ -110,7 +104,7 @@ func selectTargetPodWithLeastRequestCount(cache cache.Cache, readyPods []*v1.Pod
 func getRequestCounts(cache cache.Cache, readyPods []*v1.Pod) map[string]int {
 	podRequestCount := map[string]int{}
 	for _, pod := range readyPods {
-		runningReq, err := cache.GetMetricValueByPod(pod.Name, metrics.RealtimeNumRequestsRunning)
+		runningReq, err := cache.GetMetricValueByPod(pod.Name, pod.Namespace, metrics.RealtimeNumRequestsRunning)
 		if err != nil {
 			runningReq = &metrics.SimpleMetricValue{Value: 0}
 		}

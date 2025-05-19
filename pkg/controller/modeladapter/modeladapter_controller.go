@@ -58,6 +58,7 @@ import (
 
 const (
 	ModelIdentifierKey                = "model.aibrix.ai/name"
+	ModelAdapterKey                   = "adapter.model.aibrix.ai/name"
 	ModelAdapterFinalizer             = "adapter.model.aibrix.ai/finalizer"
 	ModelAdapterPodTemplateLabelKey   = "adapter.model.aibrix.ai/enabled"
 	ModelAdapterPodTemplateLabelValue = "true"
@@ -77,6 +78,8 @@ const (
 	ValidationFailedReason = "ValidationFailed"
 	// StableInstanceFoundReason is added if there's stale pod and instance has been deleted successfully.
 	StableInstanceFoundReason = "StableInstanceFound"
+	// ConditionNotReason is added when there's no condition found in the cluster.
+	ConditionNotReason = "ConditionNotFound"
 
 	// Available:
 
@@ -483,12 +486,34 @@ func (r *ModelAdapterReconciler) clearModelAdapterInstanceList(ctx context.Conte
 	// However, meta.SetStatusCondition won't update the status unless there's other change like Status as well.
 	// Here it also help trigger time update in later updates.
 	scheduleCondition := meta.FindStatusCondition(instance.Status.Conditions, string(modelv1alpha1.ModelAdapterConditionTypeScheduled))
-	scheduleCondition.Status = metav1.ConditionFalse
-	scheduleCondition.LastTransitionTime = metav1.Now()
+	if scheduleCondition == nil {
+		// if not found, we add one
+		scheduleCondition = &metav1.Condition{
+			Type:               string(modelv1alpha1.ModelAdapterConditionTypeScheduled),
+			Status:             metav1.ConditionFalse,
+			LastTransitionTime: metav1.Now(),
+			Reason:             ConditionNotReason,
+			Message:            "Condition was missing and initialized by controller",
+		}
+	} else {
+		scheduleCondition.Status = metav1.ConditionFalse
+		scheduleCondition.LastTransitionTime = metav1.Now()
+	}
 
 	readyCondition := meta.FindStatusCondition(instance.Status.Conditions, string(modelv1alpha1.ModelAdapterConditionReady))
-	readyCondition.Status = metav1.ConditionFalse
-	readyCondition.LastTransitionTime = metav1.Now()
+	if readyCondition == nil {
+		// if not found, we add one
+		readyCondition = &metav1.Condition{
+			Type:               string(modelv1alpha1.ModelAdapterConditionReady),
+			Status:             metav1.ConditionFalse,
+			LastTransitionTime: metav1.Now(),
+			Reason:             ConditionNotReason,
+			Message:            "Condition was missing and initialized by controller",
+		}
+	} else {
+		readyCondition.Status = metav1.ConditionFalse
+		readyCondition.LastTransitionTime = metav1.Now()
+	}
 
 	if err := r.updateStatus(ctx, instance, condition, *scheduleCondition, *readyCondition); err != nil {
 		return err

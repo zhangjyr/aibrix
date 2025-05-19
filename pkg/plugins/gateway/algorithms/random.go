@@ -21,7 +21,7 @@ import (
 	"math/rand"
 
 	"github.com/vllm-project/aibrix/pkg/types"
-	v1 "k8s.io/api/core/v1"
+	"github.com/vllm-project/aibrix/pkg/utils"
 )
 
 var (
@@ -41,16 +41,10 @@ func NewRandomRouter() (types.Router, error) {
 	return randomRouter{}, nil
 }
 
-func (r randomRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	var targetPod *v1.Pod
-	if pods.Len() == 0 {
-		return "", fmt.Errorf("no pods to forward request")
-	}
-
-	var err error
-	targetPod, err = selectRandomPod(pods.All(), rand.Intn)
+func (r randomRouter) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	targetPod, err := utils.SelectRandomPod(readyPodList.All(), rand.Intn)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("random selection failed: %w", err)
 	}
 
 	if targetPod == nil {

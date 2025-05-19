@@ -46,12 +46,11 @@ func (c *Store) getRequestTrace(modelName string) *RequestTrace {
 
 func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 	if !ctx.HasRouted() {
-		klog.Warningf("request has not been routed, please route request first, requestID: %s", requestID)
 		return
 	}
 	pod := ctx.TargetPod()
-
-	metaPod, ok := c.metaPods.Load(pod.Name)
+	key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
 		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return
@@ -85,13 +84,13 @@ func (c *Store) addPodStats(ctx *types.RoutingContext, requestID string) {
 
 func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 	if !ctx.HasRouted() {
-		klog.Warningf("request has not been routed, please route request first, requestID: %s", requestID)
 		return
 	}
 	pod := ctx.TargetPod()
 
 	// Now that pendingLoadProvider must be set.
-	metaPod, ok := c.metaPods.Load(pod.Name)
+	key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+	metaPod, ok := c.metaPods.Load(key)
 	if !ok {
 		klog.Warningf("can't find routing pod: %s, requestID: %s", pod.Name, requestID)
 		return

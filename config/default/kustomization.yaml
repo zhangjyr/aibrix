@@ -72,3 +72,9 @@ images:
   - name: metadata-service
     newName: aibrix/metadata-service
     newTag: nightly
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: aibrix
+      app.kubernetes.io/version: nightly
+      app.kubernetes.io/managed-by: kubectl

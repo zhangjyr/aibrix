@@ -21,8 +21,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vllm-project/aibrix/pkg/utils"
-
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 )
@@ -66,6 +64,7 @@ func (n *TreeNode) InitAndUpdateModelPod(model string, podName string, timestamp
 		n.modelToPods[model] = make(map[string]time.Time)
 	}
 	n.modelToPods[model][podName] = timestamp
+	klog.InfoS("Updated mapping for model %s, pod %s in node(%d)", "model", model, "podName", podName, "nodeID", n.id)
 }
 
 func (n *TreeNode) GetRefCounter() []int {
@@ -140,11 +139,13 @@ func (n *TreeNode) RemovePodsNotInCurrentPodSet(currentPodSet map[string]bool) b
 		for podName := range podMap {
 			if !currentPodSet[podName] {
 				delete(podMap, podName)
+				klog.InfoS("Removing pod: %s", "podName", podName, "model", model)
 				podsChanged = true
 			}
 		}
 		if len(podMap) == 0 {
 			delete(n.modelToPods, model)
+			klog.InfoS("Removed model from node(%d): %s", "nodeID", n.id, "model", model)
 		}
 	}
 	return podsChanged
@@ -199,22 +200,32 @@ func (n *TreeNode) AddOrUpdatePodForModel(model string, podName string, timestam
 		n.modelToPods[model] = make(map[string]time.Time)
 	}
 	n.modelToPods[model][podName] = timestamp
+	klog.V(4).InfoS("Added/Updated pod %s for model %s in node(%d)", "podName", podName, "model", model, "nodeID", n.id)
 }
 
 func (n *TreeNode) RemovePodsNotInSet(currentPodSet map[string]bool) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	podsChanged := false
+	deleted_pods := make([]string, 0)
 	for model, podMap := range n.modelToPods {
 		for podName := range podMap {
+			if podName == "" {
+				klog.Warningf("Found empty pod name in node(%d) model(%s)", n.id, model)
+			}
 			if !currentPodSet[podName] {
 				delete(podMap, podName)
+				klog.InfoS("Removing pod: %s", "podName", podName)
 				podsChanged = true
+				deleted_pods = append(deleted_pods, podName)
 			}
 		}
 		if len(podMap) == 0 {
 			delete(n.modelToPods, model)
 		}
+	}
+	if podsChanged {
+		klog.InfoS("Removed pods from node(%d): %v", "nodeID", n.id, "deletedPods", deleted_pods)
 	}
 	return podsChanged
 }
@@ -239,7 +250,7 @@ func (c *LPRadixCache) NewTreeNode(numPods int, parent *TreeNode, key []int, val
 	}
 
 	// Increment node ID for next creation
-	klog.V(4).Infof("Created a new node(%d) with key: %v and value: %v", node.id, key, value)
+	klog.V(5).InfoS("Created a new node(%d) with key: %v and value: %v", "nodeID", node.id, "key", key, "value", value)
 	c.nextNodeID++
 
 	// Set depth and context length based on parent
@@ -260,8 +271,8 @@ func (c *LPRadixCache) NewTreeNode(numPods int, parent *TreeNode, key []int, val
 }
 
 func (c *LPRadixCache) PrettyPrint() {
-	// c.mu.RLock()
-	// defer c.mu.RUnlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	c.prettyPrintHelper(c.rootNode, "", true)
 }
 
@@ -283,6 +294,7 @@ func (c *LPRadixCache) GetAllPodsInNode(node *TreeNode) []string {
 	return allPodsInNode
 }
 
+// This can be used for debugging purpose
 func (c *LPRadixCache) prettyPrintHelper(node *TreeNode, prefix string, isLast bool) {
 	if node == nil {
 		return
@@ -295,30 +307,13 @@ func (c *LPRadixCache) prettyPrintHelper(node *TreeNode, prefix string, isLast b
 	if !isLast {
 		childPrefix = prefix + "│   "
 	}
-	// klog.Infof("%s%s[Key: %v, Value: %v, Load: %d, Depth: %d]", prefix, marker, node.key, node.value, node.load, node.depth)
-	tokensInString, err := utils.DetokenizeText(node.key)
-	if err != nil {
-		klog.Errorf("Failed to detokenize key for node %d: %v", node.id, err)
-		tokensInString = "ERROR"
-	}
 	allPodsInNode := c.GetAllPodsInNode(node)
-	klog.Infof("%s%s[Node: %d, Tokens: '%s', Load: %d, Pods: %v, Depth: %d]", prefix, marker, node.id, tokensInString, node.load, allPodsInNode, node.depth)
-	// if len(node.ModelToPods) > 0 {
-	// 	klog.Infof("%s    Models:", prefix)
-	// 	for model, pods := range node.ModelToPods {
-	// 		podNames := make([]string, 0, len(pods))
-	// 		for podName := range pods {
-	// 			podNames = append(podNames, podName)
-	// 		}
-	// 		klog.Infof("%s    └── %s: %v", prefix, model, podNames)
-	// 	}
-	// }
+	klog.V(5).Infof("%s%s[Node: %d, Load: %d, Pods: %v, Depth: %d]", prefix, marker, node.id, node.load, allPodsInNode, node.depth)
 	childKeys := make([]int, 0, len(node.children))
 	for k := range node.children {
 		childKeys = append(childKeys, k)
 	}
 	sort.Ints(childKeys)
-
 	for i, key := range childKeys {
 		isLastChild := i == len(childKeys)-1
 		c.prettyPrintHelper(node.children[key], childPrefix, isLastChild)
@@ -357,18 +352,6 @@ func (c *LPRadixCache) reset() {
 	c.allNodes[root.id] = root
 }
 
-// matchLen returns the length of matching prefix between two slices
-func matchLen(key, seq []int) int {
-	i := 0
-	for i < len(key) && i < len(seq) {
-		if key[i] != seq[i] {
-			break
-		}
-		i++
-	}
-	return i
-}
-
 // GetNode adds internal method to get node
 func (c *LPRadixCache) GetNode(tokens []int) *TreeNode {
 	c.mu.RLock()
@@ -397,14 +380,11 @@ func (c *LPRadixCache) MatchPrefix(inputTokens []int, model string, pods []*v1.P
 					matchedPods = make([]*v1.Pod, 0, len(pods))
 				}
 				matchedPods = append(matchedPods, pod)
-				klog.Infof("Matched pod for node(%d): %s", node.id, pod.Name)
+				klog.InfoS("Matched pod for node(%d): %s", "nodeID", node.id, "podName", pod.Name)
 			}
 		}
 	}
-
-	klog.Infof("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v",
-		node.id, node.key, matchedTokens, node.modelToPods)
-
+	klog.InfoS("MatchPrefix - node(%d) key: %v, matched tokens: %v, model pods: %v", "nodeID", node.id, "key", node.key, "matchedTokens", matchedTokens, "modelToPods", node.modelToPods)
 	return matchedTokens, unmatchedTokens, matchedPods
 }
 
@@ -443,26 +423,24 @@ func (c *LPRadixCache) AddPrefix(tokens []int, model string, podName string) (*T
 
 	// Do insertion first
 	node, matchedTokens, unmatchedTokens := c.insertHelper(c.rootNode, tokens, tokens)
-	if node != nil {
+	if node != nil && podName != "" {
 		node.InitAndUpdateModelPod(model, podName, time.Now())
 		current := node
 		for current.parent != nil {
 			current.parent.InitAndUpdateModelPod(model, podName, time.Now())
 			current = current.parent
 		}
-		klog.Infof("Updated mapping for model %s, pod %s in node(%d) with key %v",
-			model, podName, node.id, node.key)
+		klog.V(5).InfoS("Updated mapping for model %s, pod %s in node(%d)", "model", model, "podName", podName, "nodeID", node.id, "key", node.key)
+
 	}
-	// c.PrettyPrint()
 	return node, matchedTokens, unmatchedTokens
 }
 
 func (c *LPRadixCache) insertHelper(node *TreeNode, key []int, value []int) (*TreeNode, []int, []int) {
 	node.lastAccess = time.Now()
 	node.load++
-	klog.Infof("Trying to insert key: %v into node(%d)", key, node.id)
 	timePassed := node.lastAccess.Sub(c.startTime).Seconds()
-	klog.Infof("Updated node(%d) last access: %.2f seconds", node.id, timePassed)
+	klog.V(5).InfoS("Updated node(%d) last access: %.2f seconds", "nodeID", node.id, "timePassed", timePassed)
 
 	if len(key) == 0 {
 		return node, nil, nil
@@ -475,13 +453,13 @@ func (c *LPRadixCache) insertHelper(node *TreeNode, key []int, value []int) (*Tr
 		// Case 1: Complete match with child's key
 		if prefixLen == len(child.key) {
 			if prefixLen == len(key) {
-				klog.Infof("Entire input tokens match the child node(%d): %v", child.id, key)
+				klog.V(5).InfoS("Entire input tokens match the child node(%d)", "childNodeID", child.id)
 				child.lastAccess = time.Now()
 				child.load++
 				return child, key, nil // Return the original key for exact match
 			}
 			// Partial match, continue deeper
-			klog.Infof("Partial tokens match child node(%d): %v. Continue deeper", child.id, key)
+			klog.V(5).InfoS("Partial tokens match child node(%d). Continue deeper", "childNodeID", child.id)
 			childNode, childMatched, childUnmatched := c.insertHelper(child, key[prefixLen:], value[prefixLen:])
 			if len(childMatched) > 0 {
 				return childNode, key[:prefixLen+len(childMatched)], childUnmatched
@@ -502,7 +480,7 @@ func (c *LPRadixCache) insertHelper(node *TreeNode, key []int, value []int) (*Tr
 	}
 
 	// No matching child, create new node
-	klog.Info("No child matches any of the prefix: ", key)
+	klog.V(5).InfoS("No child matches any of the prefix. Create a new tree node")
 	newNode := c.NewTreeNode(c.numPods, node, key, value)
 	node.children[key[0]] = newNode
 	c.allNodes[newNode.id] = newNode
@@ -512,8 +490,7 @@ func (c *LPRadixCache) insertHelper(node *TreeNode, key []int, value []int) (*Tr
 func (c *LPRadixCache) doesExceededTTL(node *TreeNode, now time.Time) bool {
 	timeSinceLastAccess := now.Sub(node.lastAccess)
 	if timeSinceLastAccess > evictionDuration {
-		klog.Infof("Node(%d) exceeded TTL(%ds), time since last access: %.2f seconds",
-			node.id, int(evictionDuration.Seconds()), timeSinceLastAccess.Seconds())
+		klog.InfoS("Node(%d) exceeded TTL(%ds), time since last access: %.2f seconds", "nodeID", node.id, "evictionDurationSeconds", int(evictionDuration.Seconds()), "timeSinceLastAccessSeconds", timeSinceLastAccess.Seconds())
 		return true
 	}
 	return false
@@ -526,9 +503,6 @@ func (c *LPRadixCache) Evict(now time.Time) []*TreeNode {
 	for _, node := range c.allNodes {
 		if node != c.rootNode {
 			if c.doesExceededTTL(node, now) {
-				// timePassed := now.Sub(node.lastAccess).Seconds()
-				// klog.Infof("Node(%d) exceeded TTL(%ds), time since last access: %.2f",
-				// 	node.id, int(evictionDuration.Seconds()), timePassed)
 				if collected := c.collectNodeAndChildren(node); collected != nil {
 					nodesToEvict = append(nodesToEvict, collected...)
 				}
@@ -540,8 +514,7 @@ func (c *LPRadixCache) Evict(now time.Time) []*TreeNode {
 		c.evictNode(node)
 	}
 	if len(nodesToEvict) > 0 {
-		klog.Infof("Evicted %d nodes", len(nodesToEvict))
-		c.PrettyPrint()
+		klog.V(4).InfoS("Evicted %d nodes", "nodeCount", len(nodesToEvict))
 	}
 	return nodesToEvict
 }
@@ -594,7 +567,7 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 
 	// Remove from allNodes map
 	delete(c.allNodes, node.id)
-	klog.Infof("Evict node(%d)!, Key: %v", node.id, node.key)
+	klog.InfoS("Evict node(%d)", "nodeID", node.id)
 
 	// Clean up the node's references
 	node.parent = nil
@@ -608,8 +581,6 @@ func (c *LPRadixCache) evictNode(node *TreeNode) {
 }
 
 func (c *LPRadixCache) splitNode(key []int, child *TreeNode, splitLen int) *TreeNode {
-	klog.Infof("Splitting node(%d): %v, into %v and %v", child.id, child.key, child.key[:splitLen], child.key[splitLen:])
-
 	// Create new node with split portions
 	newNode := c.NewTreeNode(c.numPods, child.parent, child.key[:splitLen], child.value[:splitLen])
 
@@ -653,12 +624,17 @@ func (c *LPRadixCache) splitNode(key []int, child *TreeNode, splitLen int) *Tree
 			newNode.modelToPods[model][podName] = lastAccess
 		}
 	}
-
-	klog.Infof("Split complete - New node(%d) key: %v, modelToPods: %v",
-		newNode.id, newNode.key, newNode.modelToPods)
-	klog.Infof("Split complete - Child node(%d) key: %v, modelToPods: %v",
-		child.id, child.key, child.modelToPods)
-
 	c.allNodes[newNode.id] = newNode
 	return newNode
+}
+
+func matchLen(key, seq []int) int {
+	i := 0
+	for i < len(key) && i < len(seq) {
+		if key[i] != seq[i] {
+			break
+		}
+		i++
+	}
+	return i
 }

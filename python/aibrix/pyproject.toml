@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "aibrix"
-version = "0.2.1"
+version = "0.3.0rc1.post2"
 description = "AIBrix, the foundational building blocks for constructing your own GenAI inference infrastructure."
 authors = [
     "AIBrix Authors <brosoul@126.com>"
@@ -59,6 +59,7 @@ dash = "^2.18.2"
 matplotlib = "^3.9.2"
 filelock = "^3.16.1"
 tiktoken = "^0.7.0"
+transformers = ">=4.38.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "1.11.1"

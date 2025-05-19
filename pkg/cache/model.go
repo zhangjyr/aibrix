@@ -25,6 +25,9 @@ import (
 type ModelRouterProviderFunc func(modelName string) (types.Router, error)
 
 type Model struct {
+	// Pods is a CustomizedRegistry that stores *v1.Pod objects.
+	// The internal map uses `namespace/name` as the key and `*v1.Pod` as the value.
+	// This allows efficient lookups and caching of Pod objects by their unique identifier.
 	Pods *utils.CustomizedRegistry[*v1.Pod, *utils.PodArray]
 	// Metrics utils.SyncMap[string, metrics.MetricValue] // reserved
 	OutputPredictor types.OutputPredictor

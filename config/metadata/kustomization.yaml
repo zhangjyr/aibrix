@@ -1,3 +1,7 @@
 resources:
 - metadata.yaml
 - redis.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/component: aibrix-metadata-service

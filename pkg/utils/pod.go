@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"k8s.io/klog/v2"
 
@@ -37,6 +38,22 @@ var DeploymentIdentifier string = getDeploymentIdentifier()
 
 func getDeploymentIdentifier() string {
 	return LoadEnv("AIBRIX_POD_DEPLOYMENT_LABEL", "app.kubernetes.io/name")
+}
+
+// GeneratePodKey generates a key in the format "namespace/name" for a given pod.
+func GeneratePodKey(podNamespace, podName string) string {
+	return fmt.Sprintf("%s/%s", podNamespace, podName)
+}
+
+// ParsePodKey parses a key in the format "namespace/podName".
+// Returns (namespace, podName, success).
+func ParsePodKey(key string) (string, string, bool) {
+	parts := strings.Split(key, "/")
+	if len(parts) != 2 {
+		klog.V(4).Infof("Invalid key format: %q. Expected format: namespace/name", key)
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 // IsPodTerminating check if pod is in terminating status via whether the deletion timestamp is set
@@ -209,6 +226,7 @@ func FilterPods(pods []v1.Pod, filterFn filterPod) []v1.Pod {
 	return filtered
 }
 
+// FilterPodByName returns the pod with the given name.
 func FilterPodByName(podname string, pods []*v1.Pod) (*v1.Pod, bool) {
 	for _, pod := range pods {
 		if pod.Name == podname {
@@ -218,6 +236,9 @@ func FilterPodByName(podname string, pods []*v1.Pod) (*v1.Pod, bool) {
 	return nil, false
 }
 
+// DeploymentNameFromPod extracts the deployment name from the pod using two methods:
+// 1. If the pod has a label with the key "app.kubernetes.io/name", its value is considered the deployment name.
+// 2. If the pod has an owner reference of kind "ReplicaSet", the deployment name is extracted from the owner reference's name.
 func DeploymentNameFromPod(pod *v1.Pod) string {
 	if dpName, ok := pod.Labels[DeploymentIdentifier]; ok {
 		return dpName
@@ -241,4 +262,15 @@ func DeploymentNameFromPod(pod *v1.Pod) string {
 	}
 
 	return ""
+}
+
+// SelectRandomPod selects a random pod from the provided list, ensuring it's routable.
+// It returns an error if no ready pods are available.
+func SelectRandomPod(pods []*v1.Pod, randomFn func(int) int) (*v1.Pod, error) {
+	readyPods := FilterRoutablePods(pods)
+	if len(readyPods) == 0 {
+		return nil, fmt.Errorf("no ready pods available for random selection")
+	}
+	randomPod := readyPods[randomFn(len(readyPods))]
+	return randomPod, nil
 }

@@ -39,11 +39,11 @@ func podsFromCache(c *cache.Store) *utils.PodArray {
 }
 
 func requestContext(model string) *types.RoutingContext {
-	return types.NewRoutingContext(context.Background(), RouterNotSet, model, "", "id")
+	return types.NewRoutingContext(context.Background(), RouterNotSet, model, "", "id", "")
 }
 
 func requestContextWithMessage(model string, message string) *types.RoutingContext {
-	return types.NewRoutingContext(context.Background(), RouterNotSet, model, message, "id")
+	return types.NewRoutingContext(context.Background(), RouterNotSet, model, message, "id", "")
 }
 
 func TestRouter(t *testing.T) {
@@ -260,7 +260,7 @@ func TestSelectRandomPod(t *testing.T) {
 			// Create a new random generator with a fixed seed for consistent test results
 			// Seed randomness for consistent results in tests
 			r := rand.New(rand.NewSource(42))
-			chosenPod, err := selectRandomPod(tt.pods, r.Intn)
+			chosenPod, err := utils.SelectRandomPod(tt.pods, r.Intn)
 			if tt.expectErr {
 				if err == nil {
 					t.Errorf("expected an error but got none")

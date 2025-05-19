@@ -5,6 +5,11 @@ metadata:
   namespace: aibrix-system
 spec:
   controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: aibrix-custom-proxy-config
+    namespace: aibrix-system
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -17,11 +22,6 @@ spec:
     - name: http
       protocol: HTTP
       port: 80   
-  infrastructure:
-    parametersRef:
-      group: gateway.envoyproxy.io
-      kind: EnvoyProxy
-      name: aibrix-custom-proxy-config
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
@@ -33,14 +33,56 @@ spec:
     type: Kubernetes
     kubernetes:
       envoyDeployment:
-        container:
-          resources:
-            requests:
-              cpu: 1
-              memory: 1Gi
-            limits:
-              cpu: 1
-              memory: 1Gi
+        replicas: 1
+        strategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxUnavailable: 1
+            maxSurge: 1
+        pod:
+          affinity:
+            podAntiAffinity: # pods are placed on different nodes
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchExpressions:
+                      - key: app.kubernetes.io/name
+                        operator: In
+                        values:
+                          - envoy
+                  topologyKey: "kubernetes.io/hostname"
+            nodeAffinity: # prevent gateway pod to be placed on gpu node.
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                    - key: nvidia.com/gpu.present
+                      operator: NotIn
+                      values:
+                        - "true"
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: envoy
+                      image: envoyproxy/envoy:v1.33.2
+                      resources:
+                        requests:
+                          cpu: 1
+                          memory: 1Gi
+                        limits:
+                          cpu: 1
+                          memory: 1Gi
+                    - name: shutdown-manager
+                      image: envoyproxy/gateway:v1.2.8
+                      resources:
+                        requests:
+                          cpu: 10m
+                          memory: 32Mi
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: ClientTrafficPolicy

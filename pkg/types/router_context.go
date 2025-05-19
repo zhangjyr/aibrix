@@ -147,7 +147,11 @@ func (r *RoutingContext) TargetPod() *v1.Pod {
 	targetPod := r.targetPod.Load()
 	if targetPod == nilPod {
 		r.debugWait()
-		<-r.targetPodSet // No blocking if targetPod is set after last "targetPod == nil"
+		select {
+		case <-r.Context.Done():
+			r.SetError(r.Context.Err())
+		case <-r.targetPodSet: // No blocking if targetPod is set after last "targetPod == nil"
+		}
 		targetPod = r.targetPod.Load()
 	}
 
@@ -172,6 +176,11 @@ func (r *RoutingContext) TargetAddress() string {
 func (r *RoutingContext) HasRouted() bool {
 	pod := r.targetPod.Load()
 	return pod != nilPod && pod != nil
+}
+
+func (r *RoutingContext) HasError() bool {
+	pod := r.targetPod.Load()
+	return pod == nil && r.lastError != nil
 }
 
 func (r *RoutingContext) CanUpdateStats() bool {

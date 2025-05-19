@@ -27,7 +27,7 @@ type FallbackRouter interface {
 	Router
 
 	// SetFallback sets the fallback router
-	SetFallback(RouterProviderFunc)
+	SetFallback(RoutingAlgorithm, RouterProviderFunc)
 }
 
 // RouterFunc provides a stateful way to get a router, allowing a struct to provide the router by strategy and model.

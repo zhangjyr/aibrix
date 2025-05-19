@@ -60,10 +60,7 @@ func (c *Store) updateDeploymentProfiles(ctx context.Context) {
 				continue // Skip to the next key
 			}
 
-			existed, ok := c.deploymentProfiles.Load(key)
-			if !ok || existed.Created < updated.Created {
-				c.deploymentProfiles.Store(key, &updated)
-			}
+			c.UpdateModelProfile(key, &updated)
 		}
 
 		if cursor == 0 {

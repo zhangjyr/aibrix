@@ -141,8 +141,6 @@ func (t *RequestTrace) DoneRequestTrace(requestID string, inputTokens, outputTok
 	if key != "" {
 		t.addRequestTraceLocked(key)
 	}
-
-	// TODO: Track output stats based on input tokens
 	return key, true
 }
 

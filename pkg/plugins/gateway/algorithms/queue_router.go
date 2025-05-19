@@ -75,9 +75,7 @@ func (r *queueRouter) Route(ctx *types.RoutingContext, pods types.PodList) (stri
 		return "", nil   // Result is irrelevant
 	}
 
-	now := time.Now()
-	ctx.RequestTime = now
-	if err := r.queue.Enqueue(ctx, now); err != nil {
+	if err := r.queue.Enqueue(ctx, time.Now()); err != nil {
 		return "", err
 	}
 

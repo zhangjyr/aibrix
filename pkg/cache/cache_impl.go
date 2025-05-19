@@ -266,6 +266,13 @@ func (c *Store) AddSubscriber(subscriber metrics.MetricSubscriber) {
 	c.aggregateMetrics()
 }
 
+func (c *Store) UpdateModelProfile(key string, profile *ModelGPUProfile) {
+	existed, ok := c.deploymentProfiles.Load(key)
+	if !ok || existed.Created < profile.Created {
+		c.deploymentProfiles.Store(key, profile)
+	}
+}
+
 func (c *Store) GetModelProfileByPod(pod *v1.Pod, modelName string) (*ModelGPUProfile, error) {
 	deploymentName := utils.DeploymentNameFromPod(pod)
 	if len(deploymentName) == 0 {

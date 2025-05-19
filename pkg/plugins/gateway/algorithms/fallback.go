@@ -15,25 +15,32 @@ limitations under the License.
 */
 package routingalgorithms
 
-import "github.com/vllm-project/aibrix/pkg/types"
+import (
+	"github.com/vllm-project/aibrix/pkg/types"
+)
 
+var DefaultFallbackAlgorithm types.RoutingAlgorithm = RouterRandom
 var DefaultFallbackRouter types.RouterProviderFunc = RandomRouterProviderFunc
 
 type FallbackRouter struct {
-	fallback types.RouterProviderFunc
+	fallbackAlgorithm types.RoutingAlgorithm
+	fallbackProvider  types.RouterProviderFunc
 }
 
-func (r *FallbackRouter) SetFallback(fallback types.RouterProviderFunc) {
-	r.fallback = fallback
+func (r *FallbackRouter) SetFallback(fallback types.RoutingAlgorithm, provider types.RouterProviderFunc) {
+	r.fallbackAlgorithm = fallback
+	r.fallbackProvider = provider
 }
 
 func (r *FallbackRouter) Route(ctx *types.RoutingContext, pods types.PodList) (string, error) {
-	if r.fallback == nil {
-		r.fallback = DefaultFallbackRouter
+	if r.fallbackProvider == nil {
+		r.fallbackAlgorithm = DefaultFallbackAlgorithm
+		r.fallbackProvider = DefaultFallbackRouter
 	}
-	router, err := r.fallback(ctx)
+	router, err := r.fallbackProvider(ctx)
 	if err != nil {
 		return "", err
 	}
+	ctx.Algorithm = r.fallbackAlgorithm
 	return router.Route(ctx, pods)
 }

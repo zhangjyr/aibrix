@@ -99,18 +99,15 @@ var _ = Describe("SLOQueue", func() {
 				},
 			},
 		}, model))
-		store.UpdateModelProfile(profileKey, profile)
+		store.UpdateModelProfile(profileKey, profile, true)
 		Init() // Required to initialize the router registry
 		router, err = NewPackSLORouter(model)
 		Expect(err).To(BeNil())
 	})
 
 	Describe("Error handling", func() {
-		It("Should use fallback router if profile contains no SLO info", func() {
-			profile, err := readExampleProfile("../../../../python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/simulator-llama2-7b-a100_obsoleted_v1.json")
-			Expect(err).To(BeNil())
-
-			store.UpdateModelProfile(profileKey, profile)
+		It("Should use fallback router if no profile", func() {
+			store.UpdateModelProfile(profileKey, nil, true)
 
 			c, _ := cache.Get()
 			pods, _ := c.ListPodsByModel(model)
@@ -118,7 +115,26 @@ var _ = Describe("SLOQueue", func() {
 			// Use a context with a timeout to ensure the function doesn't block indefinitely
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 			defer cancel()
-			req := RouterSLORouter.NewContext(ctx, model, "message", "request_id", "")
+			req := RouterSLO.NewContext(ctx, model, "message", "request_id", "")
+			_, err = router.Route(req, pods)
+			Expect(err).To(BeNil())
+			Expect(req.HasRouted()).To(BeTrue())
+			Expect(req.Algorithm).To(Equal(RouterLeastRequest))
+		})
+
+		It("Should use fallback router if profile contains no SLO info", func() {
+			profile, err := readExampleProfile("../../../../python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/simulator-llama2-7b-a100_obsoleted_v1.json")
+			Expect(err).To(BeNil())
+
+			store.UpdateModelProfile(profileKey, profile, true)
+
+			c, _ := cache.Get()
+			pods, _ := c.ListPodsByModel(model)
+
+			// Use a context with a timeout to ensure the function doesn't block indefinitely
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+			defer cancel()
+			req := RouterSLO.NewContext(ctx, model, "message", "request_id", "")
 			_, err = router.Route(req, pods)
 			Expect(err).To(BeNil())
 			Expect(req.HasRouted()).To(BeTrue())
@@ -126,21 +142,22 @@ var _ = Describe("SLOQueue", func() {
 		})
 	})
 
-	// It("Cold start should not throw error", func() {
-	// 	c, _ := cache.Get()
-	// 	pods, _ := c.ListPodsByModel(model)
+	It("Cold start should not throw error", func() {
+		c, _ := cache.Get()
+		pods, _ := c.ListPodsByModel(model)
 
-	// 	// Use a context with a timeout to ensure the function doesn't block indefinitely
-	// 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	// 	defer cancel()
-	// 	req := RouterSLORouter.NewContext(ctx, model, "message", "request_id")
-	// 	podAddr, err := router.Route(req, pods)
-	// 	Expect(err).To(BeNil())
-	// 	Expect(req.HasRouted()).To(BeTrue())
-	// 	Expect(req.TargetPod()).ToNot(BeNil())
-	// 	Expect([]string{"1.0.0.1", "1.0.0.2"}).To(ContainElement(req.TargetPod().Status.PodIP))
-	// 	Expect(podAddr).To(Equal(req.TargetAddress()))
-	// })
+		// Use a context with a timeout to ensure the function doesn't block indefinitely
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+		req := RouterSLO.NewContext(ctx, model, "message", "request_id", "")
+		podAddr, err := router.Route(req, pods)
+		Expect(err).To(BeNil())
+		Expect(req.HasRouted()).To(BeTrue())
+		Expect(req.Algorithm).To(Equal(RouterSLO))
+		Expect(req.TargetPod()).ToNot(BeNil())
+		Expect([]string{"1.0.0.1", "1.0.0.2"}).To(ContainElement(req.TargetPod().Status.PodIP))
+		Expect(podAddr).To(Equal(req.TargetAddress()))
+	})
 
 	// It("Packing router should prefer the same pod", func() {
 	// 	c, _ := cache.Get()

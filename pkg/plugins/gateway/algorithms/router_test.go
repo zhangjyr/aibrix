@@ -29,9 +29,6 @@ import (
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
 )
 
 func podsFromCache(c *cache.Store) *utils.PodArray {
@@ -44,11 +41,6 @@ func requestContext(model string) *types.RoutingContext {
 
 func requestContextWithMessage(model string, message string) *types.RoutingContext {
 	return types.NewRoutingContext(context.Background(), RouterNotSet, model, message, "id", "")
-}
-
-func TestRouter(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Router Suite")
 }
 
 func TestNoPods(t *testing.T) {

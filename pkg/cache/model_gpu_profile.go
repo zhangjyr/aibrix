@@ -30,6 +30,7 @@ var (
 	ErrProfileNoThroughput = fmt.Errorf("profile has no throughput data")
 	ErrProfileNoE2E        = fmt.Errorf("profile has no E2E latency data")
 	ErrProfileNoTTFT       = fmt.Errorf("profile has no TTFT data")
+	ErrProfileNoTPOT       = fmt.Errorf("profile has no TPOT data")
 )
 
 const ModelGPUNameTemplate = "aibrix:profile_%s_%s"
@@ -63,6 +64,7 @@ type ModelGPUProfile struct {
 	Created    float64     `json:"created"`
 	E2E        [][]float64 `json:"e2e"`  // Mean E2E latency per correspondent RPS.
 	TTFT       [][]float64 `json:"ttft"` // Mean TTFT per correspondent RPS.
+	TPOT       [][]float64 `json:"tpot"` // Mean TPOT.
 	SLOs       ModelSLOs   `json:"slos"` // SLOs used for specified model and GPU.
 }
 
@@ -174,6 +176,13 @@ func (pf *ModelGPUProfile) LatencySeconds(signature ...int) (float64, error) {
 		return 0.0, ErrProfileNoE2E
 	}
 	return pf.getValue(pf.E2E, signature...)
+}
+
+func (pf *ModelGPUProfile) TPOTSeconds(signature ...int) (float64, error) {
+	if pf.TPOT == nil {
+		return 0.0, ErrProfileNoTPOT
+	}
+	return pf.getValue(pf.TPOT, signature...)
 }
 
 func (pf *ModelGPUProfile) TTFTSeconds(signature ...int) (float64, error) {

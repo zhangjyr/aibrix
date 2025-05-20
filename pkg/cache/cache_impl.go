@@ -274,9 +274,11 @@ func (c *Store) AddSubscriber(subscriber metrics.MetricSubscriber) {
 	c.aggregateMetrics()
 }
 
-func (c *Store) UpdateModelProfile(key string, profile *ModelGPUProfile) {
+func (c *Store) UpdateModelProfile(key string, profile *ModelGPUProfile, force bool) {
 	existed, ok := c.deploymentProfiles.Load(key)
-	if !ok || existed.Created < profile.Created {
+	if profile == nil && ok {
+		c.deploymentProfiles.Delete(key)
+	} else if force || !ok || existed.Created < profile.Created {
 		c.deploymentProfiles.Store(key, profile)
 	}
 }

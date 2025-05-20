@@ -60,7 +60,7 @@ func (c *Store) updateDeploymentProfiles(ctx context.Context) {
 				continue // Skip to the next key
 			}
 
-			c.UpdateModelProfile(key, &updated)
+			c.UpdateModelProfile(key, &updated, false)
 		}
 
 		if cursor == 0 {

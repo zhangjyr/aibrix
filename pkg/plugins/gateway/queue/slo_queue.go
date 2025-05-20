@@ -17,6 +17,7 @@ limitations under the License.
 package queue
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -35,6 +36,10 @@ const (
 	monogenousGPURouting  bool = false
 	initialTotalSubQueues int  = 8  // Expect no more than 8 subqueues
 	initialSubQueueSize   int  = 64 // Support maximum 128 pending request per sub-queue within one expansion.
+)
+
+var (
+	errNoSLO = errors.New("no SLO available")
 )
 
 type candidateRouterRequest struct {
@@ -121,7 +126,7 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		availableProfiles++
 	}
 	if availableProfiles == 0 {
-		klog.Warningf("no available slo profiles for model %s, fall back to simple queue", q.modelName)
+		klog.Warningf("SLOQueue found no profile available for model %s, fallback to FIFO queue", q.modelName)
 	}
 	// Clear error
 	err = nil
@@ -151,13 +156,14 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		if sub.Len() > 0 {
 			r, _ := sub.Peek(currentTime, pods)
 			// Keep fallback decision in case anything wrong.
+			// Fallback decision occupies first element(0) of q.dequeueCandidates.
 			fbRet := fallbackHandler(key, r)
 			// Fallback case 1: No available profiles.
 			if availableProfiles == 0 {
-				klog.Warningf("SLOQueue found no profile available for request %s of model %s, fallback to FIFO queue", r.RequestID, r.Model)
+				// Warned, simply follows fallback decision.
 				return fbRet
 			}
-			// Reuse a dequeue candidate
+			// Append new candidate to candidates
 			idx := len(q.dequeueCandidates)
 			q.validateDequeueCandidatesLocked(idx + 1)
 			q.dequeueCandidates = q.dequeueCandidates[:idx+1]
@@ -299,18 +305,15 @@ func (q *SLOQueue) rank(currentTime time.Time, req *types.RoutingContext, profil
 	if err != nil {
 		return 0.0, err
 	}
-	if profile.SLOs.TTFT > 0.0 {
-		rank, err = q.rankTTFT(currentTime, req, profile, signature)
-		if err != nil {
-			return 0.0, err
-		}
+	if profile.SLOs.TPOT > 0.0 {
+		return q.rankTPOT(currentTime, req, profile, signature)
+	} else if profile.SLOs.TTFT > 0.0 {
+		return q.rankTTFT(currentTime, req, profile, signature)
+	} else if profile.SLOs.E2E > 0.0 {
+		return q.rankE2E(currentTime, req, profile, signature)
 	} else {
-		rank, err = q.rankE2E(currentTime, req, profile, signature)
-		if err != nil {
-			return 0.0, err
-		}
+		return 0.0, errNoSLO
 	}
-	return rank, nil
 }
 
 func (q *SLOQueue) rankE2E(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
@@ -328,6 +331,21 @@ func (q *SLOQueue) rankTTFT(currentTime time.Time, req *types.RoutingContext, pr
 	if err != nil {
 		return 0.0, err
 	}
+	return float64(currentTime.Sub(req.RequestTime))/float64(time.Second) + expected - target, nil
+}
+func (q *SLOQueue) rankTPOT(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
+	tokens, err := req.TokenLength()
+	if err != nil {
+		// unlikely, we should not reach here.
+		return 0.0, err
+	}
+	target := profile.SLOs.TPOT*float64(tokens) + profile.SLOs.TTFT
+	expectedTPOT, err := profile.TPOTSeconds(signature...)
+	if err != nil {
+		return 0.0, err
+	}
+	expectedTTFT, _ := profile.TTFTSeconds(signature...) // Ignore TTFT profile missing
+	expected := expectedTPOT + expectedTTFT
 	return float64(currentTime.Sub(req.RequestTime))/float64(time.Second) + expected - target, nil
 }
 

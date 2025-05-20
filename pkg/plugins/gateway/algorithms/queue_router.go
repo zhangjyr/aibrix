@@ -26,11 +26,11 @@ import (
 )
 
 var (
-	RouterSLORouter types.RoutingAlgorithm = "slo"
+	RouterSLO types.RoutingAlgorithm = "slo"
 )
 
 func init() {
-	Register(RouterSLORouter, func(ctx *types.RoutingContext) (types.Router, error) {
+	Register(RouterSLO, func(ctx *types.RoutingContext) (types.Router, error) {
 		c, err := cache.Get()
 		if err != nil {
 			return nil, err
@@ -57,7 +57,7 @@ func NewQueueRouter(backend types.Router, queue types.RouterQueue[*types.Routing
 		router:         backend,
 		queue:          queue,
 		cache:          c,
-		chRouteTrigger: make(chan types.PodList),
+		chRouteTrigger: make(chan types.PodList, 1), // One buffer is needed for thread safety.
 	}
 
 	go router.serve()

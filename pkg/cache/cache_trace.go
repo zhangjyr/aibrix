@@ -105,7 +105,7 @@ func (c *Store) donePodStats(ctx *types.RoutingContext, requestID string) {
 	// Update pending load
 	var utilization float64
 	if ctx.PendingLoad != 0.0 {
-		utilization := metaPod.pendingLoadUtilization.Add(-ctx.PendingLoad)
+		utilization = metaPod.pendingLoadUtilization.Add(-ctx.PendingLoad)
 		if c.updatePodRecord(metaPod, ctx.Model, metrics.RealtimeNormalizedPendings, metrics.PodMetricScope, &metrics.SimpleMetricValue{Value: utilization}) != nil {
 			klog.Warningf("can't update realtime metric: %s, pod: %s, requestID: %s", metrics.RealtimeNormalizedPendings, pod.Name, requestID)
 		}

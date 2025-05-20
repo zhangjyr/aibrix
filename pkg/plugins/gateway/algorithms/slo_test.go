@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/vllm-project/aibrix/pkg/cache"
+	metrics "github.com/vllm-project/aibrix/pkg/metrics"
 	"github.com/vllm-project/aibrix/pkg/types"
 	"github.com/vllm-project/aibrix/pkg/utils"
 	v1 "k8s.io/api/core/v1"
@@ -43,6 +44,12 @@ func readExampleProfile(filePath string) (*cache.ModelGPUProfile, error) {
 	}
 
 	return &profile, nil
+}
+
+func newReqWithTimeout(model, message, requestID string, timeout time.Duration) (*types.RoutingContext, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	req := RouterSLO.NewContext(ctx, model, message, requestID, "")
+	return req, cancel
 }
 
 var _ = Describe("SLOQueue", func() {
@@ -113,9 +120,8 @@ var _ = Describe("SLOQueue", func() {
 			pods, _ := c.ListPodsByModel(model)
 
 			// Use a context with a timeout to ensure the function doesn't block indefinitely
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+			req, cancel := newReqWithTimeout(model, "message", "request_id", 10*time.Millisecond)
 			defer cancel()
-			req := RouterSLO.NewContext(ctx, model, "message", "request_id", "")
 			_, err = router.Route(req, pods)
 			Expect(err).To(BeNil())
 			Expect(req.HasRouted()).To(BeTrue())
@@ -132,9 +138,8 @@ var _ = Describe("SLOQueue", func() {
 			pods, _ := c.ListPodsByModel(model)
 
 			// Use a context with a timeout to ensure the function doesn't block indefinitely
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+			req, cancel := newReqWithTimeout(model, "message", "request_id", 10*time.Millisecond)
 			defer cancel()
-			req := RouterSLO.NewContext(ctx, model, "message", "request_id", "")
 			_, err = router.Route(req, pods)
 			Expect(err).To(BeNil())
 			Expect(req.HasRouted()).To(BeTrue())
@@ -147,9 +152,8 @@ var _ = Describe("SLOQueue", func() {
 		pods, _ := c.ListPodsByModel(model)
 
 		// Use a context with a timeout to ensure the function doesn't block indefinitely
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		req, cancel := newReqWithTimeout(model, "message", "request_id", 10*time.Millisecond)
 		defer cancel()
-		req := RouterSLO.NewContext(ctx, model, "message", "request_id", "")
 		podAddr, err := router.Route(req, pods)
 		Expect(err).To(BeNil())
 		Expect(req.HasRouted()).To(BeTrue())
@@ -159,22 +163,25 @@ var _ = Describe("SLOQueue", func() {
 		Expect(podAddr).To(Equal(req.TargetAddress()))
 	})
 
-	// It("Packing router should prefer the same pod", func() {
-	// 	c, _ := cache.Get()
-	// 	pods, _ := c.ListPodsByModel(model)
+	It("Packing router should prefer the same pod", func() {
+		c, _ := cache.Get()
+		pods, _ := c.ListPodsByModel(model)
 
-	// 	req1 := RouterSLORouter.NewContext(ctx1, model, "message", "request_id")
-	// 	req2 := RouterSLORouter.NewContext(context.Background(), model, "message", "request_id")
+		req1, cancel1 := newReqWithTimeout(model, "message1", "request_id_1", 10*time.Millisecond)
+		req2, cancel2 := newReqWithTimeout(model, "message2", "request_id_2", 10*time.Millisecond)
+		defer cancel1()
+		defer cancel2()
 
-	// 	podAddr1, err := router.Route(req1, pods)
-	// 	Expect(err).To(BeNil())
+		podAddr1, err := router.Route(req1, pods)
+		Expect(err).To(BeNil())
 
-	// 	pendingLoad, err := c.GetMetricValueByPod(req1.TargetPod().Name, metrics.RealtimeNormalizedPendings)
-	// 	Expect(err).To(BeNil())
-	// 	Expect(pendingLoad.GetSimpleValue() <= 0.5).To(BeTrue())
+		// time.Sleep(1000 * time.Millisecond)
+		pendingLoad, err := c.GetMetricValueByPod(req1.TargetPod().Name, req1.TargetPod().Namespace, metrics.RealtimeNormalizedPendings)
+		Expect(err).To(BeNil())
+		Expect(pendingLoad.GetSimpleValue() <= 0.5).To(BeTrue())
 
-	// 	podAddr2, err := router.Route(req2, pods)
-	// 	Expect(err).To(BeNil())
-	// 	Expect(podAddr1).To(Equal(podAddr2))
-	// })
+		podAddr2, err := router.Route(req2, pods)
+		Expect(err).To(BeNil())
+		Expect(podAddr1).To(Equal(podAddr2))
+	})
 })

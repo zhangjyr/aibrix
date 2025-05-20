@@ -146,6 +146,9 @@ func InitForTest() *Store {
 func InitWithInstanceForTest(st *Store) *Store {
 	st.initialized = true
 	store = st
+	if enableModelGPUProfileCaching {
+		initProfileCache(store, nil, true)
+	}
 	return store
 }
 
@@ -175,7 +178,9 @@ func InitForMetadata(config *rest.Config, stopCh <-chan struct{}, redisClient *r
 
 func InitForGateway(config *rest.Config, stopCh <-chan struct{}, redisClient *redis.Client, modelRouterProvider ModelRouterProviderFunc) *Store {
 	once.Do(func() {
-		klog.Info("initialize cache for gateway")
+		klog.InfoS("initialize cache for gateway",
+			"enableModelGPUProfileCaching", enableModelGPUProfileCaching,
+			"enableGPUOptimizerTracing", enableGPUOptimizerTracing)
 		store = New(redisClient, initPrometheusAPI(), modelRouterProvider)
 
 		// Initialize cache components
@@ -184,7 +189,7 @@ func InitForGateway(config *rest.Config, stopCh <-chan struct{}, redisClient *re
 		}
 		initMetricsCache(store, stopCh)
 		if enableModelGPUProfileCaching {
-			initProfileCache(store, stopCh)
+			initProfileCache(store, stopCh, false)
 		}
 		if enableGPUOptimizerTracing {
 			initTraceCache(redisClient, stopCh)
@@ -224,8 +229,12 @@ func initMetricsCache(store *Store, stopCh <-chan struct{}) {
 //
 //	store: Cache store instance
 //	stopCh: Stop signal channel
-func initProfileCache(store *Store, stopCh <-chan struct{}) {
+func initProfileCache(store *Store, stopCh <-chan struct{}, forTesting bool) {
 	store.pendingLoadProvider = newPendingLoadProvider(store)
+	if forTesting {
+		return
+	}
+	// Skip initialization below during testing
 	ticker := time.NewTicker(defaultModelGPUProfileRefreshInterval)
 	go func() {
 		for {

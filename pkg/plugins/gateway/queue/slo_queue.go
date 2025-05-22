@@ -98,12 +98,9 @@ func (q *SLOQueue) Enqueue(ctx *types.RoutingContext, currentTime time.Time) err
 	if loaded {
 		q.subpool.Put(newQueue)
 	}
-	// else {
-	// 	q.features.Store(key, features)
-	// }
-	// nolint: errcheck
 
-	sub.Enqueue(ctx, currentTime)
+	// SimpleQueue.Enqueue() returns nil always.
+	sub.Enqueue(ctx, currentTime) // nolint: errcheck
 	q.debugSub(fmt.Sprintf("%s request enqueued", ctx.Model))
 	return nil
 }
@@ -208,18 +205,21 @@ func (q *SLOQueue) Peek(currentTime time.Time, pods types.PodList) (*types.Routi
 		return q.dequeueCandidates[0].RoutingContext, nil
 	}
 
+	// Exclude fallback candidate
+	dequeueCandidates := q.dequeueCandidates[1:]
+
 	// Sort by rank
-	sort.Slice(q.dequeueCandidates, func(i, j int) bool {
+	sort.Slice(dequeueCandidates, func(i, j int) bool {
 		// Keep original order for no slo violation
-		if q.dequeueCandidates[i].Rank < 0 && q.dequeueCandidates[j].Rank < 0 {
-			return q.dequeueCandidates[i].RoutingContext.RequestTime.Before(q.dequeueCandidates[j].RoutingContext.RequestTime)
+		if dequeueCandidates[i].Rank < 0 && dequeueCandidates[j].Rank < 0 {
+			return dequeueCandidates[i].RoutingContext.RequestTime.Before(dequeueCandidates[j].RoutingContext.RequestTime)
 		} else {
-			return q.higherRank(q.dequeueCandidates[i].Rank, q.dequeueCandidates[j].Rank) > 0
+			return q.higherRank(dequeueCandidates[i].Rank, dequeueCandidates[j].Rank) > 0
 		}
 	})
 
 	// Start from ealiest
-	for _, candidate := range q.dequeueCandidates {
+	for _, candidate := range dequeueCandidates {
 		if monogenousGPURouting {
 			//nolint:errcheck
 			q.Router.Route(candidate.RoutingContext, &utils.PodArray{Pods: pods.ListByIndex(candidate.ProfileKey)})
@@ -309,6 +309,8 @@ func (q *SLOQueue) rank(currentTime time.Time, req *types.RoutingContext, profil
 		return q.rankTPOT(currentTime, req, profile, signature)
 	} else if profile.SLOs.TTFT > 0.0 {
 		return q.rankTTFT(currentTime, req, profile, signature)
+	} else if profile.SLOs.TPAT > 0.0 {
+		return q.rankTPAT(currentTime, req, profile, signature)
 	} else if profile.SLOs.E2E > 0.0 {
 		return q.rankE2E(currentTime, req, profile, signature)
 	} else {
@@ -325,6 +327,25 @@ func (q *SLOQueue) rankE2E(currentTime time.Time, req *types.RoutingContext, pro
 	return float64(currentTime.Sub(req.RequestTime))/float64(time.Second) + expected - target, nil
 }
 
+func (q *SLOQueue) rankTPAT(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
+	prompts, err := req.PromptLength()
+	if err != nil {
+		// unlikely, we should not reach here.
+		return 0.0, err
+	}
+	tokens, err := req.TokenLength()
+	if err != nil {
+		// unlikely, we should not reach here.
+		return 0.0, err
+	}
+	target := profile.SLOs.TPAT * float64(prompts+tokens)
+	expected, err := profile.LatencySeconds(signature...)
+	if err != nil {
+		return 0.0, err
+	}
+	return float64(currentTime.Sub(req.RequestTime))/float64(time.Second) + expected - target, nil
+}
+
 func (q *SLOQueue) rankTTFT(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
 	target := profile.SLOs.TTFT
 	expected, err := profile.TTFTSeconds(signature...)
@@ -333,19 +354,20 @@ func (q *SLOQueue) rankTTFT(currentTime time.Time, req *types.RoutingContext, pr
 	}
 	return float64(currentTime.Sub(req.RequestTime))/float64(time.Second) + expected - target, nil
 }
+
 func (q *SLOQueue) rankTPOT(currentTime time.Time, req *types.RoutingContext, profile *cache.ModelGPUProfile, signature []int) (float64, error) {
 	tokens, err := req.TokenLength()
 	if err != nil {
 		// unlikely, we should not reach here.
 		return 0.0, err
 	}
-	target := profile.SLOs.TPOT*float64(tokens) + profile.SLOs.TTFT
-	expectedTPOT, err := profile.TPOTSeconds(signature...)
+	target := profile.SLOs.TPOT*float64(tokens) + profile.SLOs.TTFT // TTFT is optional if the workload is decoding dominant.
+	// Since profile metrics only include mean values, the assumption here is mean(e2e) = mean(ttft) + mean(tpot) * tokens
+	// In the case that the workload is decoding dominant, mean(e2e) = mean(tpot) * tokens, while mean(ttft) is ignorable.
+	expected, err := profile.LatencySeconds(signature...)
 	if err != nil {
 		return 0.0, err
 	}
-	expectedTTFT, _ := profile.TTFTSeconds(signature...) // Ignore TTFT profile missing
-	expected := expectedTPOT + expectedTTFT
 	return float64(currentTime.Sub(req.RequestTime))/float64(time.Second) + expected - target, nil
 }
 

@@ -18,6 +18,7 @@ package routingalgorithms
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"time"
 
@@ -47,9 +48,32 @@ func readExampleProfile(filePath string) (*cache.ModelGPUProfile, error) {
 }
 
 func newReqWithTimeout(model, message, requestID string, timeout time.Duration) (*types.RoutingContext, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	req := RouterSLO.NewContext(ctx, model, message, requestID, "")
 	return req, cancel
+}
+
+func route(cache cache.Cache, req *types.RoutingContext, pods types.PodList) (string, error) {
+	router, err := cache.GetRouter(req)
+	if err != nil {
+		return "", err
+	}
+	return router.Route(req, pods)
+}
+
+func getBlockChannel(cb func()) chan bool {
+	block := make(chan bool)
+	go func() {
+		cb()
+		close(block)
+	}()
+	return block
+}
+
+func shouldBlock(cb func(), duration time.Duration) chan bool {
+	block := getBlockChannel(cb)
+	Consistently(block, duration).ShouldNot(BeClosed())
+	return block
 }
 
 var _ = Describe("SLOQueue", func() {
@@ -57,18 +81,18 @@ var _ = Describe("SLOQueue", func() {
 		store      *cache.Store
 		model      = "llama2-7b"
 		deployment = "simulator-llama2-7b-a100"
-		router     types.Router
 		profileKey = cache.ModelGPUProfileKey(model, deployment)
 		profile    *cache.ModelGPUProfile
 		err        error
 	)
 
-	profile, err = readExampleProfile("../../../../python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/simulator-llama2-7b-a100.json")
-
 	BeforeEach(func() {
+		profile, err = readExampleProfile("../../../../python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/simulator-llama2-7b-a100.json")
 		Expect(err).To(BeNil())
 
-		store = cache.InitWithInstanceForTest(cache.NewTestCacheWithPods([]*v1.Pod{
+		store = cache.NewForTest()
+		Init() // Required to initialize the router registry after store was initialized and before pods are added.
+		store = cache.InitWithPods(cache.InitModelRouterProvider(store, NewPackSLORouter), []*v1.Pod{
 			{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      deployment + "-replicaset-pod1",
@@ -105,31 +129,27 @@ var _ = Describe("SLOQueue", func() {
 					},
 				},
 			},
-		}, model))
+		}, model)
 		store.UpdateModelProfile(profileKey, profile, true)
-		Init() // Required to initialize the router registry
-		router, err = NewPackSLORouter(model)
-		Expect(err).To(BeNil())
+
 	})
 
 	Describe("Error handling", func() {
 		It("Should use fallback router if no profile", func() {
 			store.UpdateModelProfile(profileKey, nil, true)
-
-			c, _ := cache.Get()
-			pods, _ := c.ListPodsByModel(model)
+			pods, _ := store.ListPodsByModel(model)
 
 			// Use a context with a timeout to ensure the function doesn't block indefinitely
 			req, cancel := newReqWithTimeout(model, "message", "request_id", 10*time.Millisecond)
 			defer cancel()
-			_, err = router.Route(req, pods)
+			_, err = route(store, req, pods)
 			Expect(err).To(BeNil())
 			Expect(req.HasRouted()).To(BeTrue())
 			Expect(req.Algorithm).To(Equal(RouterLeastRequest))
 		})
 
 		It("Should use fallback router if profile contains no SLO info", func() {
-			profile, err := readExampleProfile("../../../../python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/simulator-llama2-7b-a100_obsoleted_v1.json")
+			profile, err = readExampleProfile("../../../../python/aibrix/aibrix/gpu_optimizer/optimizer/profiling/result/simulator-llama2-7b-a100_obsoleted_v1.json")
 			Expect(err).To(BeNil())
 
 			store.UpdateModelProfile(profileKey, profile, true)
@@ -140,7 +160,21 @@ var _ = Describe("SLOQueue", func() {
 			// Use a context with a timeout to ensure the function doesn't block indefinitely
 			req, cancel := newReqWithTimeout(model, "message", "request_id", 10*time.Millisecond)
 			defer cancel()
-			_, err = router.Route(req, pods)
+			_, err = route(store, req, pods)
+			Expect(err).To(BeNil())
+			Expect(req.HasRouted()).To(BeTrue())
+			Expect(req.Algorithm).To(Equal(RouterLeastRequest))
+		})
+
+		It("Should use fallback router if profile contains SLO info but misses corresponding metrics (TPOT)", func() {
+			profile.SLOs.TTFT = 1 // Overwrite SLO in term of TPOT (TPOT has higher priority than E2E)
+			store.UpdateModelProfile(profileKey, profile, true)
+			pods, _ := store.ListPodsByModel(model)
+
+			// Use a context with a timeout to ensure the function doesn't block indefinitely
+			req, cancel := newReqWithTimeout(model, "message", "request_id", 10*time.Millisecond)
+			defer cancel()
+			_, err = route(store, req, pods)
 			Expect(err).To(BeNil())
 			Expect(req.HasRouted()).To(BeTrue())
 			Expect(req.Algorithm).To(Equal(RouterLeastRequest))
@@ -148,13 +182,12 @@ var _ = Describe("SLOQueue", func() {
 	})
 
 	It("Cold start should not throw error", func() {
-		c, _ := cache.Get()
-		pods, _ := c.ListPodsByModel(model)
+		pods, _ := store.ListPodsByModel(model)
 
 		// Use a context with a timeout to ensure the function doesn't block indefinitely
 		req, cancel := newReqWithTimeout(model, "message", "request_id", 10*time.Millisecond)
 		defer cancel()
-		podAddr, err := router.Route(req, pods)
+		podAddr, err := route(store, req, pods)
 		Expect(err).To(BeNil())
 		Expect(req.HasRouted()).To(BeTrue())
 		Expect(req.Algorithm).To(Equal(RouterSLO))
@@ -164,24 +197,70 @@ var _ = Describe("SLOQueue", func() {
 	})
 
 	It("Packing router should prefer the same pod", func() {
-		c, _ := cache.Get()
-		pods, _ := c.ListPodsByModel(model)
+		pods, _ := store.ListPodsByModel(model)
 
 		req1, cancel1 := newReqWithTimeout(model, "message1", "request_id_1", 10*time.Millisecond)
 		req2, cancel2 := newReqWithTimeout(model, "message2", "request_id_2", 10*time.Millisecond)
 		defer cancel1()
 		defer cancel2()
 
-		podAddr1, err := router.Route(req1, pods)
+		podAddr1, err := route(store, req1, pods)
 		Expect(err).To(BeNil())
 
 		// time.Sleep(1000 * time.Millisecond)
-		pendingLoad, err := c.GetMetricValueByPod(req1.TargetPod().Name, req1.TargetPod().Namespace, metrics.RealtimeNormalizedPendings)
+		pendingLoad, err := store.GetMetricValueByPod(req1.TargetPod().Name, req1.TargetPod().Namespace, metrics.RealtimeNormalizedPendings)
 		Expect(err).To(BeNil())
 		Expect(pendingLoad.GetSimpleValue() <= 0.5).To(BeTrue())
 
-		podAddr2, err := router.Route(req2, pods)
+		podAddr2, err := route(store, req2, pods)
 		Expect(err).To(BeNil())
 		Expect(podAddr1).To(Equal(podAddr2))
+	})
+
+	It("Queue router should be blocked and released successfully", func() {
+		pods, _ := store.ListPodsByModel(model)
+
+		makeOneRequest := func(id int, timeout time.Duration) (*types.RoutingContext, float64) {
+			defer GinkgoRecover()
+
+			req, cancel := newReqWithTimeout(model, "message", fmt.Sprintf("request_id_%d", id), timeout)
+			defer cancel()
+			_, err := route(store, req, pods)
+			Expect(err).To(BeNil())
+
+			// time.Sleep(1000 * time.Millisecond)
+			pendingLoad, err := store.GetMetricValueByPod(req.TargetPod().Name, req.TargetPod().Namespace, metrics.RealtimeNormalizedPendings)
+			Expect(err).To(BeNil())
+			return req, pendingLoad.GetSimpleValue()
+		}
+
+		// Fill pods just enough.
+		filledPods := make([]*v1.Pod, 0, pods.Len())
+		firstReq, unitPendingLoad := makeOneRequest(1, 10*time.Millisecond)
+		filledPods = append(filledPods, firstReq.TargetPod())
+		lastPendingLoad := unitPendingLoad
+		id := 2
+		for len(filledPods) < pods.Len() || lastPendingLoad+unitPendingLoad < 1.0 {
+			req, pendingLoad := makeOneRequest(id, 10*time.Millisecond)
+			if req.TargetPod() != filledPods[len(filledPods)-1] {
+				filledPods = append(filledPods, req.TargetPod())
+			}
+			lastPendingLoad = pendingLoad
+			id++
+		}
+
+		// Make the request that should be blocked.
+		var lastReq *types.RoutingContext
+		blockage := shouldBlock(func() {
+			lastReq, _ = makeOneRequest(id, 100*time.Millisecond)
+		}, 10*time.Millisecond)
+
+		// Release the request.
+		store.DoneRequestCount(firstReq, "request_id_1", firstReq.Model, 1)
+
+		// Check the blockage is released.
+		Eventually(blockage, 20*time.Millisecond).Should(BeClosed())
+		Expect(lastReq).ToNot(BeNil())
+		Expect(lastReq.TargetPod()).To(BeIdenticalTo(firstReq.TargetPod()))
 	})
 })

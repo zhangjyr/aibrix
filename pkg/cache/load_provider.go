@@ -68,7 +68,7 @@ func (p *CachedLoadProvider) Cache() Cache {
 }
 
 func (p *CachedLoadProvider) GetUtilization(ctx *types.RoutingContext, pod *v1.Pod) (float64, error) {
-	cached, err := p.cache.GetMetricValueByPodModel(pod.Name, pod.Namespace, ctx.Model, p.metricName)
+	cached, err := p.cache.GetMetricValueByPod(pod.Name, pod.Namespace, p.metricName)
 	if err != nil {
 		return 0.0, err
 	}

@@ -35,7 +35,7 @@ import (
 
 func Test_PrefixCacheE2E(t *testing.T) {
 	readyPods := getReadyPods()
-	c := cache.NewTestCacheWithPodsMetrics(
+	c := cache.NewWithPodsMetricsForTest(
 		readyPods,
 		"m1",
 		map[string]map[string]metrics.MetricValue{
@@ -198,7 +198,7 @@ func getReadyPods() []*v1.Pod {
 func Test_ValidatePrePrefixMatchLoadBalance(t *testing.T) {
 	// no imbalance
 	readyPods := getReadyPods()
-	c := cache.NewTestCacheWithPodsMetrics(
+	c := cache.NewWithPodsMetricsForTest(
 		readyPods,
 		"m1",
 		map[string]map[string]metrics.MetricValue{
@@ -212,7 +212,7 @@ func Test_ValidatePrePrefixMatchLoadBalance(t *testing.T) {
 	assert.Nil(t, targetPod)
 
 	// imbalance with multiple pods matching criteria
-	c = cache.NewTestCacheWithPodsMetrics(
+	c = cache.NewWithPodsMetricsForTest(
 		readyPods,
 		"m1",
 		map[string]map[string]metrics.MetricValue{
@@ -237,7 +237,7 @@ func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
 	}{
 		{
 			name: "match pod with highest prefix match percent",
-			c: cache.NewTestCacheWithPodsMetrics(
+			c: cache.NewWithPodsMetricsForTest(
 				readyPods,
 				"m1",
 				map[string]map[string]metrics.MetricValue{
@@ -254,7 +254,7 @@ func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
 		},
 		{
 			name: "match pod with lowest running request count for same prefix match percent",
-			c: cache.NewTestCacheWithPodsMetrics(
+			c: cache.NewWithPodsMetricsForTest(
 				readyPods,
 				"m1",
 				map[string]map[string]metrics.MetricValue{
@@ -272,7 +272,7 @@ func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
 		},
 		{
 			name: "match any pod with same running request count and same prefix match percent",
-			c: cache.NewTestCacheWithPodsMetrics(
+			c: cache.NewWithPodsMetricsForTest(
 				readyPods,
 				"m1",
 				map[string]map[string]metrics.MetricValue{
@@ -290,7 +290,7 @@ func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
 		},
 		{
 			name: "match pod with lower prefix match percent with running requests below imbalance threshold",
-			c: cache.NewTestCacheWithPodsMetrics(
+			c: cache.NewWithPodsMetricsForTest(
 				readyPods,
 				"m1",
 				map[string]map[string]metrics.MetricValue{
@@ -307,7 +307,7 @@ func Test_ValidatePostPrefixMatchLoadBalance(t *testing.T) {
 		},
 		{
 			name: "ignore matched pod if their running requests are more than threshold",
-			c: cache.NewTestCacheWithPodsMetrics(
+			c: cache.NewWithPodsMetricsForTest(
 				readyPods,
 				"m1",
 				map[string]map[string]metrics.MetricValue{

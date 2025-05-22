@@ -68,7 +68,7 @@ func TestNoPods(t *testing.T) {
 
 func TestWithNoIPPods(t *testing.T) {
 	model := ""
-	c := cache.NewTestCacheWithPods([]*v1.Pod{
+	c := cache.NewWithPodsForTest([]*v1.Pod{
 		{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "p1",
@@ -99,7 +99,7 @@ func TestWithIPPods(t *testing.T) {
 	// case 1: pod ready
 	// case 2: pod ready & terminating -> we can send request at this moment.
 	model := ""
-	c := cache.NewTestCacheWithPodsMetrics(
+	c := cache.NewWithPodsMetricsForTest(
 		[]*v1.Pod{
 			{
 				ObjectMeta: metav1.ObjectMeta{

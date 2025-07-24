@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobSpec
 from aibrix.batch.job_manager import JobManager
-from aibrix.metadata.logger import init_logger
+from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 

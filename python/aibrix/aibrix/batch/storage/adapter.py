@@ -18,7 +18,7 @@ import uuid
 from typing import Any, AsyncIterator, Dict, List, Tuple
 
 from aibrix.batch.job_entity import BatchJob
-from aibrix.metadata.logger import init_logger
+from aibrix.logger import init_logger
 from aibrix.storage.base import BaseStorage
 
 from .batch_metastore import delete_metadata, get_metadata, set_metadata

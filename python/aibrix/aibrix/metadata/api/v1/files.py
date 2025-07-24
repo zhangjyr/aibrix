@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from pydantic import Field
 
-from aibrix.metadata.logger import init_logger
+from aibrix.logger import init_logger
 from aibrix.metadata.setting.config import settings
 from aibrix.openapi.protocol import NoExtraBaseModel
 from aibrix.storage import BaseStorage, Reader, SizeExceededError, generate_filename

@@ -18,7 +18,7 @@ from typing import Optional
 import aibrix.batch.storage as storage
 from aibrix.batch.job_entity import BatchJob, BatchJobState
 from aibrix.batch.job_manager import JobManager
-from aibrix.metadata.logger import init_logger
+from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
 

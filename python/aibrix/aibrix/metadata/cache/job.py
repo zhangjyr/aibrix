@@ -27,7 +27,7 @@ from aibrix.batch.job_entity import (
     JobEntityManager,
     k8s_job_to_batch_job,
 )
-from aibrix.metadata.logger import init_logger
+from aibrix.logger import init_logger
 
 # import asyncio
 # If you installed kopf[uvloop], kopf will likely set this up.

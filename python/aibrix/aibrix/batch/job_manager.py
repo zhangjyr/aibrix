@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from aibrix.batch.scheduler import JobScheduler
-from aibrix.metadata.logger import init_logger
+from aibrix.logger import init_logger
 
 from .job_entity import (
     BatchJob,

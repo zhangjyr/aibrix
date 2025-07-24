@@ -17,7 +17,7 @@ from typing import Any, AsyncIterator, Dict, List, Tuple
 
 from aibrix.batch.job_entity import BatchJob
 from aibrix.batch.storage.adapter import BatchStorageAdapter
-from aibrix.metadata.logger import init_logger
+from aibrix.logger import init_logger
 from aibrix.storage import StorageType, create_storage
 
 logger = init_logger(__name__)

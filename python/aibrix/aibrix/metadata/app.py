@@ -21,9 +21,9 @@ from fastapi.responses import JSONResponse
 
 from aibrix.batch import BatchDriver
 from aibrix.batch.job_entity import JobEntityManager
+from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files
 from aibrix.metadata.core.httpx_client import HTTPXClientWrapper
-from aibrix.metadata.logger import init_logger
 from aibrix.metadata.setting import settings
 from aibrix.storage import create_storage
 
@@ -141,7 +141,11 @@ def main():
     )
     args = parser.parse_args()
 
-    logger.info(f"Using {args} to startup {settings.PROJECT_NAME}")
+    global logger
+    logging_basic_config(settings)
+    logger = init_logger(__name__)  # Reset logger
+
+    logger.info(f"Using {args} to startup app", project=settings.PROJECT_NAME)  # type: ignore[call-arg]
     app = build_app(args=args)
     uvicorn.run(app, host=args.host, port=args.port)
 

@@ -14,7 +14,7 @@
 
 from typing import Optional, Tuple
 
-from aibrix.metadata.logger import init_logger
+from aibrix.logger import init_logger
 from aibrix.storage import BaseStorage, StorageType, create_storage
 
 logger = init_logger(__name__)

@@ -17,7 +17,7 @@ from typing import BinaryIO, Optional, TextIO, Union
 
 import redis.asyncio as redis
 
-from .base import BaseStorage, StorageConfig
+from .base import BaseStorage, StorageConfig, StorageType
 from .reader import Reader
 from .utils import ObjectMetadata
 
@@ -54,6 +54,14 @@ class RedisStorage(BaseStorage):
         self.db = db
         self.password = password
         self._redis: Optional[redis.Redis] = None
+
+    def get_type(self) -> StorageType:
+        """Get the type of storage.
+
+        Returns:
+            Type of storage, set to StorageType.REDIS
+        """
+        return StorageType.REDIS
 
     async def _get_redis(self) -> redis.Redis:
         """Get Redis connection, creating it if necessary."""

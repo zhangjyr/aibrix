@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from aibrix.batch.job_entity import BatchJob
 from aibrix.batch.storage.adapter import BatchStorageAdapter
@@ -22,7 +22,7 @@ from aibrix.storage import StorageType, create_storage
 
 logger = init_logger(__name__)
 
-p_storage = None
+p_storage: Optional[BatchStorageAdapter] = None
 
 
 def initialize_storage(storage_type=StorageType.AUTO, params={}):
@@ -44,6 +44,16 @@ def initialize_storage(storage_type=StorageType.AUTO, params={}):
     except Exception as e:
         logger.error(f"Failed to initialize storage: {e}")
         raise
+
+
+def get_storage_type() -> StorageType:
+    """Get the type of storage.
+
+    Returns:
+        Type of storage.
+    """
+    assert p_storage is not None
+    return p_storage.storage.get_type()
 
 
 async def upload_input_data(inputDataFileName: str) -> str:

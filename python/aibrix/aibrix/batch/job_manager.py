@@ -226,17 +226,21 @@ class JobManager:
         completion_window: str,
         meta_data: dict,
         timeout: float = 30.0,
+        initial_state: BatchJobState = BatchJobState.CREATED,
     ) -> str:
         job_spec = BatchJobSpec.from_strings(
             input_file_id, api_endpoint, completion_window, meta_data
         )
-        return await self.create_job_with_spec(session_id, job_spec, timeout)
+        return await self.create_job_with_spec(
+            session_id, job_spec, timeout, initial_state
+        )
 
     async def create_job_with_spec(
         self,
         session_id: str,
         job_spec: BatchJobSpec,
         timeout: float = 30.0,
+        initial_state: BatchJobState = BatchJobState.CREATED,
     ) -> str:
         """
         Async job creation that waits for job ID to be available.
@@ -295,7 +299,7 @@ class JobManager:
             spec=job_spec,
             status=BatchJobStatus(
                 jobID=str(uuid.uuid4()),
-                state=BatchJobState.CREATED,
+                state=initial_state,
                 createdAt=datetime.now(timezone.utc),
             ),
         )
@@ -384,7 +388,7 @@ class JobManager:
             logger.error("Job ID not found in comitted job")
             return
 
-        category = self._categorize_jobs(job)
+        category = self._categorize_jobs(job, first_seen=True)
         category[job_id] = job
 
         # Check if this job resolves a pending creation
@@ -399,8 +403,10 @@ class JobManager:
                 )  # type: ignore[call-arg]
 
         # Add to job schduler if available
+        assert category is self._pending_jobs
         if category is self._pending_jobs and self._job_scheduler:
             created_at: datetime = job.status.created_at
+            logger.info("Add job to scheduler", job_id=job_id)  # type: ignore[call-arg]
             self._job_scheduler.append_job(
                 job_id, created_at.timestamp() + job.spec.completion_window.expires_at()
             )
@@ -502,15 +508,19 @@ class JobManager:
         job = self._pending_jobs[job_id]
         del self._pending_jobs[job_id]
         meta_data = JobMetaInfo(job)
-        meta_data.status.state = BatchJobState.VALIDATING
+        if job.status.state == BatchJobState.CREATED:
+            # Only update state for first validation.
+            meta_data.status.state = BatchJobState.VALIDATING
         self._in_progress_jobs[job_id] = meta_data
 
         try:
+            # [TODO][NOW] This should be moved to job_driver.
+            # We still need to validate job even if it is in progress.
             await meta_data.validate_job()
-            meta_data.status.in_progress_at = datetime.now(timezone.utc)
-            # [TODO][NEXT] Use separate file id
-            meta_data.status.output_file_id = meta_data.job_id
-            meta_data.status.state = BatchJobState.IN_PROGRESS
+            # But we do not update state for in-progress job.
+            if meta_data.status.state == BatchJobState.VALIDATING:
+                meta_data.status.in_progress_at = datetime.now(timezone.utc)
+                meta_data.status.state = BatchJobState.IN_PROGRESS
         except BatchJobError as e:
             logger.error("Job validation failed", job_id=job_id, error=str(e))  # type: ignore[call-arg]
             meta_data.status.state = BatchJobState.FAILED
@@ -652,7 +662,9 @@ class JobManager:
         """
         pass
 
-    def _categorize_jobs(self, job: BatchJob) -> dict[str, BatchJob]:
+    def _categorize_jobs(
+        self, job: BatchJob, first_seen: bool = False
+    ) -> dict[str, BatchJob]:
         """
         This is used to categorize jobs into pending, in progress, and done.
         """
@@ -667,5 +679,8 @@ class JobManager:
             BatchJobState.CANCELED,
         ]:
             return self._done_jobs
+        elif first_seen and self._job_scheduler:
+            # We need to pending jobs to be scheduled to make progress
+            return self._pending_jobs
         else:
             return self._in_progress_jobs

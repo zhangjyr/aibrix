@@ -183,7 +183,7 @@ class JobScheduler:
                 await asyncio.sleep(1)
             if not self._jobs_queue.empty():
                 job_id = self._jobs_queue.get()
-                logger.debug("Job scheduler is scheduling job", job_id=job_id)  # type: ignore[call-arg]
+                logger.info("Job scheduler is scheduling job", job_id=job_id)  # type: ignore[call-arg]
 
             # Every time when popping a job from queue,
             # we check if this job is in active state and we try starting the job.
@@ -214,7 +214,8 @@ class JobScheduler:
             ):
                 idx += 1
 
-            logger.info("Found expired jobs", count=idx)
+            if idx > 0:
+                logger.info("Found expired jobs", count=idx)
             for i in range(idx):
                 # Update job's status to job manager
                 job_id = self._due_jobs_list[i][0]
@@ -231,7 +232,6 @@ class JobScheduler:
         """
         This is a long-running process to check if jobs have expired or not.
         """
-        round_id = 0
         while True:
             start_time = time.time()  # Record start time
             await self.expire_jobs()  # Run the process
@@ -239,8 +239,6 @@ class JobScheduler:
             time_to_next_run = max(
                 0, self.interval - elapsed_time
             )  # Calculate remaining time
-            logger.debug("Job cleanup loop iteration", round_id=round_id)
-            round_id += 1
             await asyncio.sleep(time_to_next_run)  # Wait for the remaining time
 
     async def close(self):

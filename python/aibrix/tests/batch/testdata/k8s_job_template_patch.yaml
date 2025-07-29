@@ -1,0 +1,21 @@
+# Patch for k8s_job_template.yaml to enable local testing with shared volumes
+apiVersion: batch/v1
+kind: Job
+spec:
+  template:
+    spec:
+      containers:
+      - name: batch-worker
+        volumeMounts:
+        - name: shared-storage
+          mountPath: /shared
+        env:
+        - name: STORAGE_TYPE
+          value: "LOCAL"
+        - name: METASTORE_TYPE
+          value: "LOCAL" 
+        - name: LOCAL_STORAGE_ROOT
+          value: "/shared/storage"
+      volumes:
+      - name: shared-storage
+        emptyDir: {}

@@ -16,6 +16,7 @@ from aibrix.batch.storage.batch_storage import (
     StorageType,
     download_output_data,
     finalize_job_output_data,
+    get_storage_type,
     initialize_storage,
     prepare_job_ouput_files,
     read_job_input_info,
@@ -28,6 +29,7 @@ from aibrix.batch.storage.batch_storage import (
 __all__ = [
     "StorageType",
     "initialize_storage",
+    "get_storage_type",
     "upload_input_data",
     "read_job_input_info",
     "read_job_next_request",

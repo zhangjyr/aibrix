@@ -15,16 +15,40 @@ spec:
         app: aibrix-batch
         component: batch-processor
     spec:
-      restartPolicy: Never
+      serviceAccountName: job-reader-sa
+      automountServiceAccountToken: true
+      restartPolicy: OnFailure
       containers:
-      - name: batch-processor
-        image: batch-processor:latest
+      - name: batch-worker
+        image: aibrix/runtime:nightly
+        command:
+          - aibrix_batch_worker
         env:
-        - name: INPUT_FILE_ID
-          value: ""  # Will be filled from BatchJobSpec
-        - name: ENDPOINT
-          value: ""  # Will be filled from BatchJobSpec
-        - name: COMPLETION_WINDOW
-          value: ""  # Will be filled from BatchJobSpec
+        - name: JOB_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['job-name']
+        - name: JOB_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+      - name: llm-engine
+        image: aibrix/vllm-mock:nightly
+        ports:
+          - containerPort: 8000
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /ready
+            port: 8000
+            scheme: HTTP
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        env:
+          - name: MY_POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
   backoffLimit: 3
   activeDeadlineSeconds: 86400  # 24 hours

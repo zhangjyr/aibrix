@@ -18,6 +18,7 @@ from io import BytesIO, StringIO
 from typing import Any, AsyncIterator, BinaryIO, Optional, TextIO, Union
 
 from .reader import Reader
+from .types import StorageType
 from .utils import ObjectMetadata
 
 
@@ -50,6 +51,15 @@ class BaseStorage(ABC):
 
     def __init__(self, config: Optional[StorageConfig] = None):
         self.config = config or StorageConfig()
+
+    @abstractmethod
+    def get_type(self) -> StorageType:
+        """Get the type of storage.
+
+        Returns:
+            Type of storage
+        """
+        pass
 
     @abstractmethod
     async def put_object(

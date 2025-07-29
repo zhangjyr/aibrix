@@ -13,8 +13,8 @@
 # limitations under the License.
 
 import logging
-import sys
 import os
+import sys
 from logging import Logger
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -35,7 +35,9 @@ def logging_basic_config(settings: Optional[AIBrixSettings] = None) -> None:
     # 1. Configure the standard library logging
     handlers: list[logging.Handler] = [logging.StreamHandler(stream=sys.stdout)]
     if active_settings.LOG_PATH is not None:
-        Path(os.path.dirname(active_settings.LOG_PATH)).mkdir(parents=True, exist_ok=True)
+        Path(os.path.dirname(active_settings.LOG_PATH)).mkdir(
+            parents=True, exist_ok=True
+        )
         handlers.append(
             RotatingFileHandler(
                 active_settings.LOG_PATH,

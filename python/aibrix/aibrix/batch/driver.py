@@ -16,15 +16,15 @@ import asyncio
 from typing import Any, Dict, List, Optional
 
 import aibrix.batch.storage as _storage
-from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE
-from aibrix.batch.job_manager import JobManager
-from aibrix.batch.request_proxy import RequestProxy
-from aibrix.batch.scheduler import JobScheduler
-from aibrix.batch.storage.batch_metastore import initialize_batch_metastore
 from aibrix.logger import init_logger
 from aibrix.storage import StorageType
 
+from .constant import DEFAULT_JOB_POOL_SIZE
+from .job_driver import InferenceEngineClient, JobDriver, ProxyInferenceEngineClient
 from .job_entity import JobEntityManager
+from .job_manager import JobManager
+from .scheduler import JobScheduler
+from .storage.batch_metastore import get_metastore_type, initialize_batch_metastore
 
 logger = init_logger(__name__)
 
@@ -35,6 +35,7 @@ class BatchDriver:
         job_entity_manager: Optional[JobEntityManager] = None,
         storage_type: StorageType = StorageType.AUTO,
         metastore_type: StorageType = StorageType.AUTO,
+        llm_engine_endpoint: Optional[str] = None,
     ):
         """
         This is main entrance to bind all components to serve job requests.
@@ -45,12 +46,25 @@ class BatchDriver:
         self._job_manager: JobManager = JobManager(job_entity_manager)
         self._scheduler: Optional[JobScheduler] = None
         self._scheduling_task: Optional[asyncio.Task] = None
-        self._proxy: RequestProxy = RequestProxy(self._job_manager)
+
+        # Initialize inference client with optional LLM engine endpoint
+        inference_client: Optional[InferenceEngineClient] = None
+        if llm_engine_endpoint is not None:
+            inference_client = ProxyInferenceEngineClient(llm_engine_endpoint)
+        self._proxy: JobDriver = JobDriver(self._job_manager, inference_client)
         # Only create jobs_running_loop if JobEntityManager does not have its own sched
         if not job_entity_manager or not job_entity_manager.is_scheduler_enabled():
             self._scheduler = JobScheduler(self._job_manager, DEFAULT_JOB_POOL_SIZE)
             self._job_manager.set_scheduler(self._scheduler)
             self._scheduling_task = asyncio.create_task(self.jobs_running_loop())
+
+        logger.info(
+            "Batch driver initialized",
+            job_entity_manager=True if job_entity_manager else False,
+            job_scheduler=True if self._scheduler else False,
+            storage=_storage.get_storage_type().value,
+            metastore=get_metastore_type().value,
+        )  # type: ignore[call-arg]
 
     @property
     def job_manager(self) -> JobManager:
@@ -73,7 +87,7 @@ class BatchDriver:
             one_job = await self._scheduler.round_robin_get_job()
             if one_job:
                 try:
-                    await self._proxy.execute_queries(one_job)
+                    await self._proxy.execute_job(one_job)
                 except Exception as e:
                     job = self._job_manager.mark_job_failed(one_job)
                     logger.error(

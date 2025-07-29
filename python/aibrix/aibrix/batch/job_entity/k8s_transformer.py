@@ -222,9 +222,9 @@ class BatchJobTransformer:
         conditions = cls._safe_get_attr(k8s_status, "conditions", [])
 
         # Check if job is active (running)
-        active = cls._safe_get_attr(k8s_status, "active", 0)
-        succeeded = cls._safe_get_attr(k8s_status, "succeeded", 0)
-        failed = cls._safe_get_attr(k8s_status, "failed", 0)
+        active: int = cls._safe_get_attr(k8s_status, "active", 0)
+        succeeded: int = cls._safe_get_attr(k8s_status, "succeeded", 0)
+        failed: int = cls._safe_get_attr(k8s_status, "failed", 0)
 
         # Map based on job status
         if succeeded > 0:
@@ -256,7 +256,10 @@ class BatchJobTransformer:
 
         # Try attribute access first
         if hasattr(obj, attr):
-            return getattr(obj, attr)
+            ret = getattr(obj, attr)
+            if ret is None:
+                return default
+            return ret
 
         # Try dict-like access
         if isinstance(obj, dict):

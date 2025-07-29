@@ -19,7 +19,7 @@ from typing import BinaryIO, Optional, TextIO, Union
 import tos
 from tos.exceptions import TosClientError, TosServerError
 
-from aibrix.storage.base import BaseStorage, StorageConfig
+from aibrix.storage.base import BaseStorage, StorageConfig, StorageType
 from aibrix.storage.utils import ObjectMetadata
 
 from .reader import Reader
@@ -52,6 +52,14 @@ class TOSStorage(BaseStorage):
             self.client = tos.TosClientV2(access_key, secret_key, endpoint, region)
         except (TosClientError, TosServerError) as e:
             raise ValueError(f"Failed to create TOS client: {e}")
+
+    def get_type(self) -> StorageType:
+        """Get the type of storage.
+
+        Returns:
+            Type of storage, set to StorageType.TOS
+        """
+        return StorageType.TOS
 
     async def put_object(
         self,

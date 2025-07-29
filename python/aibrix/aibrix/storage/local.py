@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
-from .base import BaseStorage, StorageConfig
+from .base import BaseStorage, StorageConfig, StorageType
 from .reader import Reader
 from .utils import ObjectMetadata, generate_filename
 
@@ -81,6 +81,14 @@ class LocalStorage(BaseStorage):
             ".gz": "application/gzip",
         }
         return content_type_map.get(suffix)
+
+    def get_type(self) -> StorageType:
+        """Get the type of storage.
+
+        Returns:
+            Type of storage, set to StorageType.LOCAL
+        """
+        return StorageType.LOCAL
 
     async def put_object(
         self,

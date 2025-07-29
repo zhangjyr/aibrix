@@ -20,7 +20,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from aibrix.storage.base import BaseStorage, StorageConfig
+from aibrix.storage.base import BaseStorage, StorageConfig, StorageType
 from aibrix.storage.utils import ObjectMetadata
 
 from .reader import Reader
@@ -64,6 +64,14 @@ class S3Storage(BaseStorage):
             self.client.head_bucket(Bucket=bucket_name)
         except ClientError as e:
             raise ValueError(f"Bucket {bucket_name} not accessible: {e}")
+
+    def get_type(self) -> StorageType:
+        """Get the type of storage.
+
+        Returns:
+            Type of storage, set to StorageType.S3
+        """
+        return StorageType.S3
 
     async def put_object(
         self,

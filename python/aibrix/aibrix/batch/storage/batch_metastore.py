@@ -14,6 +14,7 @@
 
 from typing import Optional, Tuple
 
+from aibrix import envs
 from aibrix.logger import init_logger
 from aibrix.storage import BaseStorage, StorageType, create_storage
 
@@ -34,6 +35,9 @@ def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
     """
     global p_metastore
 
+    if storage_type == StorageType.AUTO and envs.STORAGE_REDIS_HOST:
+        storage_type = StorageType.REDIS
+
     # Create new storage instance and wrap with adapter
     try:
         p_metastore = create_storage(storage_type, base_path=".metastore", **params)
@@ -41,6 +45,16 @@ def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
     except Exception as e:
         logger.error(f"Failed to initialize storage: {e}")
         raise
+
+
+def get_metastore_type() -> StorageType:
+    """Get the type of metastore.
+
+    Returns:
+        Type of type of storage that backs metastore
+    """
+    assert p_metastore is not None
+    return p_metastore.get_type()
 
 
 async def set_metadata(key: str, value: str) -> None:

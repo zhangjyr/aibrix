@@ -177,3 +177,90 @@ async def test_batch_driver_integration():
 
         # Clean up temporary file
         Path(temp_path).unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_batch_driver_resumming():
+    """
+    Integration test for the batch driver workflow.
+    Tests job creation, scheduling, execution, and result retrieval.
+    """
+    # Initialize driver without job_entity_manager (use local job management)
+    driver = BatchDriver(
+        storage_type=StorageType.LOCAL, metastore_type=StorageType.LOCAL
+    )
+
+    # Create temporary input file
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".jsonl", delete=False
+    ) as temp_file:
+        temp_path = temp_file.name
+        generate_input_data(10, temp_path)
+
+    try:
+        # 1. Upload batch data and verify it's stored locally
+        upload_id = await driver.upload_job_data(temp_path)
+        assert upload_id is not None
+        print(f"Upload ID: {upload_id}")
+
+        # 2. Create job and verify initial state
+        job_id = await driver.job_manager.create_job(
+            session_id="test-session-integration",
+            input_file_id=str(upload_id),
+            api_endpoint="/v1/chat/completions",
+            completion_window="24h",
+            meta_data={},
+            initial_state=BatchJobState.IN_PROGRESS,
+        )
+        assert job_id is not None
+        print(f"Created job_id: {job_id}")
+
+        job = driver.job_manager.get_job(job_id)
+        assert job is not None
+        print(f"Initial status: {job.status.state}")
+        assert job.status.state == BatchJobState.IN_PROGRESS
+
+        # 3. Wait for job to be scheduled and start processing
+        await asyncio.sleep(5 * EXPIRE_INTERVAL)
+        job = driver.job_manager.get_job(job_id)
+        assert job is not None
+        print(f"Status after scheduling: {job.status.state}")
+        assert job.status.state == BatchJobState.IN_PROGRESS
+        assert job.status.output_file_id is not None
+        assert job.status.error_file_id is not None
+
+        # 4. Wait for job to complete
+        for i in range(10):
+            await asyncio.sleep(1 * EXPIRE_INTERVAL)
+            job = driver.job_manager.get_job(job_id)
+            assert job is not None
+            print(f"Progressing: {job.status.state}")
+            if job.status.state.is_finished():
+                break
+
+        print(f"Final status: {job.status.state}")
+        assert job.status.state == BatchJobState.COMPLETED
+        assert job.status.output_file_id is not None
+        assert job.status.error_file_id is not None
+
+        # 5. Retrieve results and verify they exist
+        results = await driver.retrieve_job_result(job.status.output_file_id)
+        assert results is not None
+        assert len(results) == 10  # Should match num_requests
+        print(f"Retrieved {len(results)} results")
+
+        # 6. Verify results content
+        for i, req_result in enumerate(results):
+            print(f"Result {i}: {req_result}")
+            assert req_result is not None
+
+        # 7. Clean up the job
+        await driver.clear_job(job_id)
+        print(f"Job {job_id} cleaned up")
+
+    finally:
+        # Shutdown driver
+        await driver.close()
+
+        # Clean up temporary file
+        Path(temp_path).unlink(missing_ok=True)

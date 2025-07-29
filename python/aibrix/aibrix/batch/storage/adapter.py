@@ -107,10 +107,10 @@ class BatchStorageAdapter:
         )
         tasks = [
             self.storage.create_multipart_upload(
-                job.status.output_file_id, "application/jsonl"
+                job.status.output_file_id, "application/jsonl", small_parts=True
             ),
             self.storage.create_multipart_upload(
-                job.status.error_file_id, "application/jsonl"
+                job.status.error_file_id, "application/jsonl", small_parts=True
             ),
         ]
         (

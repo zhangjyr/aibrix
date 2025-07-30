@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
-from .base import BaseStorage, StorageConfig, StorageType
+from .base import BaseStorage, PutObjectOptions, StorageConfig, StorageType
 from .reader import Reader
 from .utils import ObjectMetadata, generate_filename
 
@@ -95,8 +95,12 @@ class LocalStorage(BaseStorage):
         data: Union[bytes, str, BinaryIO, TextIO, Reader],
         content_type: Optional[str] = None,
         metadata: Optional[dict[str, str]] = None,
-    ) -> None:
+        options: Optional[PutObjectOptions] = None,
+    ) -> bool:
         """Put an object to local filesystem."""
+        # Validate options (local storage doesn't support advanced options)
+        self._validate_put_options(options)
+
         # Infer content type from file extension if not provided
         if content_type is None:
             content_type = self._infer_content_type(key)
@@ -137,6 +141,8 @@ class LocalStorage(BaseStorage):
             file_etag,
             file_last_modified,
         )
+
+        return True  # Local storage always succeeds
 
     def _write_file(self, path: Path, reader: Reader) -> None:
         """Write data to file (synchronous helper)."""

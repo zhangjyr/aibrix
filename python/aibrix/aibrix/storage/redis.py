@@ -17,7 +17,7 @@ from typing import BinaryIO, Optional, TextIO, Union
 
 import redis.asyncio as redis
 
-from .base import BaseStorage, StorageConfig, StorageType
+from .base import BaseStorage, PutObjectOptions, StorageConfig, StorageType
 from .reader import Reader
 from .utils import ObjectMetadata
 
@@ -102,8 +102,9 @@ class RedisStorage(BaseStorage):
         data: Union[bytes, str, BinaryIO, TextIO, Reader],
         content_type: Optional[str] = None,  # Ignored for Redis
         metadata: Optional[dict[str, str]] = None,  # Ignored for Redis
-    ) -> None:
-        """Put an object to Redis storage.
+        options: Optional[PutObjectOptions] = None,
+    ) -> bool:
+        """Put an object to Redis storage with advanced options.
 
         If key contains "/", creates a Redis list for the parent part.
         For example, "xxx/yyy" will create a list "xxx" and add "yyy" to it,
@@ -114,7 +115,14 @@ class RedisStorage(BaseStorage):
             data: Data to store
             content_type: Ignored for Redis
             metadata: Ignored for Redis
+            options: Advanced options for put operation
+
+        Returns:
+            True if object was stored, False if conditional operation failed
         """
+        # Validate options
+        self._validate_put_options(options)
+
         redis_client = await self._get_redis()
 
         # Convert data to bytes
@@ -130,10 +138,32 @@ class RedisStorage(BaseStorage):
         # Parse hierarchical key
         parent_key, item_key = self._parse_hierarchical_key(key)
 
-        # Store the actual data
-        await redis_client.set(key, data_bytes)
+        # Prepare Redis SET options from PutObjectOptions
+        redis_ex = None
+        redis_px = None
+        redis_nx = False
+        redis_xx = False
 
-        # Store creation timestamp for ordering
+        if options:
+            if options.ttl_seconds is not None:
+                redis_ex = options.ttl_seconds
+            elif options.ttl_milliseconds is not None:
+                redis_px = options.ttl_milliseconds
+
+            redis_nx = options.set_if_not_exists
+            redis_xx = options.set_if_exists
+
+        # Store the actual data with options
+        result = await redis_client.set(
+            key, data_bytes, ex=redis_ex, px=redis_px, nx=redis_nx, xx=redis_xx
+        )
+
+        # Check if the SET operation succeeded
+        if result is None:
+            # Conditional SET failed (NX or XX condition not met)
+            return False
+
+        # Store creation timestamp for ordering (only if SET succeeded)
         timestamp = time.time()
         await redis_client.zadd("timestamps:all", {key: timestamp})
 
@@ -143,6 +173,8 @@ class RedisStorage(BaseStorage):
             await redis_client.sadd(f"{parent_key}:index", item_key)
             # Also track timestamp for hierarchical objects
             await redis_client.zadd(f"timestamps:{parent_key}", {item_key: timestamp})
+
+        return True
 
     async def get_object(
         self,
@@ -459,3 +491,28 @@ class RedisStorage(BaseStorage):
             NotImplementedError: Multipart upload not needed for Redis
         """
         raise NotImplementedError("Multipart upload not needed for Redis storage")
+
+    # Feature Support Methods
+    def is_ttl_supported(self) -> bool:
+        """Check if TTL (Time To Live) is supported.
+
+        Returns:
+            True - Redis supports TTL
+        """
+        return True
+
+    def is_set_if_not_exists_supported(self) -> bool:
+        """Check if conditional SET IF NOT EXISTS is supported.
+
+        Returns:
+            True - Redis supports NX option
+        """
+        return True
+
+    def is_set_if_exists_supported(self) -> bool:
+        """Check if conditional SET IF EXISTS is supported.
+
+        Returns:
+            True - Redis supports XX option
+        """
+        return True

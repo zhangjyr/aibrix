@@ -101,8 +101,63 @@ class TestWorkerS3Integration:
         return "default"
 
     @pytest.fixture
-    def s3_job_template_patch(self, s3_config_available, test_s3_bucket):
-        """Create S3-specific job template patch."""
+    def s3_credentials_secret(
+        self, k8s_client, test_namespace, s3_config_available, test_s3_bucket
+    ):
+        """Create K8s secret with S3 credentials."""
+        import base64
+
+        core_v1 = client.CoreV1Api()
+        secret_name = "aibrix-s3-credentials"
+
+        # Create secret data (K8s expects base64 encoded values)
+        secret_data = {
+            "access-key-id": base64.b64encode(
+                s3_config_available["access_key"].encode()
+            ).decode(),
+            "secret-access-key": base64.b64encode(
+                s3_config_available["secret_key"].encode()
+            ).decode(),
+            "region": base64.b64encode(s3_config_available["region"].encode()).decode(),
+            "bucket-name": base64.b64encode(test_s3_bucket.encode()).decode(),
+        }
+
+        secret = client.V1Secret(
+            metadata=client.V1ObjectMeta(name=secret_name, namespace=test_namespace),
+            data=secret_data,
+            type="Opaque",
+        )
+
+        try:
+            # Delete existing secret if it exists
+            try:
+                core_v1.delete_namespaced_secret(
+                    name=secret_name, namespace=test_namespace
+                )
+            except client.ApiException as e:
+                if e.status != 404:
+                    raise
+
+            # Create the secret
+            core_v1.create_namespaced_secret(namespace=test_namespace, body=secret)
+            logger.info(f"Created K8s secret: {secret_name}")
+
+            yield secret_name
+
+        finally:
+            # Cleanup: delete the secret
+            try:
+                core_v1.delete_namespaced_secret(
+                    name=secret_name, namespace=test_namespace
+                )
+                logger.info(f"Deleted K8s secret: {secret_name}")
+            except client.ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"Failed to cleanup secret {secret_name}: {e}")
+
+    @pytest.fixture
+    def s3_job_template_patch(self, s3_credentials_secret):
+        """Create S3-specific job template patch using K8s secret references."""
         return {
             "apiVersion": "batch/v1",
             "kind": "Job",
@@ -115,19 +170,39 @@ class TestWorkerS3Integration:
                                 "env": [
                                     {
                                         "name": "STORAGE_AWS_ACCESS_KEY_ID",
-                                        "value": s3_config_available["access_key"],
+                                        "valueFrom": {
+                                            "secretKeyRef": {
+                                                "name": s3_credentials_secret,
+                                                "key": "access-key-id",
+                                            }
+                                        },
                                     },
                                     {
                                         "name": "STORAGE_AWS_SECRET_ACCESS_KEY",
-                                        "value": s3_config_available["secret_key"],
+                                        "valueFrom": {
+                                            "secretKeyRef": {
+                                                "name": s3_credentials_secret,
+                                                "key": "secret-access-key",
+                                            }
+                                        },
                                     },
                                     {
                                         "name": "STORAGE_AWS_REGION",
-                                        "value": s3_config_available["region"],
+                                        "valueFrom": {
+                                            "secretKeyRef": {
+                                                "name": s3_credentials_secret,
+                                                "key": "region",
+                                            }
+                                        },
                                     },
                                     {
                                         "name": "STORAGE_AWS_BUCKET",
-                                        "value": test_s3_bucket,
+                                        "valueFrom": {
+                                            "secretKeyRef": {
+                                                "name": s3_credentials_secret,
+                                                "key": "bucket-name",
+                                            }
+                                        },
                                     },
                                     {
                                         "name": "REDIS_HOST",
@@ -157,29 +232,19 @@ class TestWorkerS3Integration:
 
     @pytest.fixture
     def test_input_data(self):
-        """Create test input data for batch job."""
-        return [
-            {
-                "custom_id": "s3-request-1",
-                "method": "POST",
-                "url": "/v1/chat/completions",
-                "body": {
-                    "model": "gpt-3.5-turbo",
-                    "messages": [{"role": "user", "content": "Hello from S3 test"}],
-                },
-            },
-            {
-                "custom_id": "s3-request-2",
-                "method": "POST",
-                "url": "/v1/chat/completions",
-                "body": {
-                    "model": "gpt-3.5-turbo",
-                    "messages": [
-                        {"role": "user", "content": "Testing S3 storage integration"}
-                    ],
-                },
-            },
-        ]
+        """Load test input data from sample_job_input.jsonl."""
+        import json
+
+        sample_file_path = Path(__file__).parent / "testdata" / "sample_job_input.jsonl"
+
+        test_data = []
+        with open(sample_file_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    test_data.append(json.loads(line))
+
+        return test_data
 
     def _merge_yaml_object(self, base, overlay):
         """
@@ -249,23 +314,6 @@ class TestWorkerS3Integration:
                 merged[key] = value
 
         return merged
-
-    # def _deep_merge(self, base_dict, patch_dict):
-    #     """Deep merge two dictionaries."""
-    #     if not isinstance(patch_dict, dict):
-    #         return patch_dict
-
-    #     result = base_dict.copy()
-    #     for key, value in patch_dict.items():
-    #         if (
-    #             key in result
-    #             and isinstance(result[key], dict)
-    #             and isinstance(value, dict)
-    #         ):
-    #             result[key] = self._deep_merge(result[key], value)
-    #         else:
-    #             result[key] = value
-    #     return result
 
     @pytest.mark.asyncio
     async def test_worker_with_s3_and_redis(
@@ -488,8 +536,3 @@ class TestWorkerS3Integration:
 
         except Exception as e:
             logger.error(f"Error verifying S3 outputs: {e}")
-
-    @pytest.mark.skip(reason="Requires S3 credentials and Kubernetes cluster")
-    def test_s3_integration_placeholder(self):
-        """Placeholder for S3 integration tests that require real infrastructure."""
-        pass

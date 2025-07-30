@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import os
 import signal
+import subprocess
 import sys
 import time
 from typing import Optional
@@ -328,6 +329,54 @@ def get_error_details(ex: Exception) -> tuple[str, int | None, str]:
     return (last_frame.filename, last_frame.lineno, last_frame.name)
 
 
+def kill_llm_engine():
+    """Kill the llm process identified by WORKER_VICTIM=1 environment variable."""
+    logger.info("Looking for llm engine with WORKER_VICTIM=1 environment variable...")
+
+    try:
+        # Use grep and awk to find PID with WORKER_VICTIM=1 in environment
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "grep -zla 'WORKER_VICTIM=1' /proc/*/environ 2>/dev/null | awk -F/ '/\/proc\/[0-9]+\/environ/ {print $3}' | sort -n",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        pids = [pid.strip() for pid in result.stdout.strip().split("\n") if pid.strip()]
+
+        if not pids:
+            logger.info("No process found with WORKER_VICTIM=1 environment variable")
+            # # Fallback to pgrep method
+            # logger.info("Falling back to pgrep method...")
+            # result = subprocess.run(
+            #     ["pgrep", "-f", "python"], capture_output=True, text=True
+            # )
+            # pids = result.stdout.strip().split()
+
+            # Filter out current process PID
+            current_pid = os.getpid()
+            pids = [pid for pid in pids if pid and int(pid) != current_pid]
+
+        if not pids:
+            logger.info("No server process found to terminate")
+            return
+
+        # Kill the first server process found
+        server_pid = int(pids[0])
+        logger.info(f"Found server process with PID: {server_pid}. Sending SIGTERM...")
+        os.kill(server_pid, signal.SIGINT)
+        logger.info("SIGTERM sent to server process")
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"Process discovery command failed: {e}")
+    except ProcessLookupError:
+        logger.info("Server process already terminated")
+    except Exception as e:
+        logger.error(f"Error while terminating server process: {e}")
+
+
 async def worker_main() -> int:
     """Main entry point for the batch worker."""
     loop = asyncio.get_running_loop()
@@ -367,6 +416,9 @@ async def worker_main() -> int:
 
     # If the worker task finished on its own
     logger.info("Worker finished normally.")
+
+    kill_llm_engine()
+
     return worker_task.result()
 
 

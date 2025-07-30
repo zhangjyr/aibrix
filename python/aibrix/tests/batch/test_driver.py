@@ -27,7 +27,7 @@ from aibrix.storage import StorageType
 
 
 def generate_input_data(num_requests, local_file):
-    input_name = Path(os.path.dirname(__file__)) / "sample_job_input.jsonl"
+    input_name = Path(os.path.dirname(__file__)) / "testdata" / "sample_job_input.jsonl"
     data = None
     with open(input_name, "r") as file:
         for line in file.readlines():

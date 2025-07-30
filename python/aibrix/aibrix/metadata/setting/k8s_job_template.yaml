@@ -17,6 +17,7 @@ spec:
     spec:
       serviceAccountName: job-reader-sa
       automountServiceAccountToken: true
+      shareProcessNamespace: true # Allow worker to kill llm-engine
       restartPolicy: OnFailure
       containers:
       - name: batch-worker
@@ -36,6 +37,11 @@ spec:
         image: aibrix/vllm-mock:nightly
         ports:
           - containerPort: 8000
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            # Run llm engine. The '|| true' at the end ensures this line never fails.
+            WORKER_VICTIM=1 python app.py || true
         readinessProbe:
           failureThreshold: 3
           httpGet:
@@ -45,10 +51,5 @@ spec:
           periodSeconds: 5
           successThreshold: 1
           timeoutSeconds: 1
-        env:
-          - name: MY_POD_IP
-            valueFrom:
-              fieldRef:
-                fieldPath: status.podIP
   backoffLimit: 3
   activeDeadlineSeconds: 86400  # 24 hours

@@ -23,7 +23,8 @@ import aibrix.batch.storage as storage
 from aibrix.batch.job_entity import BatchJob, BatchJobState
 from aibrix.batch.job_manager import JobManager
 from aibrix.logger import init_logger
-from python.aibrix.aibrix.batch.job_entity.batch_job import BatchJobError, BatchJobErrorCode
+
+from .job_entity import BatchJobError, BatchJobErrorCode
 
 logger = init_logger(__name__)
 
@@ -46,7 +47,7 @@ class ProxyInferenceEngineClient(InferenceEngineClient):
         """Real inference request to LLM engine."""
         url = urljoin(self.base_url, endpoint)
 
-        logger.debug("requesting inference", url=url, body=request_data)
+        logger.debug("requesting inference", url=url, body=request_data)  # type: ignore[call-arg]
 
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json=request_data, timeout=30.0)
@@ -130,9 +131,14 @@ class JobDriver:
             # Skip completed requests
             if line_no < request_id:
                 continue
-            
+
             custom_id = request.get("custom_id")
-            logger.debug("Executing job request", job_id=job_id, request_id=request_id, custom_id=custom_id)
+            logger.debug(
+                "Executing job request",
+                job_id=job_id,
+                request_id=request_id,
+                custom_id=custom_id,
+            )
 
             # Retry inference request up to 3 times
             request_output = None
@@ -164,10 +170,18 @@ class JobDriver:
                     job_id=job_id,
                     request_id=request_id,
                 )
-                response["error"] = BatchJobError(code=BatchJobErrorCode.INFERENCE_FAILED, message=str(last_error))
+                response["error"] = BatchJobError(
+                    code=BatchJobErrorCode.INFERENCE_FAILED, message=str(last_error)
+                )
             else:
                 response["response"] = request_output
 
+            logger.debug(
+                "Got request response",
+                job_id=job_id,
+                request_id=request_id,
+                response=response,
+            )
             await storage.write_job_output_data(job, request_id, [response])
             # Request next id to avoid state becoming FINALIZING by make total > request_id
             logger.debug("Job request executed", job_id=job_id, request_id=request_id)

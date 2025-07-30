@@ -104,14 +104,19 @@ class TestWorkerS3Integration:
     def s3_credentials_secret(
         self, k8s_client, test_namespace, s3_config_available, test_s3_bucket
     ):
-        """Create K8s secret with S3 credentials."""
+        """Create K8s secret with S3 credentials from YAML template."""
         import base64
 
-        core_v1 = client.CoreV1Api()
-        secret_name = "aibrix-s3-credentials"
+        # Load secret template from YAML
+        secret_template_path = Path(__file__).parent / "testdata" / "s3_secret.yaml"
+        with open(secret_template_path, "r") as f:
+            secret_template = yaml.safe_load(f)
 
-        # Create secret data (K8s expects base64 encoded values)
-        secret_data = {
+        core_v1 = client.CoreV1Api()
+        secret_name = secret_template["metadata"]["name"]
+
+        # Populate secret data with actual values (K8s expects base64 encoded values)
+        secret_template["data"] = {
             "access-key-id": base64.b64encode(
                 s3_config_available["access_key"].encode()
             ).decode(),
@@ -122,10 +127,14 @@ class TestWorkerS3Integration:
             "bucket-name": base64.b64encode(test_s3_bucket.encode()).decode(),
         }
 
+        # Update namespace
+        secret_template["metadata"]["namespace"] = test_namespace
+
+        # Create K8s Secret object
         secret = client.V1Secret(
             metadata=client.V1ObjectMeta(name=secret_name, namespace=test_namespace),
-            data=secret_data,
-            type="Opaque",
+            data=secret_template["data"],
+            type=secret_template["type"],
         )
 
         try:
@@ -157,64 +166,13 @@ class TestWorkerS3Integration:
 
     @pytest.fixture
     def s3_job_template_patch(self, s3_credentials_secret):
-        """Create S3-specific job template patch using K8s secret references."""
-        return {
-            "apiVersion": "batch/v1",
-            "kind": "Job",
-            "spec": {
-                "template": {
-                    "spec": {
-                        "containers": [
-                            {
-                                "name": "batch-worker",
-                                "env": [
-                                    {
-                                        "name": "STORAGE_AWS_ACCESS_KEY_ID",
-                                        "valueFrom": {
-                                            "secretKeyRef": {
-                                                "name": s3_credentials_secret,
-                                                "key": "access-key-id",
-                                            }
-                                        },
-                                    },
-                                    {
-                                        "name": "STORAGE_AWS_SECRET_ACCESS_KEY",
-                                        "valueFrom": {
-                                            "secretKeyRef": {
-                                                "name": s3_credentials_secret,
-                                                "key": "secret-access-key",
-                                            }
-                                        },
-                                    },
-                                    {
-                                        "name": "STORAGE_AWS_REGION",
-                                        "valueFrom": {
-                                            "secretKeyRef": {
-                                                "name": s3_credentials_secret,
-                                                "key": "region",
-                                            }
-                                        },
-                                    },
-                                    {
-                                        "name": "STORAGE_AWS_BUCKET",
-                                        "valueFrom": {
-                                            "secretKeyRef": {
-                                                "name": s3_credentials_secret,
-                                                "key": "bucket-name",
-                                            }
-                                        },
-                                    },
-                                    {
-                                        "name": "REDIS_HOST",
-                                        "value": "aibrix-redis-master.aibrix-system.svc.cluster.local",
-                                    },
-                                ],
-                            },
-                        ],
-                    }
-                }
-            },
-        }
+        """Load S3-specific job template patch from YAML file."""
+        patch_file_path = (
+            Path(__file__).parent / "testdata" / "k8s_job_s3_template_patch.yaml"
+        )
+
+        with open(patch_file_path, "r") as f:
+            return yaml.safe_load(f)
 
     @pytest.fixture
     def base_job_template(self):

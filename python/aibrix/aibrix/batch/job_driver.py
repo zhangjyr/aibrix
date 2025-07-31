@@ -19,6 +19,7 @@ from urllib.parse import urljoin
 
 import httpx
 
+import aibrix.batch.constant as constant
 import aibrix.batch.storage as storage
 from aibrix.batch.job_entity import BatchJob, BatchJobState
 from aibrix.batch.job_manager import JobManager
@@ -32,7 +33,7 @@ logger = init_logger(__name__)
 class InferenceEngineClient:
     async def inference_request(self, endpoint: str, request_data):
         """Send inference request to the LLM engine."""
-        await asyncio.sleep(1)  # Simulate processing time
+        await asyncio.sleep(constant.EXPIRE_INTERVAL)  # Simulate processing time
         return request_data
 
 
@@ -85,35 +86,37 @@ class JobDriver:
 
         if not has_temp_files:
             # Step 1: Prepare job output files
+            logger.debug("Temp files not created, creating...", job_id=job_id)
             await storage.prepare_job_ouput_files(job)
 
+        logger.debug("Confirmed temp files", job_id=job_id, temp_output_file_id=job.status.temp_output_file_id, temp_error_file_id=job.status.temp_error_file_id)
+
         # Step 2: Execute worker (core execution)
-        await self.execute_worker(job_id)
+        job = await self.execute_worker(job_id)
 
-        if not has_temp_files:
-            # Step 3: Aggregate outputs
-            job = self._job_manager.get_job(job_id)
-            if job and job.status.state == BatchJobState.FINALIZING:
+        # Step 3: Aggregate outputs
+        if job.status.state == BatchJobState.FINALIZING:
+            if not has_temp_files:
                 await storage.finalize_job_output_data(job)
-                logger.debug("Completed job", job_id=job_id)
-                self.sync_job_status(job_id)
 
-    async def execute_worker(self, job_id):
+            logger.debug("Completed job", job_id=job_id)
+            self.sync_job_status(job_id)
+
+    async def execute_worker(self, job_id) -> BatchJob:
         """
         Execute worker logic: process requests without file preparation or finalization.
         This function only executes step 2 (the core execution loop).
         """
         # Verify job status and get minimum unfinished request id
-        request_id = self._job_manager.get_job_next_request(job_id)
+        job, request_id = self._job_manager.get_job_next_request(job_id)
         if request_id == -1:
             logger.warning(
                 "Job has something wrong with metadata in job manager, nothing left to execute",
                 job_id=job_id,
             )
-            return
+            return job
 
-        job = self._job_manager.get_job(job_id)
-
+        # [TODO][NOW] find a quick way to decide where to start testing using metastore
         if request_id == 0:
             logger.debug("Start processing job", job_id=job_id)
         else:
@@ -121,22 +124,20 @@ class JobDriver:
 
         # Step 2: Execute requests, resumable.
         line_no = request_id
-        async for request in storage.read_job_next_request(job, request_id):
-            logger.debug(
-                "Read job request, checking completion status",
-                job_id=job_id,
-                line=line_no,
-                next_unfinished=request_id,
-            )
-            # Skip completed requests
-            if line_no < request_id:
-                continue
+        async for request in storage.read_job_next_request(job, line_no):
+            # Extract the request index from the locked request
+            next_line_no = request.pop("_request_index", line_no)
+            while line_no < next_line_no:
+                # sync completion status in job_manager and get next request id
+                job = self.sync_job_status(job_id, request_id)
+                job,request_id = self._job_manager.get_job_next_request(job_id)
 
             custom_id = request.get("custom_id")
             logger.debug(
                 "Executing job request",
                 job_id=job_id,
-                request_id=request_id,
+                line=line_no,
+                next_unfinished=request_id,
                 custom_id=custom_id,
             )
 
@@ -161,9 +162,10 @@ class JobDriver:
 
             response = {
                 "id": uuid.uuid4().hex[:5],
+                "error": None,
+                "response": None,
+                "custom_id": custom_id,
             }
-            if custom_id:
-                response["custom_id"] = custom_id
             if last_error is not None:
                 logger.error(
                     f"All inference attempts failed after 3 retries: {last_error}",
@@ -174,7 +176,11 @@ class JobDriver:
                     code=BatchJobErrorCode.INFERENCE_FAILED, message=str(last_error)
                 )
             else:
-                response["response"] = request_output
+                response["response"] = {
+                    "status_code": 200,
+                    "request_id": f"{job_id}-{request_id}",
+                    "body": request_output,
+                }
 
             logger.debug(
                 "Got request response",
@@ -182,12 +188,12 @@ class JobDriver:
                 request_id=request_id,
                 response=response,
             )
-            await storage.write_job_output_data(job, request_id, [response])
-            # Request next id to avoid state becoming FINALIZING by make total > request_id
+            # Write single output and unlock the request
+            await storage.write_job_output_data(job, request_id, response)
+
             logger.debug("Job request executed", job_id=job_id, request_id=request_id)
             job = self.sync_job_status(job_id, request_id)
-
-            request_id = self._job_manager.get_job_next_request(job_id)
+            job, request_id = self._job_manager.get_job_next_request(job_id)
             line_no += 1
 
         job = self.sync_job_status(
@@ -199,6 +205,7 @@ class JobDriver:
             total=job.status.request_counts.total if job else None,
             state=job.status.state.value if job else None,
         )
+        return job
 
     def store_output(self, output_id, request_id, result):
         """

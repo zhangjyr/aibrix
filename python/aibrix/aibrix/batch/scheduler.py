@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Optional
 
-from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE, EXPIRE_INTERVAL
+import aibrix.batch.constant as constant
 from aibrix.logger import init_logger
 
 # JobManager will be passed as parameter to avoid circular import
@@ -131,7 +131,7 @@ class JobScheduler:
         self,
         job_manager,
         pool_size,
-        cc_controller=BasicCongestionControl(DEFAULT_JOB_POOL_SIZE),
+        cc_controller=BasicCongestionControl(constant.DEFAULT_JOB_POOL_SIZE),
         policy=SchedulePolicy.FIFO,
     ):
         """
@@ -141,7 +141,7 @@ class JobScheduler:
         self._inactive_jobs are jobs that are already invalid.
         """
         self._job_manager = job_manager
-        self.interval = EXPIRE_INTERVAL
+        self.interval = constant.EXPIRE_INTERVAL
         self._jobs_queue = queue.Queue()
         self._inactive_jobs = set()
         self._due_jobs_list = []
@@ -180,7 +180,7 @@ class JobScheduler:
         if self._policy == SchedulePolicy.FIFO:
             if self._jobs_queue.empty():
                 logger.debug("Job scheduler is waiting jobs coming")
-                await asyncio.sleep(1)
+                await asyncio.sleep(self.interval)
             if not self._jobs_queue.empty():
                 job_id = self._jobs_queue.get()
                 logger.info("Job scheduler is scheduling job", job_id=job_id)  # type: ignore[call-arg]

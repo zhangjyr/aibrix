@@ -39,11 +39,14 @@ class JobAnnotationKey(str, Enum):
     ENDPOINT = f"{JOB_ANNOTATION_PREFIX}endpoint"
     COMPLETION_WINDOW = f"{JOB_ANNOTATION_PREFIX}completion-window"
     METADATA_PREFIX = f"{JOB_ANNOTATION_PREFIX}metadata."
+    OUTPUT_FILE_ID = f"{JOB_ANNOTATION_PREFIX}output-file-id"
+    TEMP_OUTPUT_FILE_ID = f"{JOB_ANNOTATION_PREFIX}temp-output-file-id"
+    ERROR_FILE_ID = f"{JOB_ANNOTATION_PREFIX}error-file-id"
+    TEMP_ERROR_FILE_ID = f"{JOB_ANNOTATION_PREFIX}temp-error-file-id"
 
 
 class BatchJobTransformer:
     """Helper class to transform Kubernetes Job objects to BatchJob instances."""
-
     @classmethod
     def from_k8s_job(cls, k8s_job: Any) -> BatchJob:
         """
@@ -75,7 +78,7 @@ class BatchJobTransformer:
         type_meta = cls._extract_type_meta(k8s_job)
 
         # Extract or create BatchJobStatus
-        status = cls._extract_batch_job_status(k8s_job, spec)
+        status = cls._extract_batch_job_status(k8s_job, spec, annotations)
 
         return BatchJob(
             sessionID=session_id,
@@ -173,7 +176,7 @@ class BatchJobTransformer:
 
     @classmethod
     def _extract_batch_job_status(
-        cls, k8s_job: Any, spec: BatchJobSpec
+        cls, k8s_job: Any, spec: BatchJobSpec, annotations: Dict[str, str]
     ) -> BatchJobStatus:
         """Extract or create BatchJobStatus from Kubernetes job."""
         # Extract job status information
@@ -185,6 +188,12 @@ class BatchJobTransformer:
 
         # Map Kubernetes job phase to BatchJobState
         state = cls._map_k8s_phase_to_batch_state(k8s_status)
+
+        # Map file ids
+        output_file_id = annotations.get(JobAnnotationKey.OUTPUT_FILE_ID.value)
+        temp_output_file_id = annotations.get(JobAnnotationKey.TEMP_OUTPUT_FILE_ID.value)
+        error_file_id = annotations.get(JobAnnotationKey.ERROR_FILE_ID.value)
+        temp_error_file_id = annotations.get(JobAnnotationKey.TEMP_ERROR_FILE_ID.value)
 
         # Extract creation timestamp
         creation_timestamp = cls._convert_timestamp(
@@ -209,6 +218,10 @@ class BatchJobTransformer:
         return BatchJobStatus(
             jobID=job_id,
             state=state,
+            outputFileID=output_file_id,
+            tempOutputFileID=temp_output_file_id,
+            errorFileID=error_file_id,
+            tempErrorFileID=temp_error_file_id,
             createdAt=creation_timestamp,
             inProgressAt=start_time,
             finalizingAt=completion_time,

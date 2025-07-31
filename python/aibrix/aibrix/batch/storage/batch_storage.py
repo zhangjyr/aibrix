@@ -105,17 +105,17 @@ async def prepare_job_ouput_files(job: BatchJob) -> None:
 
 
 async def write_job_output_data(
-    job: BatchJob, start_index: int, output_list: List[Dict[str, Any]]
+    job: BatchJob, request_index: int, output_data: Dict[str, Any]
 ) -> None:
-    """Write job results to storage.
+    """Write job result to storage and unlock the request.
 
     Args:
-        job_id: Job identifier
-        start_index: Starting index for the results
-        output_list: List of result dictionaries
+        job: BatchJob object
+        request_index: Index of the request being processed
+        output_data: Single result dictionary
     """
     assert p_storage is not None
-    await p_storage.write_job_output_data(job, start_index, output_list)
+    await p_storage.write_job_output_data(job, request_index, output_data)
 
 
 async def finalize_job_output_data(job: BatchJob) -> None:

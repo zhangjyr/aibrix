@@ -21,7 +21,7 @@ from aibrix.batch.job_entity import BatchJob
 from aibrix.logger import init_logger
 from aibrix.storage.base import BaseStorage
 
-from .batch_metastore import delete_metadata, get_metadata, set_metadata
+from .batch_metastore import delete_metadata, get_metadata, lock_request, unlock_request
 
 logger = init_logger(__name__)
 
@@ -71,14 +71,16 @@ class BatchStorageAdapter:
     async def read_job_next_input_data(
         self, job: BatchJob, start_index: int
     ) -> AsyncIterator[Dict[str, Any]]:
-        """Read job input data line by line.
+        """Read job input data line by line with request locking.
 
         Args:
             job: BatchJob
+            start_index: Starting line index
 
         Returns:
-            AsyncIterator of lines
+            AsyncIterator of lines that were successfully locked for processing
         """
+        idx = start_index
         # Use 'async for' to iterate and 'yield' each item.
         async for line in self.storage.readline_iter(
             job.spec.input_file_id, start_index
@@ -86,7 +88,29 @@ class BatchStorageAdapter:
             line = line.strip()
             if len(line) == 0:
                 continue
-            yield json.loads(line)
+
+            # Try to lock this request before processing
+            lock_key = self._get_request_meta_output_key(job, idx)
+            try:
+                # Try to acquire lock with 1 hour expiration
+                locked = await lock_request(lock_key, expiration_seconds=3600)
+            except Exception as e:
+                # Lock operation failed (should not happen with return False requirement)
+                logger.warning(f"Failed to lock request {idx} for job {job.job_id}: {e}")
+                locked = True
+
+            if locked:
+                # Successfully locked, yield the request data
+                request_data = json.loads(line)
+                request_data["_request_index"] = idx  # Add index for tracking
+                yield request_data
+            else:
+                # Request already locked by another worker, skip it
+                logger.debug(
+                    f"Skipping already locked request {idx} for job {job.job_id}"
+                )
+
+            idx += 1
 
     async def prepare_job_ouput_files(self, job: BatchJob) -> None:
         """Get job output file id.
@@ -119,14 +143,14 @@ class BatchStorageAdapter:
         ) = await asyncio.gather(*tasks)
 
     async def write_job_output_data(
-        self, job: BatchJob, start_index: int, output_list: List[Dict[str, Any]]
+        self, job: BatchJob, request_index: int, output_data: Dict[str, Any]
     ) -> None:
-        """Write job results to storage.
+        """Write job result to storage and unlock the request.
 
         Args:
-            job_id: Job identifier
-            start_index: Starting index for the results
-            output_list: List of result dictionaries
+            job: BatchJob object
+            request_index: Index of the request being processed
+            output_data: Single result dictionary
         """
         assert (
             job.status.output_file_id
@@ -134,26 +158,25 @@ class BatchStorageAdapter:
             and job.status.temp_output_file_id
             and job.status.temp_error_file_id
         )
-        for i, result_data in enumerate(output_list):
-            idx = start_index + i
-            json_str = json.dumps(result_data) + "\n"
-            is_error = "error" in result_data
-            etag = await self.storage.upload_part(
-                job.status.error_file_id if is_error else job.status.output_file_id,
-                job.status.temp_error_file_id
-                if is_error
-                else job.status.temp_output_file_id,
-                idx,
-                json_str,
-            )
-            # Store metadata
-            await set_metadata(
-                self._get_request_meta_output_key(job, idx),
-                self._get_request_meta_output_val(is_error, etag),
-            )
+
+        json_str = json.dumps(output_data) + "\n"
+        is_error = "error" in output_data and output_data["error"] is not None
+        etag = await self.storage.upload_part(
+            job.status.error_file_id if is_error else job.status.output_file_id,
+            job.status.temp_error_file_id
+            if is_error
+            else job.status.temp_output_file_id,
+            request_index,
+            json_str,
+        )
+
+        # Unlock the request by setting completion status
+        unlock_key = self._get_request_meta_output_key(job, request_index)
+        completion_status = self._get_request_meta_output_val(is_error, etag)
+        await unlock_request(unlock_key, completion_status)
 
         logger.debug(
-            f"Stored {len(output_list)} results for job {job.job_id} starting at index {start_index}"
+            f"Stored result for job {job.job_id} request {request_index}, status: {completion_status}"
         )
 
     async def finalize_job_output_data(self, job: BatchJob) -> None:
@@ -236,7 +259,7 @@ class BatchStorageAdapter:
             logger.error(f"Failed to delete data for job {file_id}: {e}")
 
     def _get_request_meta_output_key(self, job: BatchJob, idx: int) -> str:
-        return f"batch:{job.job_id}:output:{idx}"
+        return f"batch:{job.job_id}:done/{idx}"
 
     def _get_request_meta_output_val(self, is_error: bool, etag: str) -> str:
         return f"{'error' if is_error else 'output'}:{etag}"

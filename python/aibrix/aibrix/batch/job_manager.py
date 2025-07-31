@@ -17,7 +17,7 @@ import copy
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from aibrix.batch.scheduler import JobScheduler
 from aibrix.logger import init_logger
@@ -532,7 +532,7 @@ class JobManager:
 
         return True
 
-    def get_job_next_request(self, job_id) -> int:
+    def get_job_next_request(self, job_id) -> Tuple[BatchJob, int]:
         request_id = -1
         if job_id not in self._in_progress_jobs:
             logger.info("Job has not been scheduled yet", job_id=job_id)  # type: ignore[call-arg]
@@ -541,7 +541,7 @@ class JobManager:
         job = self._in_progress_jobs[job_id]
         assert isinstance(job, JobMetaInfo)
         meta_data: JobMetaInfo = job
-        return meta_data.next_request_id()
+        return job, meta_data.next_request_id()
 
     def get_job_endpoint(self, job_id) -> str:
         if job_id in self._pending_jobs:

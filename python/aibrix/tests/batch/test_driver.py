@@ -20,11 +20,12 @@ from pathlib import Path
 
 import pytest
 
-from aibrix.batch.constant import EXPIRE_INTERVAL
+import aibrix.batch.constant as constant
 from aibrix.batch.driver import BatchDriver
 from aibrix.batch.job_entity import BatchJobState
 from aibrix.storage import StorageType
 
+constant.EXPIRE_INTERVAL = 0.1
 
 def generate_input_data(num_requests, local_file):
     input_name = Path(os.path.dirname(__file__)) / "testdata" / "sample_job_input.jsonl"
@@ -134,7 +135,7 @@ async def test_batch_driver_integration():
         assert job.status.state == BatchJobState.CREATED
 
         # 3. Wait for job to be scheduled and start processing
-        await asyncio.sleep(5 * EXPIRE_INTERVAL)
+        await asyncio.sleep(3 * constant.EXPIRE_INTERVAL)
         job = driver.job_manager.get_job(job_id)
         assert job is not None
         print(f"Status after scheduling: {job.status.state}")
@@ -143,8 +144,8 @@ async def test_batch_driver_integration():
         assert job.status.error_file_id is not None
 
         # 4. Wait for job to complete
-        for i in range(10):
-            await asyncio.sleep(1 * EXPIRE_INTERVAL)
+        while True:
+            await asyncio.sleep(1 * constant.EXPIRE_INTERVAL)
             job = driver.job_manager.get_job(job_id)
             assert job is not None
             print(f"Progressing: {job.status.state}")
@@ -221,7 +222,7 @@ async def test_batch_driver_resumming():
         assert job.status.state == BatchJobState.IN_PROGRESS
 
         # 3. Wait for job to be scheduled and start processing
-        await asyncio.sleep(5 * EXPIRE_INTERVAL)
+        await asyncio.sleep(3 * constant.EXPIRE_INTERVAL)
         job = driver.job_manager.get_job(job_id)
         assert job is not None
         print(f"Status after scheduling: {job.status.state}")
@@ -230,8 +231,8 @@ async def test_batch_driver_resumming():
         assert job.status.error_file_id is not None
 
         # 4. Wait for job to complete
-        for i in range(10):
-            await asyncio.sleep(1 * EXPIRE_INTERVAL)
+        while True:
+            await asyncio.sleep(1 * constant.EXPIRE_INTERVAL)
             job = driver.job_manager.get_job(job_id)
             assert job is not None
             print(f"Progressing: {job.status.state}")

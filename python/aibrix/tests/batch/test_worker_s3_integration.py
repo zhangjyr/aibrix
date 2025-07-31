@@ -26,6 +26,7 @@ import yaml
 from kubernetes import client, config
 
 from aibrix.logger import init_logger
+from aibrix.storage.types import StorageType
 
 logger = init_logger(__name__)
 
@@ -292,13 +293,25 @@ class TestWorkerS3Integration:
 
         # Merge base template with S3 patch
         job_spec = self._merge_yaml_object(base_job_template, s3_job_template_patch)
-        print(json.dumps(job_spec, indent=4))
         job_spec["metadata"]["name"] = job_name
         job_spec["metadata"]["annotations"] = {
             "batch.job.aibrix.ai/input-file-id": input_file_id,
             "batch.job.aibrix.ai/endpoint": "/v1/chat/completions",
             "batch.job.aibrix.ai/completion-window": "24h",
         }
+
+        # Emulate job_driver behavior and create tempfiles
+        import aibrix.batch.storage as _storage
+        from aibrix.batch.job_entity import BatchJobTransformer
+        job = BatchJobTransformer.from_k8s_job(job_spec)
+        _storage.initialize_storage(StorageType.S3, {
+            "bucket_name": test_s3_bucket
+        })
+        await _storage.prepare_job_ouput_files(job)
+        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/output-file-id"] = job.status.output_file_id
+        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/temp-output-file-id"] = job.status.temp_output_file_id
+        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/error-file-id"] = job.status.error_file_id
+        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/temp-error-file-id"] = job.status.temp_error_file_id
 
         # Upload test input data to S3
         session = boto3.Session()
@@ -362,7 +375,7 @@ class TestWorkerS3Integration:
 
             # Verify S3 outputs exist
             await self._verify_s3_outputs(
-                s3_client, test_s3_bucket, input_file_id, len(test_input_data)
+                s3_client, test_s3_bucket, job.status.temp_output_file_id, len(test_input_data)
             )
 
             logger.info("S3 integration test completed successfully!")
@@ -443,54 +456,42 @@ class TestWorkerS3Integration:
             logger.error(f"Failed to get S3 pod details: {e}")
 
     async def _verify_s3_outputs(
-        self, s3_client, bucket, input_file_id, expected_count
+        self, s3_client, bucket, temp_output_file_id, expected_count
     ):
         """Verify that output files were created in S3."""
 
-        try:
-            # Check for output files in S3
-            output_prefix = f"batch-output/{input_file_id}"
-            response = s3_client.list_objects_v2(Bucket=bucket, Prefix=output_prefix)
+        # Check for output files in S3
+        output_prefix = f".multipart/{temp_output_file_id}/" # See BaseStorage::_multipart_upload_key
+        response = s3_client.list_objects_v2(Bucket=bucket, Prefix=output_prefix)
 
-            if "Contents" not in response:
-                logger.warning(
-                    "No output files found in S3, checking alternative paths..."
-                )
+        assert "Contents" in response
+        assert len(response['Contents']) == expected_count + 1 # Including .multipart metadata
+        logger.info(f"Found {len(response['Contents'])} output files in S3:")
 
-                # Try different possible output paths
-                for prefix in [
-                    f"output/{input_file_id}",
-                    f"results/{input_file_id}",
-                    input_file_id,
-                ]:
-                    alt_response = s3_client.list_objects_v2(
-                        Bucket=bucket, Prefix=prefix
-                    )
-                    if "Contents" in alt_response:
-                        logger.info(f"Found output files under prefix: {prefix}")
-                        response = alt_response
-                        break
+        for obj in response["Contents"]:
+            logger.info("Loading request output", key=obj['Key'], size=obj['Size']) # type:ignore[call-arg]
 
-            if "Contents" in response:
-                logger.info(f"Found {len(response['Contents'])} output files in S3:")
-                for obj in response["Contents"]:
-                    logger.info(f"  - {obj['Key']} (size: {obj['Size']} bytes)")
+            #check file content
+            content = s3_client.get_object(
+                Bucket=bucket, Key=obj["Key"]
+            )
+            raw_output = content["Body"].read().decode("utf-8")
+            logger.info("Loaded request output", key=obj['Key'], output=raw_output) # type:ignore[call-arg]
+            # Skip metadata
+            if obj['Key'].endswith('/metadata'):
+                continue
+            output = json.loads(raw_output)
+            assert "id" in output
+            assert "custom_id" in output
+            assert "response" in output
 
-                    # Optionally check file content
-                    if obj["Key"].endswith(".jsonl"):
-                        try:
-                            content = s3_client.get_object(
-                                Bucket=bucket, Key=obj["Key"]
-                            )
-                            body = content["Body"].read().decode("utf-8")
-                            lines = [line for line in body.split("\n") if line.strip()]
-                            logger.info(f"  Output file has {len(lines)} lines")
-                        except Exception as e:
-                            logger.warning(f"Could not read output file content: {e}")
-            else:
-                logger.warning(
-                    "No output files found in S3 - job may have used different storage path"
-                )
+            response = output["response"]
+            assert "status_code" in response
+            assert "request_id" in response
+            assert "body" in response
 
-        except Exception as e:
-            logger.error(f"Error verifying S3 outputs: {e}")
+            body = response["body"]
+            assert "id" in body
+            assert "model" in body
+            assert "object" in body
+        

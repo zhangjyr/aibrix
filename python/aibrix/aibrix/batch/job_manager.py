@@ -36,17 +36,17 @@ from .job_entity import (
 from .storage import read_job_input_info
 
 
-# Custom exceptions for job creation
-class JobCreationError(Exception):
-    """Base exception for job creation errors."""
-
+# Custom exceptions for job manager
+class JobManagerError(Exception):
+    """Base exception for job manager errors."""
     pass
 
+class JobUnexpectedStateError(JobManagerError):
+    """Job in unexpcted status"""
 
-class JobCreationTimeoutError(JobCreationError):
-    """Exception raised when job creation times out."""
-
-    pass
+    def __init__(self, message: str, state: Optional[BatchJobState]):
+        super().__init__(message)
+        self.state = state
 
 
 @dataclass
@@ -82,8 +82,9 @@ class JobMetaInfo(BatchJob):
             status=job.status,
         )
         self._async_lock = asyncio.Lock()
-        self._current_request_id: int = (
-            0  # request_id < _current_request_id are all completed.
+        self._next_request_id: int = 0
+        self._min_unexecuted_id: int = (
+            0  # request_id < _min_unexecuted_id are all completed.
         )
         self._no_total: bool = job.status.request_counts.total == 0
         # Initialize progress bits based on total request count
@@ -94,6 +95,15 @@ class JobMetaInfo(BatchJob):
     def set_request_executed(self, req_id):
         # This marks the request successfully executed.
         self._request_progress_bits[req_id] = True
+        # Check if self._min_unexecuted_id need to be updated
+        if req_id != self._min_unexecuted_id:
+            return
+        # Update self._min_unexecuted_id
+        for i in range(self._min_unexecuted_id, self.status.request_counts.total):
+            if self._request_progress_bits[i]:
+                self._min_unexecuted_id = i + 1
+            else:
+                break
 
     def get_request_bit(self, req_id):
         return self._request_progress_bits[req_id]
@@ -108,30 +118,33 @@ class JobMetaInfo(BatchJob):
         """
         if req_id == self.status.request_counts.total:
             self.status.request_counts.total -= 1  # Fix total count
-            self.status.finalizing_at = datetime.now(timezone.utc)
-            self.status.state = BatchJobState.FINALIZING
-            return
-
-        if not self._request_progress_bits[req_id]:
+            self._no_total = False
+        elif not self._request_progress_bits[req_id]:
             self.set_request_executed(req_id)
             if failed:
                 self.status.request_counts.failed += 1
             else:
                 self.status.request_counts.completed += 1
-            if (
-                not self._no_total
-                and self.status.request_counts.completed
-                + self.status.request_counts.failed
-                == self.status.request_counts.total
-            ):
-                self.status.finalizing_at = datetime.now(timezone.utc)
-                self.status.state = BatchJobState.FINALIZING
 
-    def next_request_id(self):
+        # Test all done
+        if (
+            not self._no_total
+            and self.status.request_counts.completed
+            + self.status.request_counts.failed
+            == self.status.request_counts.total
+        ):
+            self.status.finalizing_at = datetime.now(timezone.utc)
+            self.status.state = BatchJobState.FINALIZING
+
+    def next_request_id(self) -> int:
         """
-        Returns the next request for inference. Due to the propobility
+        Returns the next request_id for inference. Due to the propobility
         that some requests are failed, this returns a request that
-        are not marked as executed.
+        are not marked as executed. We used round robin touch all requests
+        first and then start another round.
+
+        Returns:
+            int: next_request_id or -1 if job is done
         """
         if (
             not self._no_total
@@ -140,21 +153,25 @@ class JobMetaInfo(BatchJob):
         ):
             return -1
 
-        req_id = self._current_request_id
-        assert self._no_total or req_id != self.status.request_counts.total
+        req_id = self._next_request_id
+        # If total has confirmed and not all request executed, start next round.
+        if not self._no_total and req_id == self.status.request_counts.total:
+            req_id = self._min_unexecuted_id
 
+        # In case total has not confirmed, expland _request_progress_bits if necessary.
         if req_id >= len(self._request_progress_bits):
             self._request_progress_bits.append(False)
+
+        # Skip executed requests.
         while self._request_progress_bits[req_id]:
             req_id += 1
             if not self._no_total and req_id == self.status.request_counts.total:
-                return -1
+                req_id = self._min_unexecuted_id
             if req_id >= len(self._request_progress_bits):
                 self._request_progress_bits.append(False)
 
-        # Mark self._current_request_id, requests before self._current_request_id are all completed
-        # and don't need to retry.
-        self._current_request_id = req_id
+        # Update _next_request_id
+        self._next_request_id = req_id
         # Update launched request count
         if req_id >= self.status.request_counts.launched:
             self.status.request_counts.launched = req_id + 1
@@ -532,17 +549,6 @@ class JobManager:
 
         return True
 
-    def get_job_next_request(self, job_id) -> Tuple[BatchJob, int]:
-        request_id = -1
-        if job_id not in self._in_progress_jobs:
-            logger.info("Job has not been scheduled yet", job_id=job_id)  # type: ignore[call-arg]
-            return request_id
-
-        job = self._in_progress_jobs[job_id]
-        assert isinstance(job, JobMetaInfo)
-        meta_data: JobMetaInfo = job
-        return job, meta_data.next_request_id()
-
     def get_job_endpoint(self, job_id) -> str:
         if job_id in self._pending_jobs:
             job = self._pending_jobs[job_id]
@@ -553,21 +559,35 @@ class JobManager:
             return ""
         return str(job.spec.endpoint)
 
-    def mark_job_progress(self, job_id, executed_requests) -> Optional[BatchJob]:
+    def mark_job_progress(self, job_id: str, req_id: int) -> Tuple[BatchJob, int]:
         """
-        This is used to sync job's progress, called by execution proxy.
+        This is used to sync job's progress, called by job driver.
         It is guaranteed that each request is executed at least once.
-        """
-        if job_id not in self._in_progress_jobs:
-            logger.info("Job has not started yet", job_id=job_id)  # type: ignore[call-arg]
-            return None
 
-        job = self._in_progress_jobs[job_id]
-        assert isinstance(job, JobMetaInfo)
-        meta_data: JobMetaInfo = job
+        Raises:
+            JobUnexpectedStateError: If job is not in progress.
+        """
+        meta_data = self._meta_from_in_progress_job(job_id)
+        if meta_data is None:
+            return None, -1
+
+        if req_id < 0 or req_id > meta_data.status.request_counts.total:
+            raise ValueError(f"invalide request_id: {req_id}")
+
+        meta_data.complete_one_request(req_id)
+        return meta_data, meta_data.next_request_id
+
+    def mark_jobs_progresses(self, job_id, executed_requests) -> BatchJob:
+        """
+        This is the batch operation to sync jobs' progresses, called by job driver.
+        It is guaranteed that each request is executed at least once.
+
+        Raises:
+            JobUnexpectedStateError: If job is not in progress.
+        """
+        meta_data = self._meta_from_in_progress_job(job_id)
 
         request_len = meta_data.status.request_counts.total
-
         for req_id in executed_requests:
             if req_id < 0 or req_id > request_len:
                 logger.error(  # type: ignore[call-arg]
@@ -578,54 +598,83 @@ class JobManager:
                 )
                 continue
             meta_data.complete_one_request(req_id)
-
-        self._in_progress_jobs[job_id] = meta_data
+        
         return meta_data
 
-    def mark_job_done(self, job_id: str) -> Optional[BatchJob]:
+    def get_job_next_request(self, job_id) -> Tuple[BatchJob, int]:
+        """
+        Get next request id to execute, see JobMetaInfo::next_request_id for details
+
+        Returns:
+            tuple: (job, next_request_id) or (job, -1) if job is done
+
+        Raises:
+            JobUnexpectedStateError: If job is not in progress.
+        """
+        meta_data = self._meta_from_in_progress_job(job_id)
+        return meta_data, meta_data.next_request_id()
+
+    def mark_job_progress_and_get_next_request(self, job_id: str, req_id: int) -> Tuple[BatchJob, int]:
+        """
+        This is used to sync job's progress, called by execution proxy.
+        It is guaranteed that each request is executed at least once.
+
+        Returns:
+            tuple: (job, next_request_id) or (job, -1) if job is done
+
+        Raises:
+            JobUnexpectedStateError: If job is not in progress.
+        """
+        meta_data = self._meta_from_in_progress_job(job_id)
+
+        meta_data.complete_one_request(req_id)
+        return meta_data, meta_data.next_request_id()
+    
+    def mark_job_total(self, job_id, total_requests) -> BatchJob:
+        """
+        This is used to set job's total requests when stream reader sees the end of the request.
+
+        Raises:
+            JobUnexpectedStateError: If job is not in progress.
+        """
+        return self.mark_job_progress(job_id, total_requests + 1)
+
+    def mark_job_done(self, job_id: str) -> BatchJob:
         """
         Mark job done.
-        """
-        if job_id not in self._in_progress_jobs:
-            logger.error(
-                "Unexpected job queue", job_id=job_id, queue="_in_progress_jobs"
-            )  # type: ignore[call-arg]
-            return None
 
-        job = self._in_progress_jobs[job_id]
-        if job.status.state != BatchJobState.FINALIZING:
-            logger.error(
-                "Unexpected job status", job_id=job_id, status=job.status.state.value
-            )  # type: ignore[call-arg]
-            return job
+        Raises:
+            JobUnexpectedStateError: If job is not in progress and not finalizing.
+        """
+        meta_data = self._meta_from_in_progress_job(job_id)
+
+        if meta_data.status.state != BatchJobState.FINALIZING:
+            raise JobUnexpectedStateError("Job is not in finalizing state, current state", meta_data.status.state)
 
         del self._in_progress_jobs[job_id]
-        self._done_jobs[job_id] = job
-        job.status.completed_at = datetime.now(timezone.utc)
-        job.status.state = BatchJobState.COMPLETED
+        self._done_jobs[job_id] = meta_data
+        meta_data.status.completed_at = datetime.now(timezone.utc)
+        meta_data.status.state = BatchJobState.COMPLETED
         logger.info("Job is completed", job_id=job_id)  # type: ignore[call-arg]
 
-        return job
+        return meta_data
 
     def mark_job_failed(self, job_id: str) -> Optional[BatchJob]:
         """
         Mark job failed.
+
+        Raises:
+            JobUnexpectedStateError: If job is not in progress.
         """
-        if job_id not in self._in_progress_jobs:
-            logger.error(
-                "Unexpected job queue", job_id=job_id, queue="_in_progress_jobs"
-            )  # type: ignore[call-arg]
-            return None
+        meta_data = self._meta_from_in_progress_job(job_id)
 
-        job = self._in_progress_jobs[job_id]
         del self._in_progress_jobs[job_id]
-
-        job.status.failed_at = datetime.now(timezone.utc)
-        job.status.state = BatchJobState.FAILED
-        self._done_jobs[job_id] = job
+        meta_data.status.failed_at = datetime.now(timezone.utc)
+        meta_data.status.state = BatchJobState.FAILED
+        self._done_jobs[job_id] = meta_data
 
         logger.info("Job failed", job_id=job_id)  # type: ignore[call-arg]
-        return job
+        return meta_data
 
     def expire_job(self, job_id):
         """
@@ -644,11 +693,11 @@ class JobManager:
             # that expiring a partial executed job wastes resources.
             # Later we may apply another policy to force a job to expire
             # regardless of its current progress.
+            # [TODO][NOW] This should be allowed if caller stops the driver.
             logger.warning("Job was scheduled and cannot expire", job_id=job_id)  # type: ignore[call-arg]
             return False
-
         elif job_id in self._done_jobs:
-            logger.error("Job is done and this should not happen", job_id=job_id)  # type: ignore[call-arg]
+            logger.warning("Job is done and can not be set to expired", job_id=job_id)  # type: ignore[call-arg]
             return False
 
         return True
@@ -661,6 +710,16 @@ class JobManager:
         or intentional quit.
         """
         pass
+
+    def _meta_from_in_progress_job(self, job_id) -> JobMetaInfo:
+        if job_id not in self._in_progress_jobs:
+            job = self.get_job(job_id)
+            raise JobUnexpectedStateError("Job has not been scheduled yet or has been scheduled", job.status.state if job else None)
+
+        job = self._in_progress_jobs[job_id]
+        assert isinstance(job, JobMetaInfo)
+        meta_data: JobMetaInfo = job
+        return meta_data
 
     def _categorize_jobs(
         self, job: BatchJob, first_seen: bool = False

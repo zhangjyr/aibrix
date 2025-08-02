@@ -47,6 +47,7 @@ class JobAnnotationKey(str, Enum):
 
 class BatchJobTransformer:
     """Helper class to transform Kubernetes Job objects to BatchJob instances."""
+
     @classmethod
     def from_k8s_job(cls, k8s_job: Any) -> BatchJob:
         """
@@ -191,7 +192,9 @@ class BatchJobTransformer:
 
         # Map file ids
         output_file_id = annotations.get(JobAnnotationKey.OUTPUT_FILE_ID.value)
-        temp_output_file_id = annotations.get(JobAnnotationKey.TEMP_OUTPUT_FILE_ID.value)
+        temp_output_file_id = annotations.get(
+            JobAnnotationKey.TEMP_OUTPUT_FILE_ID.value
+        )
         error_file_id = annotations.get(JobAnnotationKey.ERROR_FILE_ID.value)
         temp_error_file_id = annotations.get(JobAnnotationKey.TEMP_ERROR_FILE_ID.value)
 

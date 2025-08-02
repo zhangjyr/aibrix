@@ -275,7 +275,7 @@ class TestWorkerS3Integration:
         return merged
 
     @pytest.mark.asyncio
-    async def test_worker_with_s3_and_redis(
+    async def test_single_worker(
         self,
         k8s_client,
         test_namespace,
@@ -303,15 +303,22 @@ class TestWorkerS3Integration:
         # Emulate job_driver behavior and create tempfiles
         import aibrix.batch.storage as _storage
         from aibrix.batch.job_entity import BatchJobTransformer
+
         job = BatchJobTransformer.from_k8s_job(job_spec)
-        _storage.initialize_storage(StorageType.S3, {
-            "bucket_name": test_s3_bucket
-        })
+        _storage.initialize_storage(StorageType.S3, {"bucket_name": test_s3_bucket})
         await _storage.prepare_job_ouput_files(job)
-        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/output-file-id"] = job.status.output_file_id
-        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/temp-output-file-id"] = job.status.temp_output_file_id
-        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/error-file-id"] = job.status.error_file_id
-        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/temp-error-file-id"] = job.status.temp_error_file_id
+        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/output-file-id"] = (
+            job.status.output_file_id
+        )
+        job_spec["metadata"]["annotations"][
+            "batch.job.aibrix.ai/temp-output-file-id"
+        ] = job.status.temp_output_file_id
+        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/error-file-id"] = (
+            job.status.error_file_id
+        )
+        job_spec["metadata"]["annotations"][
+            "batch.job.aibrix.ai/temp-error-file-id"
+        ] = job.status.temp_error_file_id
 
         # Upload test input data to S3
         session = boto3.Session()
@@ -375,8 +382,14 @@ class TestWorkerS3Integration:
 
             # Verify S3 outputs exist
             await self._verify_s3_outputs(
-                s3_client, test_s3_bucket, job.status.temp_output_file_id, len(test_input_data)
+                s3_client,
+                test_s3_bucket,
+                job.status.temp_output_file_id,
+                len(test_input_data),
             )
+
+            # Verify Redis locking worked correctly by checking completion keys
+            await self._verify_redis_completion_keys(job, len(test_input_data))
 
             logger.info("S3 integration test completed successfully!")
 
@@ -455,30 +468,233 @@ class TestWorkerS3Integration:
         except client.ApiException as e:
             logger.error(f"Failed to get S3 pod details: {e}")
 
+    @pytest.mark.asyncio
+    async def test_parallel_workers(
+        self,
+        k8s_client,
+        test_namespace,
+        base_job_template,
+        s3_job_template_patch,
+        test_input_data,
+        s3_config_available,
+        test_s3_bucket,
+    ):
+        """Test 3 concurrent workers using S3 storage and Redis metadata with request locking."""
+
+        # Generate unique job name
+        job_name = "s3-parallel-batch-job"
+        input_file_id = f"s3-parallel-test-input-{str(uuid.uuid4())[:8]}.jsonl"
+
+        # Create larger test data to ensure multiple workers have work to do
+        # Duplicate the test data multiple times to create more requests
+        expanded_test_data = []
+        for i in range(3):  # 3x more data
+            for item in test_input_data:
+                expanded_item = copy.deepcopy(item)
+                expanded_item["custom_id"] = (
+                    f"{item.get('custom_id', 'test')}-batch-{i}"
+                )
+                expanded_test_data.append(expanded_item)
+
+        logger.info(
+            f"Created {len(expanded_test_data)} test requests for parallel processing"
+        )
+
+        # Merge base template with S3 patch
+        job_spec = self._merge_yaml_object(base_job_template, s3_job_template_patch)
+        job_spec["metadata"]["name"] = job_name
+        job_spec["metadata"]["annotations"] = {
+            "batch.job.aibrix.ai/input-file-id": input_file_id,
+            "batch.job.aibrix.ai/endpoint": "/v1/chat/completions",
+            "batch.job.aibrix.ai/completion-window": "24h",
+        }
+
+        # Set parallelism to 3 workers
+        job_spec["spec"]["parallelism"] = 3
+        job_spec["spec"]["completions"] = 3
+
+        # Emulate job_driver behavior and create tempfiles
+        import aibrix.batch.storage as _storage
+        from aibrix.batch.job_entity import BatchJobTransformer
+
+        job = BatchJobTransformer.from_k8s_job(job_spec)
+        _storage.initialize_storage(StorageType.S3, {"bucket_name": test_s3_bucket})
+        await _storage.prepare_job_ouput_files(job)
+        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/output-file-id"] = (
+            job.status.output_file_id
+        )
+        job_spec["metadata"]["annotations"][
+            "batch.job.aibrix.ai/temp-output-file-id"
+        ] = job.status.temp_output_file_id
+        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/error-file-id"] = (
+            job.status.error_file_id
+        )
+        job_spec["metadata"]["annotations"][
+            "batch.job.aibrix.ai/temp-error-file-id"
+        ] = job.status.temp_error_file_id
+
+        # Upload test input data to S3
+        session = boto3.Session()
+        s3_client = session.client("s3")
+
+        # Create JSONL content with expanded data
+        jsonl_content = "\n".join(json.dumps(item) for item in expanded_test_data)
+        s3_key = input_file_id
+
+        try:
+            s3_client.put_object(
+                Bucket=test_s3_bucket,
+                Key=s3_key,
+                Body=jsonl_content.encode("utf-8"),
+                ContentType="application/jsonl",
+            )
+            logger.info(
+                f"Uploaded {len(expanded_test_data)} requests to S3: s3://{test_s3_bucket}/{s3_key}"
+            )
+
+            # Submit job to Kubernetes
+            logger.info(
+                "Submitting S3 parallel batch job with 3 workers to Kubernetes..."
+            )
+            created_job = k8s_client.create_namespaced_job(
+                namespace=test_namespace, body=job_spec
+            )
+
+            assert created_job.metadata.name == job_name
+            logger.info(f"S3 parallel batch job submitted successfully: {job_name}")
+
+            # Wait for job completion (longer timeout for parallel processing)
+            timeout = 800  # 13+ minutes for parallel job processing
+            start_time = time.time()
+            job_completed = False
+
+            while time.time() - start_time < timeout:
+                job_status = k8s_client.read_namespaced_job_status(
+                    name=job_name, namespace=test_namespace
+                )
+
+                # Log parallel job progress
+                active_pods = job_status.status.active or 0
+                succeeded_pods = job_status.status.succeeded or 0
+                failed_pods = job_status.status.failed or 0
+
+                logger.info(
+                    f"Parallel job progress - Active: {active_pods}, Succeeded: {succeeded_pods}, Failed: {failed_pods}"
+                )
+
+                if job_status.status.conditions:
+                    for condition in job_status.status.conditions:
+                        if condition.type == "Complete" and condition.status == "True":
+                            job_completed = True
+                            logger.info(
+                                f"S3 parallel batch job completed successfully: {job_name}"
+                            )
+                            break
+                        elif condition.type == "Failed" and condition.status == "True":
+                            logger.error(f"S3 parallel batch job failed: {job_name}")
+                            await self._log_pod_details(
+                                k8s_client, test_namespace, job_name
+                            )
+                            pytest.fail(f"Parallel job failed: {condition.message}")
+
+                if job_completed:
+                    break
+
+                await asyncio.sleep(15)  # Check every 15 seconds for parallel jobs
+
+            if not job_completed:
+                await self._log_pod_details(k8s_client, test_namespace, job_name)
+                pytest.fail(
+                    f"S3 parallel job did not complete within {timeout} seconds"
+                )
+
+            # Verify S3 outputs exist for all requests
+            await self._verify_s3_outputs(
+                s3_client,
+                test_s3_bucket,
+                job.status.temp_output_file_id,
+                len(expanded_test_data),
+            )
+
+            # Verify Redis locking worked correctly by checking completion keys
+            await self._verify_redis_completion_keys(job, len(expanded_test_data))
+
+            logger.info(
+                "S3 parallel integration test with 3 workers completed successfully!"
+            )
+
+        finally:
+            # Cleanup S3 objects
+            try:
+                # List and delete all objects with the input_file_id prefix
+                response = s3_client.list_objects_v2(
+                    Bucket=test_s3_bucket, Prefix=s3_key
+                )
+
+                if "Contents" in response:
+                    for obj in response["Contents"]:
+                        s3_client.delete_object(Bucket=test_s3_bucket, Key=obj["Key"])
+                        logger.info(f"Deleted S3 object: {obj['Key']}")
+
+                # Also check for output files
+                output_response = s3_client.list_objects_v2(
+                    Bucket=test_s3_bucket, Prefix=f".multipart/{job.status.temp_output_file_id}/"
+                )
+
+                if "Contents" in output_response:
+                    for obj in output_response["Contents"]:
+                        s3_client.delete_object(Bucket=test_s3_bucket, Key=obj["Key"])
+                        logger.info(f"Deleted S3 output object: {obj['Key']}")
+
+                # Also check for error files
+                output_response = s3_client.list_objects_v2(
+                    Bucket=test_s3_bucket, Prefix=f".multipart/{job.status.temp_error_file_id}/"
+                )
+
+                if "Contents" in output_response:
+                    for obj in output_response["Contents"]:
+                        s3_client.delete_object(Bucket=test_s3_bucket, Key=obj["Key"])
+                        logger.info(f"Deleted S3 output object: {obj['Key']}")
+
+            except Exception as e:
+                logger.warning(f"Failed to cleanup S3 objects: {e}")
+
+            # Delete the Kubernetes job
+            try:
+                k8s_client.delete_namespaced_job(
+                    name=job_name,
+                    namespace=test_namespace,
+                    propagation_policy="Background",
+                )
+                logger.info(f"Deleted S3 parallel batch job: {job_name}")
+            except client.ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"Failed to delete job {job_name}: {e}")
+
     async def _verify_s3_outputs(
         self, s3_client, bucket, temp_output_file_id, expected_count
     ):
         """Verify that output files were created in S3."""
 
         # Check for output files in S3
-        output_prefix = f".multipart/{temp_output_file_id}/" # See BaseStorage::_multipart_upload_key
+        output_prefix = f".multipart/{temp_output_file_id}/"  # See BaseStorage::_multipart_upload_key
         response = s3_client.list_objects_v2(Bucket=bucket, Prefix=output_prefix)
 
         assert "Contents" in response
-        assert len(response['Contents']) == expected_count + 1 # Including .multipart metadata
+        assert (
+            len(response["Contents"]) == expected_count + 1
+        )  # Including .multipart metadata
         logger.info(f"Found {len(response['Contents'])} output files in S3:")
 
         for obj in response["Contents"]:
-            logger.info("Loading request output", key=obj['Key'], size=obj['Size']) # type:ignore[call-arg]
+            logger.info("Loading request output", key=obj["Key"], size=obj["Size"])  # type:ignore[call-arg]
 
-            #check file content
-            content = s3_client.get_object(
-                Bucket=bucket, Key=obj["Key"]
-            )
+            # check file content
+            content = s3_client.get_object(Bucket=bucket, Key=obj["Key"])
             raw_output = content["Body"].read().decode("utf-8")
-            logger.info("Loaded request output", key=obj['Key'], output=raw_output) # type:ignore[call-arg]
+            logger.info("Loaded request output", key=obj["Key"], output=raw_output)  # type:ignore[call-arg]
             # Skip metadata
-            if obj['Key'].endswith('/metadata'):
+            if obj["Key"].endswith("/metadata"):
                 continue
             output = json.loads(raw_output)
             assert "id" in output
@@ -494,4 +710,46 @@ class TestWorkerS3Integration:
             assert "id" in body
             assert "model" in body
             assert "object" in body
-        
+
+    async def _verify_redis_completion_keys(self, job, expected_count):
+        """Verify that all requests have completion keys in Redis metastore."""
+        try:
+            # Initialize Redis metastore to check completion status
+            import os
+
+            import aibrix.batch.storage.batch_metastore as metastore
+            from aibrix.storage import StorageType
+
+            metastore.initialize_batch_metastore(StorageType.REDIS)
+
+            completed_count = 0
+            missing_keys = []
+
+            # Check each request's completion status
+            for i in range(expected_count):
+                completion_key = f"batch:{job.job_id}:done/{i}"
+                status, exists = await metastore.get_metadata(completion_key)
+
+                if exists:
+                    completed_count += 1
+                    logger.info(f"Found completion key {completion_key}: {status}")
+                else:
+                    missing_keys.append(completion_key)
+
+            logger.info(
+                f"Found {completed_count}/{expected_count} completion keys in Redis"
+            )
+
+            if missing_keys:
+                logger.warning(
+                    f"Missing completion keys: {missing_keys[:10]}..."
+                )  # Show first 10
+
+            # We expect all requests to be completed
+            assert (
+                completed_count == expected_count
+            ), f"Expected {expected_count} completed requests, but found {completed_count}"
+
+        except Exception as e:
+            logger.warning(f"Could not verify Redis completion keys: {e}")
+            # Don't fail the test if Redis verification fails

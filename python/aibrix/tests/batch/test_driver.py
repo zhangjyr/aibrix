@@ -27,6 +27,7 @@ from aibrix.storage import StorageType
 
 constant.EXPIRE_INTERVAL = 0.1
 
+
 def generate_input_data(num_requests, local_file):
     input_name = Path(os.path.dirname(__file__)) / "testdata" / "sample_job_input.jsonl"
     data = None

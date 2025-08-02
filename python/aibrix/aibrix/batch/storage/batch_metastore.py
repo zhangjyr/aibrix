@@ -23,6 +23,7 @@ logger = init_logger(__name__)
 
 p_metastore: Optional[BaseStorage] = None
 NUM_REQUESTS_PER_READ = 1024
+STATUS_RUQUEST_LOCKING = "processing"
 
 
 def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
@@ -135,9 +136,20 @@ async def lock_request(key: str, expiration_seconds: int = 3600) -> bool:
         ValueError: If storage doesn't support locking operations
     """
     return await set_metadata(
-        key, "processing", expiration_seconds=expiration_seconds, if_not_exists=True
+        key, STATUS_RUQUEST_LOCKING, expiration_seconds=expiration_seconds, if_not_exists=True
     )
 
+async def is_request_done(key: str) -> bool:
+    """Check if a request is done.
+
+    Args:
+        key: Request key to check
+
+    Returns:
+        True if the request is done, False otherwise
+    """
+    status, got = await get_metadata(key)
+    return got and status != STATUS_RUQUEST_LOCKING
 
 async def unlock_request(key: str, status: str) -> bool:
     """Unlock a request by setting completion status.

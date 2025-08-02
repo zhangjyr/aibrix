@@ -15,7 +15,7 @@
 
 # The following are all constants.
 # This is the time interval for the sliding window to check.
-EXPIRE_INTERVAL = 1
+EXPIRE_INTERVAL: float = 1
 # This is the job pool size in job scheduler.
 # It should be proportional to resource size in the backend.
 DEFAULT_JOB_POOL_SIZE = 1

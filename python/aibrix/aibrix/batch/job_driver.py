@@ -14,7 +14,7 @@
 
 import asyncio
 import uuid
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urljoin
 
 import httpx
@@ -55,7 +55,6 @@ class ProxyInferenceEngineClient(InferenceEngineClient):
             response.raise_for_status()
             return response.json()
 
-
 class JobDriver:
     def __init__(
         self,
@@ -89,7 +88,12 @@ class JobDriver:
             logger.debug("Temp files not created, creating...", job_id=job_id)
             await storage.prepare_job_ouput_files(job)
 
-        logger.debug("Confirmed temp files", job_id=job_id, temp_output_file_id=job.status.temp_output_file_id, temp_error_file_id=job.status.temp_error_file_id)
+        logger.debug(
+            "Confirmed temp files",
+            job_id=job_id,
+            temp_output_file_id=job.status.temp_output_file_id,
+            temp_error_file_id=job.status.temp_error_file_id,
+        )
 
         # Step 2: Execute worker (core execution)
         job = await self.execute_worker(job_id)
@@ -100,7 +104,7 @@ class JobDriver:
                 await storage.finalize_job_output_data(job)
 
             logger.debug("Completed job", job_id=job_id)
-            self.sync_job_status(job_id)
+            self._sync_job_status(job_id)
 
     async def execute_worker(self, job_id) -> BatchJob:
         """
@@ -108,103 +112,98 @@ class JobDriver:
         This function only executes step 2 (the core execution loop).
         """
         # Verify job status and get minimum unfinished request id
-        job, request_id = self._job_manager.get_job_next_request(job_id)
-        if request_id == -1:
+        job, line_no = self._get_next_request(job_id)
+        if line_no < 0:
             logger.warning(
                 "Job has something wrong with metadata in job manager, nothing left to execute",
                 job_id=job_id,
-            )
+            )  # type: ignore[call-arg]
             return job
 
         # [TODO][NOW] find a quick way to decide where to start testing using metastore
-        if request_id == 0:
-            logger.debug("Start processing job", job_id=job_id)
+        if line_no == 0:
+            logger.debug("Start processing job", job_id=job_id)  # type: ignore[call-arg]
         else:
-            logger.debug("Resuming job", job_id=job_id, request_id=request_id)
+            logger.debug("Resuming job", job_id=job_id, request_id=line_no)  # type: ignore[call-arg]
 
         # Step 2: Execute requests, resumable.
-        line_no = request_id
-        async for request in storage.read_job_next_request(job, line_no):
-            # Extract the request index from the locked request
-            next_line_no = request.pop("_request_index", line_no)
-            while line_no < next_line_no:
-                # sync completion status in job_manager and get next request id
-                job = self.sync_job_status(job_id, request_id)
-                job,request_id = self._job_manager.get_job_next_request(job_id)
+        last_line_no = line_no
+        while line_no >= 0:
+            async for request_input in storage.read_job_next_request(job, line_no):
+                # Extract the request index from the locked request
+                next_line_no = request_input.pop("_request_index", last_line_no)
+                # Valid status of skipped requests.
+                while last_line_no < next_line_no:
+                    if await storage.is_request_done(job, last_line_no):
+                        # Mark the skipped request done
+                        logger.debug("Mark skipped request as done locally", job_id=job_id, request_id=last_line_no)  # type: ignore[call-arg]
+                        job, line_no = self._sync_job_status_and_get_next_request(job_id, last_line_no)
+                    else:
+                        # Simply skipped the request and get next request id
+                        job, line_no = self._get_next_request(job_id)
+                    logger.debug("Will test next request", job_id=job_id, next_unexecuted=line_no, next_executable=next_line_no, last_line_no=last_line_no)  # type: ignore[call-arg]
+                    if line_no < last_line_no:
+                        # Start next round or stop if no more requests
+                        break
+                    last_line_no = line_no
 
-            custom_id = request.get("custom_id")
-            logger.debug(
-                "Executing job request",
-                job_id=job_id,
-                line=line_no,
-                next_unfinished=request_id,
-                custom_id=custom_id,
-            )
+                # Start next round or stop if no more requests
+                if line_no < last_line_no:
+                    break
 
-            # Retry inference request up to 3 times
-            request_output = None
-            last_error = None
-            for attempt in range(3):
-                try:
-                    request_output = await self._inference_client.inference_request(
-                        job.spec.endpoint.value, request["body"]
-                    )
-                    break  # Success, exit retry loop
-                except Exception as e:
-                    last_error = e
-                    logger.warning(
-                        f"Inference request failed (attempt {attempt + 1}/3): {e}",
-                        job_id=job_id,
-                        request_id=request_id,
-                    )
-                    if attempt < 2:  # Don't sleep on last attempt
-                        await asyncio.sleep(1 * (attempt + 1))  # Exponential backoff
-
-            response = {
-                "id": uuid.uuid4().hex[:5],
-                "error": None,
-                "response": None,
-                "custom_id": custom_id,
-            }
-            if last_error is not None:
-                logger.error(
-                    f"All inference attempts failed after 3 retries: {last_error}",
+                assert line_no == next_line_no # Or global status maintained by metastore is not consistent with local status
+                custom_id = request_input.get("custom_id", "")
+                logger.debug(
+                    "Executing job request",
                     job_id=job_id,
-                    request_id=request_id,
+                    line=line_no,
+                    request_id=line_no,
+                    custom_id=custom_id,
+                )  # type: ignore[call-arg]
+
+                # Retry inference request up to 3 times with exponential backoff
+                request_output, last_error = await self._retry_inference_request(
+                    job.spec.endpoint.value, request_input["body"], job_id, line_no
                 )
-                response["error"] = BatchJobError(
-                    code=BatchJobErrorCode.INFERENCE_FAILED, message=str(last_error)
+
+                # Build standardized response
+                response = self._build_response(
+                    custom_id, job_id, line_no, request_output, last_error
                 )
-            else:
-                response["response"] = {
-                    "status_code": 200,
-                    "request_id": f"{job_id}-{request_id}",
-                    "body": request_output,
-                }
 
-            logger.debug(
-                "Got request response",
-                job_id=job_id,
-                request_id=request_id,
-                response=response,
-            )
-            # Write single output and unlock the request
-            await storage.write_job_output_data(job, request_id, response)
+                logger.debug(
+                    "Got request response",
+                    job_id=job_id,
+                    request_id=line_no,
+                    response=response,
+                )  # type: ignore[call-arg]
+                # Write single output and unlock the request
+                await storage.write_job_output_data(job, line_no, response)
 
-            logger.debug("Job request executed", job_id=job_id, request_id=request_id)
-            job = self.sync_job_status(job_id, request_id)
-            job, request_id = self._job_manager.get_job_next_request(job_id)
-            line_no += 1
+                assert last_line_no == line_no
+                logger.debug("Job request executed", job_id=job_id, request_id=line_no)  # type: ignore[call-arg]
+                job, line_no = self._sync_job_status_and_get_next_request(job_id, last_line_no)
+                logger.debug("Confirmed next request", job_id=job_id, next_unexecuted=line_no, last_line_no=last_line_no)  # type: ignore[call-arg]
+                if line_no < last_line_no:
+                    break
+                last_line_no = line_no
 
-        job = self.sync_job_status(
-            job_id, request_id + 1
-        )  # Now that total == request_id
+            # For the first round, this shows we read end of input and we now know the total
+            if last_line_no == line_no:
+                job = self._sync_job_status(job_id, total = line_no) # Now that total == request_id
+                # We need to confirm that all is execute by try starting next round
+                job, line_no = self._get_next_request(job_id)
+                logger.debug("Confirmed total requests", job_id=job_id, total=job.status.request_counts.total, next_unexecuted=line_no)  # type: ignore[call-arg]
+
+            # Now we'll testing if we really finished, or start another round.
+
+        # Now that all finished.
         logger.debug(
             "Worker completed, job state:",
             job_id=job_id,
             total=job.status.request_counts.total if job else None,
             state=job.status.state.value if job else None,
-        )
+        )  # type: ignore[call-arg]
         return job
 
     def store_output(self, output_id, request_id, result):
@@ -213,11 +212,108 @@ class JobDriver:
         """
         storage.put_job_results(output_id, request_id, [result])
 
-    def sync_job_status(self, job_id, reqeust_id=-1) -> Optional[BatchJob]:
+    async def _retry_inference_request(
+        self,
+        endpoint: str,
+        request_data: dict,
+        job_id: str,
+        request_id: int,
+        max_retries: int = 3,
+    ) -> tuple[Any, Optional[Exception]]:
+        """
+        Retry inference request with exponential backoff.
+
+        Returns:
+            tuple: (request_output, last_error) - output on success, error on failure
+        """
+        request_output = None
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                request_output = await self._inference_client.inference_request(
+                    endpoint, request_data
+                )
+                break  # Success, exit retry loop
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"Inference request failed (attempt {attempt + 1}/{max_retries}): {e}",
+                    job_id=job_id,
+                    request_id=request_id,
+                )  # type: ignore[call-arg]
+                if attempt < max_retries - 1:  # Don't sleep on last attempt
+                    await asyncio.sleep(1 * (attempt + 1))  # Exponential backoff
+
+        return request_output, last_error
+
+    def _build_response(
+        self,
+        custom_id: str,
+        job_id: str,
+        request_id: int,
+        request_output: Any = None,
+        error: Optional[Exception] = None,
+    ) -> dict[str, Any]:
+        """
+        Build a standardized response object for job requests.
+
+        Args:
+            custom_id: Custom identifier for the request
+            job_id: Job identifier
+            request_id: Request identifier
+            request_output: Successful response data (if any)
+            error: Error that occurred (if any)
+
+        Returns:
+            dict: Standardized response object
+        """
+        response: dict[str, Any] = {
+            "id": uuid.uuid4().hex[:5],
+            "error": None,
+            "response": None,
+            "custom_id": custom_id,
+        }
+
+        if error is not None:
+            logger.error(
+                f"All inference attempts failed after retries: {error}",
+                job_id=job_id,
+                request_id=request_id,
+            )  # type: ignore[call-arg]
+            response["error"] = BatchJobError(
+                code=BatchJobErrorCode.INFERENCE_FAILED, message=str(error)
+            )
+        else:
+            response["response"] = {
+                "status_code": 200,
+                "request_id": f"{job_id}-{request_id}",
+                "body": request_output,
+            }
+
+        return response
+
+    def _sync_job_status(self, job_id, reqeust_id=-1, total=0) -> BatchJob:
         """
         Update job's status back to job manager.
         """
-        if reqeust_id < 0:
+        if total > 0:
+            return self._job_manager.mark_job_total(job_id, total)
+        elif reqeust_id < 0:
             return self._job_manager.mark_job_done(job_id)
         else:
-            return self._job_manager.mark_job_progress(job_id, [reqeust_id])
+            return self._job_manager.mark_jobs_progresses(job_id, [reqeust_id])
+
+    def _get_next_request(self, job_id: str) -> tuple[BatchJob, int]:
+        """
+        Get next request id from job manager.
+        """
+        return self._job_manager.get_job_next_request(job_id)
+
+    def _sync_job_status_and_get_next_request(
+        self, job_id: str, request_id: int
+    ) -> tuple[BatchJob, int]:
+        """
+        Sync job status and get next request, with None checking.
+        """
+        return self._job_manager.mark_job_progress_and_get_next_request(job_id, request_id)

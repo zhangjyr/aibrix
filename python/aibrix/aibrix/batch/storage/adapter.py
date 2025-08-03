@@ -14,7 +14,6 @@
 
 import asyncio
 import json
-from operator import is_
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Tuple
 
@@ -22,7 +21,13 @@ from aibrix.batch.job_entity import BatchJob
 from aibrix.logger import init_logger
 from aibrix.storage.base import BaseStorage
 
-from .batch_metastore import delete_metadata, get_metadata, lock_request, unlock_request, is_request_done
+from .batch_metastore import (
+    delete_metadata,
+    get_metadata,
+    is_request_done,
+    lock_request,
+    unlock_request,
+)
 
 logger = init_logger(__name__)
 
@@ -97,18 +102,32 @@ class BatchStorageAdapter:
                 locked = await lock_request(lock_key, expiration_seconds=3600)
             except Exception as e:
                 # Lock operation failed (should not happen with return False requirement)
-                logger.warning("Error on locking request in the job, assuming locking not supported", job_id=job.job_id, line_no=idx, error=e) # type:ignore[call-arg]
+                logger.warning(
+                    "Error on locking request in the job, assuming locking not supported",
+                    job_id=job.job_id,
+                    line_no=idx,
+                    error=e,
+                )  # type:ignore[call-arg]
                 locked = True
 
             if locked:
                 # Successfully locked, yield the request data
                 request_data = json.loads(line)
                 request_data["_request_index"] = idx  # Add index for tracking
-                logger.debug("Locked and will processing request in the job", job_id=job.job_id, line_no=idx, requset=request_data) # type:ignore[call-arg]
+                logger.debug(
+                    "Locked and will processing request in the job",
+                    job_id=job.job_id,
+                    line_no=idx,
+                    requset=request_data,
+                )  # type:ignore[call-arg]
                 yield request_data
             else:
                 # Request already locked by another worker, skip it
-                logger.debug("Skipping already locked request in the job", job_id=job.job_id, line_no=idx) # type:ignore[call-arg]
+                logger.debug(
+                    "Skipping already locked request in the job",
+                    job_id=job.job_id,
+                    line_no=idx,
+                )  # type:ignore[call-arg]
 
             idx += 1
 

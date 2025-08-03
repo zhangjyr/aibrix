@@ -39,7 +39,9 @@ from .storage import read_job_input_info
 # Custom exceptions for job manager
 class JobManagerError(Exception):
     """Base exception for job manager errors."""
+
     pass
+
 
 class JobUnexpectedStateError(JobManagerError):
     """Job in unexpcted status"""
@@ -129,8 +131,7 @@ class JobMetaInfo(BatchJob):
         # Test all done
         if (
             not self._no_total
-            and self.status.request_counts.completed
-            + self.status.request_counts.failed
+            and self.status.request_counts.completed + self.status.request_counts.failed
             == self.status.request_counts.total
         ):
             self.status.finalizing_at = datetime.now(timezone.utc)
@@ -598,7 +599,7 @@ class JobManager:
                 )
                 continue
             meta_data.complete_one_request(req_id)
-        
+
         return meta_data
 
     def get_job_next_request(self, job_id) -> Tuple[BatchJob, int]:
@@ -614,7 +615,9 @@ class JobManager:
         meta_data = self._meta_from_in_progress_job(job_id)
         return meta_data, meta_data.next_request_id()
 
-    def mark_job_progress_and_get_next_request(self, job_id: str, req_id: int) -> Tuple[BatchJob, int]:
+    def mark_job_progress_and_get_next_request(
+        self, job_id: str, req_id: int
+    ) -> Tuple[BatchJob, int]:
         """
         This is used to sync job's progress, called by execution proxy.
         It is guaranteed that each request is executed at least once.
@@ -629,7 +632,7 @@ class JobManager:
 
         meta_data.complete_one_request(req_id)
         return meta_data, meta_data.next_request_id()
-    
+
     def mark_job_total(self, job_id, total_requests) -> BatchJob:
         """
         This is used to set job's total requests when stream reader sees the end of the request.
@@ -649,7 +652,9 @@ class JobManager:
         meta_data = self._meta_from_in_progress_job(job_id)
 
         if meta_data.status.state != BatchJobState.FINALIZING:
-            raise JobUnexpectedStateError("Job is not in finalizing state, current state", meta_data.status.state)
+            raise JobUnexpectedStateError(
+                "Job is not in finalizing state, current state", meta_data.status.state
+            )
 
         del self._in_progress_jobs[job_id]
         self._done_jobs[job_id] = meta_data
@@ -714,7 +719,10 @@ class JobManager:
     def _meta_from_in_progress_job(self, job_id) -> JobMetaInfo:
         if job_id not in self._in_progress_jobs:
             job = self.get_job(job_id)
-            raise JobUnexpectedStateError("Job has not been scheduled yet or has been scheduled", job.status.state if job else None)
+            raise JobUnexpectedStateError(
+                "Job has not been scheduled yet or has been scheduled",
+                job.status.state if job else None,
+            )
 
         job = self._in_progress_jobs[job_id]
         assert isinstance(job, JobMetaInfo)

@@ -97,6 +97,7 @@ async def read_job_next_request(
     async for data in p_storage.read_job_next_input_data(job, start_index):
         yield data
 
+
 async def is_request_done(job: BatchJob, request_index: int) -> bool:
     """Check if a request is done.
 
@@ -109,6 +110,7 @@ async def is_request_done(job: BatchJob, request_index: int) -> bool:
     """
     assert p_storage is not None
     return await p_storage.is_request_done(job, request_index)
+
 
 async def prepare_job_ouput_files(job: BatchJob) -> None:
     """Prepare job output files, including output and error file ids"""

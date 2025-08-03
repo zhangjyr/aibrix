@@ -55,6 +55,7 @@ class ProxyInferenceEngineClient(InferenceEngineClient):
             response.raise_for_status()
             return response.json()
 
+
 class JobDriver:
     def __init__(
         self,
@@ -136,12 +137,24 @@ class JobDriver:
                 while last_line_no < next_line_no:
                     if await storage.is_request_done(job, last_line_no):
                         # Mark the skipped request done
-                        logger.debug("Mark skipped request as done locally", job_id=job_id, request_id=last_line_no)  # type: ignore[call-arg]
-                        job, line_no = self._sync_job_status_and_get_next_request(job_id, last_line_no)
+                        logger.debug(
+                            "Mark skipped request as done locally",
+                            job_id=job_id,
+                            request_id=last_line_no,
+                        )  # type: ignore[call-arg]
+                        job, line_no = self._sync_job_status_and_get_next_request(
+                            job_id, last_line_no
+                        )
                     else:
                         # Simply skipped the request and get next request id
                         job, line_no = self._get_next_request(job_id)
-                    logger.debug("Will test next request", job_id=job_id, next_unexecuted=line_no, next_executable=next_line_no, last_line_no=last_line_no)  # type: ignore[call-arg]
+                    logger.debug(
+                        "Will test next request",
+                        job_id=job_id,
+                        next_unexecuted=line_no,
+                        next_executable=next_line_no,
+                        last_line_no=last_line_no,
+                    )  # type: ignore[call-arg]
                     if line_no < last_line_no:
                         # Start next round or stop if no more requests
                         break
@@ -151,7 +164,9 @@ class JobDriver:
                 if line_no < last_line_no:
                     break
 
-                assert line_no == next_line_no # Or global status maintained by metastore is not consistent with local status
+                assert (
+                    line_no == next_line_no
+                )  # Or global status maintained by metastore is not consistent with local status
                 custom_id = request_input.get("custom_id", "")
                 logger.debug(
                     "Executing job request",
@@ -182,18 +197,32 @@ class JobDriver:
 
                 assert last_line_no == line_no
                 logger.debug("Job request executed", job_id=job_id, request_id=line_no)  # type: ignore[call-arg]
-                job, line_no = self._sync_job_status_and_get_next_request(job_id, last_line_no)
-                logger.debug("Confirmed next request", job_id=job_id, next_unexecuted=line_no, last_line_no=last_line_no)  # type: ignore[call-arg]
+                job, line_no = self._sync_job_status_and_get_next_request(
+                    job_id, last_line_no
+                )
+                logger.debug(
+                    "Confirmed next request",
+                    job_id=job_id,
+                    next_unexecuted=line_no,
+                    last_line_no=last_line_no,
+                )  # type: ignore[call-arg]
                 if line_no < last_line_no:
                     break
                 last_line_no = line_no
 
             # For the first round, this shows we read end of input and we now know the total
             if last_line_no == line_no:
-                job = self._sync_job_status(job_id, total = line_no) # Now that total == request_id
+                job = self._sync_job_status(
+                    job_id, total=line_no
+                )  # Now that total == request_id
                 # We need to confirm that all is execute by try starting next round
                 job, line_no = self._get_next_request(job_id)
-                logger.debug("Confirmed total requests", job_id=job_id, total=job.status.request_counts.total, next_unexecuted=line_no)  # type: ignore[call-arg]
+                logger.debug(
+                    "Confirmed total requests",
+                    job_id=job_id,
+                    total=job.status.request_counts.total,
+                    next_unexecuted=line_no,
+                )  # type: ignore[call-arg]
 
             # Now we'll testing if we really finished, or start another round.
 
@@ -316,4 +345,6 @@ class JobDriver:
         """
         Sync job status and get next request, with None checking.
         """
-        return self._job_manager.mark_job_progress_and_get_next_request(job_id, request_id)
+        return self._job_manager.mark_job_progress_and_get_next_request(
+            job_id, request_id
+        )

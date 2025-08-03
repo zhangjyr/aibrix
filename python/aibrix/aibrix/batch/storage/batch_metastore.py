@@ -136,8 +136,12 @@ async def lock_request(key: str, expiration_seconds: int = 3600) -> bool:
         ValueError: If storage doesn't support locking operations
     """
     return await set_metadata(
-        key, STATUS_RUQUEST_LOCKING, expiration_seconds=expiration_seconds, if_not_exists=True
+        key,
+        STATUS_RUQUEST_LOCKING,
+        expiration_seconds=expiration_seconds,
+        if_not_exists=True,
     )
+
 
 async def is_request_done(key: str) -> bool:
     """Check if a request is done.
@@ -150,6 +154,7 @@ async def is_request_done(key: str) -> bool:
     """
     status, got = await get_metadata(key)
     return got and status != STATUS_RUQUEST_LOCKING
+
 
 async def unlock_request(key: str, status: str) -> bool:
     """Unlock a request by setting completion status.

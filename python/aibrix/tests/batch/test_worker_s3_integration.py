@@ -19,15 +19,20 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
+import aibrix.batch.storage as _storage
+import aibrix.batch.storage.batch_metastore as _metastore
 import boto3
 import pytest
 import yaml
-from kubernetes import client, config
-
+from aibrix.batch.job_entity import (BatchJob, BatchJobSpec, BatchJobState,
+                                     BatchJobTransformer)
 from aibrix.logger import init_logger
+from aibrix.metadata.cache.job import JobCache
+from aibrix.metadata.cache.utils import merge_yaml_object
 from aibrix.storage.types import StorageType
+from kubernetes import client, config
 
 logger = init_logger(__name__)
 
@@ -78,6 +83,8 @@ class TestWorkerS3Integration:
             # Try to access the bucket
             s3_client.head_bucket(Bucket=bucket_name)
             logger.info(f"Using existing S3 bucket: {bucket_name}")
+
+            _storage.initialize_storage(StorageType.S3, {"bucket_name": bucket_name})
         except s3_client.exceptions.NoSuchBucket:
             pytest.skip(
                 f"Test bucket {bucket_name} does not exist. Set TEST_S3_BUCKET env var or create bucket."
@@ -86,6 +93,14 @@ class TestWorkerS3Integration:
             pytest.skip(f"Cannot access S3 bucket {bucket_name}: {e}")
 
         return bucket_name
+
+    @pytest.fixture(scope="class")
+    def test_redis(self):
+        """Check if Redis configuration is available locally."""
+        try:
+            _metastore.initialize_batch_metastore(StorageType.REDIS)
+        except Exception as e:
+            pytest.skip(f"Redis metastore not available: {e}")
 
     @pytest.fixture(scope="class")
     def k8s_client(self):
@@ -167,30 +182,6 @@ class TestWorkerS3Integration:
                     logger.warning(f"Failed to cleanup secret {secret_name}: {e}")
 
     @pytest.fixture
-    def s3_job_template_patch(self, s3_credentials_secret):
-        """Load S3-specific job template patch from YAML file."""
-        patch_file_path = (
-            Path(__file__).parent / "testdata" / "k8s_job_s3_template_patch.yaml"
-        )
-
-        with open(patch_file_path, "r") as f:
-            return yaml.safe_load(f)
-
-    @pytest.fixture
-    def base_job_template(self):
-        """Load base job template."""
-        base_template_path = (
-            Path(__file__).parent.parent.parent
-            / "aibrix"
-            / "metadata"
-            / "setting"
-            / "k8s_job_template.yaml"
-        )
-
-        with open(base_template_path, "r") as f:
-            return yaml.safe_load(f)
-
-    @pytest.fixture
     def test_input_data(self):
         """Load test input data from sample_job_input.jsonl."""
         import json
@@ -205,128 +196,6 @@ class TestWorkerS3Integration:
                     test_data.append(json.loads(line))
 
         return test_data
-
-    def _merge_yaml_object(self, base, overlay):
-        """
-        Recursively merges two YAML objects, mimicking kustomize's strategic merge.
-
-        - Dictionaries are merged recursively.
-        - Lists of objects with a 'name' key are merged by item.
-        - Other lists and scalar values from the overlay replace those in the base.
-        """
-        merged = copy.deepcopy(base)
-
-        for key, value in overlay.items():
-            if (
-                key in merged
-                and isinstance(merged[key], dict)
-                and isinstance(value, dict)
-            ):
-                logger.debug(f"override {key}")
-                merged[key] = self._merge_yaml_object(merged[key], value)
-
-            elif (
-                key in merged
-                and isinstance(merged[key], list)
-                and isinstance(value, list)
-            ):
-                # To merge a list, we use "name" field as the key
-                base_list = merged[key]
-                overlay_list = value
-                strategy_merge = False
-                logger.debug(f"merge {key}")
-
-                # Create a map of base items by their 'name' for quick lookups
-                base_items_by_name = {
-                    item.get("name"): item
-                    for item in base_list
-                    if isinstance(item, dict) and "name" in item
-                }
-                strategy_merge = len(base_items_by_name) > 0
-                logger.debug(f"exist keys in base:{key}: {base_items_by_name.keys()}")
-
-                for item in overlay_list:
-                    if isinstance(item, dict) and "name" in item:
-                        item_name = item.get("name")
-                        if item_name in base_items_by_name:
-                            # If an item with the same name exists, merge them
-                            base_item = base_items_by_name[item_name]
-                            logger.debug(f"merge {key}:{item_name}")
-                            base_items_by_name[item_name] = self._merge_yaml_object(
-                                base_item, item
-                            )
-                        else:
-                            # Otherwise, append the new item
-                            logger.debug(f"append {key}:{item_name}")
-                            base_items_by_name[item_name] = item
-                            base_list.append(item)
-                    else:
-                        # If the overlay item isn't a dict with a name, just append it
-                        logger.debug(f"append {key}:{item}")
-                        base_list.append(item)
-
-                if strategy_merge:
-                    merged[key] = list(base_items_by_name.values())
-                else:
-                    merged[key] = base_list
-            else:
-                logger.debug(f"override {key}")
-                merged[key] = value
-
-        return merged
-
-    async def _setup_job_spec(
-        self,
-        job_name: str,
-        input_file_id: str,
-        base_job_template: dict,
-        s3_job_template_patch: dict,
-        test_s3_bucket: str,
-        parallelism: int = 1,
-        completions: int = 1,
-    ) -> tuple[dict, Any]:
-        """
-        Setup job specification with S3 configuration.
-
-        Returns:
-            tuple: (job_spec, job) - Kubernetes job spec and BatchJob object
-        """
-        # Merge base template with S3 patch
-        job_spec = self._merge_yaml_object(base_job_template, s3_job_template_patch)
-        job_spec["metadata"]["name"] = job_name
-        job_spec["metadata"]["annotations"] = {
-            "batch.job.aibrix.ai/input-file-id": input_file_id,
-            "batch.job.aibrix.ai/endpoint": "/v1/chat/completions",
-            "batch.job.aibrix.ai/completion-window": "24h",
-        }
-
-        # Set parallelism configuration
-        job_spec["spec"]["parallelism"] = parallelism
-        job_spec["spec"]["completions"] = completions
-
-        # Emulate job_driver behavior and create tempfiles
-        import aibrix.batch.storage as _storage
-        from aibrix.batch.job_entity import BatchJobTransformer
-
-        job = BatchJobTransformer.from_k8s_job(job_spec)
-        _storage.initialize_storage(StorageType.S3, {"bucket_name": test_s3_bucket})
-        await _storage.prepare_job_ouput_files(job)
-
-        # Add output file annotations
-        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/output-file-id"] = (
-            job.status.output_file_id
-        )
-        job_spec["metadata"]["annotations"][
-            "batch.job.aibrix.ai/temp-output-file-id"
-        ] = job.status.temp_output_file_id
-        job_spec["metadata"]["annotations"]["batch.job.aibrix.ai/error-file-id"] = (
-            job.status.error_file_id
-        )
-        job_spec["metadata"]["annotations"][
-            "batch.job.aibrix.ai/temp-error-file-id"
-        ] = job.status.temp_error_file_id
-
-        return job_spec, job
 
     async def _upload_test_data_to_s3(
         self, test_s3_bucket: str, input_file_id: str, test_data: list
@@ -356,15 +225,17 @@ class TestWorkerS3Integration:
 
         return s3_client
 
-    async def _submit_and_monitor_job(
+    async def _submit_patch_and_monitor_job(
         self,
         k8s_client: Any,
         test_namespace: str,
-        job_spec: dict,
+        input_file_id: str,
+        test_s3_bucket: str,
         job_name: str,
         timeout: int,
+        job_cache: JobCache,
         is_parallel: bool = False,
-    ) -> None:
+    ) -> BatchJob:
         """
         Submit job to Kubernetes and monitor until completion.
 
@@ -380,59 +251,75 @@ class TestWorkerS3Integration:
         job_type = "parallel" if is_parallel else "single"
         logger.info(f"Submitting S3 {job_type} batch job to Kubernetes...")
 
-        created_job = k8s_client.create_namespaced_job(
-            namespace=test_namespace, body=job_spec
+        # Set up job monitoring with kopf-powered JobCache
+        main_loop = asyncio.get_running_loop()
+        job_committed = main_loop.create_future()
+        job_done = main_loop.create_future()
+
+        async def job_commited_handler(job: BatchJob):
+            if not job_committed.done():
+                main_loop.call_soon_threadsafe(job_committed.set_result, job)
+
+        async def job_updated_handler(_: BatchJob, newJob: BatchJob):
+            if (
+                newJob.status.state == BatchJobState.FINALIZING
+                or newJob.status.state == BatchJobState.FAILED
+            ):
+                if not job_done.done():
+                    main_loop.call_soon_threadsafe(job_done.set_result, newJob)
+
+        # Register handlers with the kopf-powered JobCache
+        job_cache.on_job_committed(job_commited_handler)
+        job_cache.on_job_updated(job_updated_handler)
+
+        job_spec = BatchJobSpec.from_strings(
+            input_file_id, "/v1/chat/completions", "24h", None
         )
 
-        assert created_job.metadata.name == job_name
-        logger.info(f"S3 {job_type} batch job submitted successfully: {job_name}")
+        # Create job
+        job_cache.submit_job(
+            "test-session-id",
+            job_spec,
+            job_name=job_name,
+            parallelism=3 if is_parallel else 1,
+        )
 
-        # Wait for job completion
-        start_time = time.time()
-        job_completed = False
+        # Wait for kopf to detect the job creation and trigger handlers
+        logger.info("Waiting for kopf to detect job creation...")
+        created_job = await asyncio.wait_for(job_committed, timeout=timeout)
 
-        while time.time() - start_time < timeout:
-            job_status = k8s_client.read_namespaced_job_status(
-                name=job_name, namespace=test_namespace
-            )
+        try:
+            assert created_job.metadata.name == job_name
+            assert created_job.status.state == BatchJobState.CREATED
+            logger.info(
+                f"S3 {job_type} batch job submitted successfully:", job_name=job_name
+            )  # type:ignore[call-arg]
 
-            # Log parallel job progress if requested
-            if is_parallel:
-                active_pods = job_status.status.active or 0
-                succeeded_pods = job_status.status.succeeded or 0
-                failed_pods = job_status.status.failed or 0
+            # Emulate job_driver behavior and create tempfiles
+            prepared_job = await _storage.prepare_job_ouput_files(created_job)
 
-                logger.info(
-                    f"Parallel job progress - Active: {active_pods}, Succeeded: {succeeded_pods}, Failed: {failed_pods}"
-                )
+            job_cache.update_job_ready(prepared_job)
+            logger.info(
+                "Batch job patched with file ids successfully:",
+                job_name=job_name,
+                output_file_id=prepared_job.status.output_file_id,
+                temp_output_file_id=prepared_job.status.temp_output_file_id,
+                error_file_id=prepared_job.status.error_file_id,
+                temp_error_file_id=prepared_job.status.temp_error_file_id,
+            )  # type:ignore[call-arg]
 
-            if job_status.status.conditions:
-                for condition in job_status.status.conditions:
-                    if condition.type == "Complete" and condition.status == "True":
-                        job_completed = True
-                        logger.info(
-                            f"S3 {job_type} batch job completed successfully: {job_name}"
-                        )
-                        break
-                    elif condition.type == "Failed" and condition.status == "True":
-                        logger.error(f"S3 {job_type} batch job failed: {job_name}")
-                        await self._log_pod_details(
-                            k8s_client, test_namespace, job_name
-                        )
-                        pytest.fail(
-                            f"{job_type.capitalize()} job failed: {condition.message}"
-                        )
+            # Wait for job completion
+            finished_job = await asyncio.wait_for(job_done, timeout=timeout)
+            assert finished_job.status.state == BatchJobState.FINALIZING
 
-            if job_completed:
-                break
+            return finished_job
 
-            # Check interval varies based on job type
-            sleep_interval = 15 if is_parallel else 10
-            await asyncio.sleep(sleep_interval)
-
-        if not job_completed:
+        except Exception as e:
             await self._log_pod_details(k8s_client, test_namespace, job_name)
-            pytest.fail(f"S3 {job_type} job did not complete within {timeout} seconds")
+            pytest.fail(
+                f"S3 {job_type} job did not complete within {timeout} seconds, error={str(e)}"
+            )
+            raise
 
     async def _cleanup_s3_and_k8s_resources(
         self,
@@ -469,27 +356,27 @@ class TestWorkerS3Integration:
                     logger.info(f"Deleted S3 object: {obj['Key']}")
 
             # Delete output files
-            output_prefix = f".multipart/{job.status.temp_output_file_id}/"
-            output_response = s3_client.list_objects_v2(
-                Bucket=test_s3_bucket, Prefix=output_prefix
-            )
+            if job and job.status.temp_output_file_id:
+                output_prefix = f".multipart/{job.status.temp_output_file_id}/"
+                output_response = s3_client.list_objects_v2(
+                    Bucket=test_s3_bucket, Prefix=output_prefix
+                )
 
-            if "Contents" in output_response:
-                for obj in output_response["Contents"]:
-                    s3_client.delete_object(Bucket=test_s3_bucket, Key=obj["Key"])
-                    logger.info(f"Deleted S3 output object: {obj['Key']}")
+                if "Contents" in output_response:
+                    for obj in output_response["Contents"]:
+                        s3_client.delete_object(Bucket=test_s3_bucket, Key=obj["Key"])
+                        logger.info(f"Deleted S3 output object: {obj['Key']}")
 
-            # Delete error files
-            error_prefix = f".multipart/{job.status.temp_error_file_id}/"
-            error_response = s3_client.list_objects_v2(
-                Bucket=test_s3_bucket, Prefix=error_prefix
-            )
+                # Delete error files
+                error_prefix = f".multipart/{job.status.temp_error_file_id}/"
+                error_response = s3_client.list_objects_v2(
+                    Bucket=test_s3_bucket, Prefix=error_prefix
+                )
 
-            if "Contents" in error_response:
-                for obj in error_response["Contents"]:
-                    s3_client.delete_object(Bucket=test_s3_bucket, Key=obj["Key"])
-                    logger.info(f"Deleted S3 error object: {obj['Key']}")
-
+                if "Contents" in error_response:
+                    for obj in error_response["Contents"]:
+                        s3_client.delete_object(Bucket=test_s3_bucket, Key=obj["Key"])
+                        logger.info(f"Deleted S3 error object: {obj['Key']}")
         except Exception as e:
             logger.warning(f"Failed to cleanup S3 objects: {e}")
 
@@ -533,40 +420,34 @@ class TestWorkerS3Integration:
         self,
         k8s_client,
         test_namespace,
-        base_job_template,
-        s3_job_template_patch,
-        test_input_data,
-        s3_config_available,
+        s3_credentials_secret,
         test_s3_bucket,
-    ):
+        test_redis,
+        test_input_data,
+        job_cache,
+    ) -> None:
         """Test worker using S3 storage and Redis metadata."""
 
         # Generate unique job name and setup
         job_name = "s3-batch-job"
         input_file_id = f"s3-test-input-{str(uuid.uuid4())[:8]}.jsonl"
 
-        # Setup job specification (single worker: parallelism=1, completions=1)
-        job_spec, job = await self._setup_job_spec(
-            job_name,
-            input_file_id,
-            base_job_template,
-            s3_job_template_patch,
-            test_s3_bucket,
-        )
-
         # Upload test data to S3
         s3_client = await self._upload_test_data_to_s3(
             test_s3_bucket, input_file_id, test_input_data
         )
 
+        job: Optional[BatchJob] = None
         try:
             # Submit job and monitor until completion
-            await self._submit_and_monitor_job(
+            job = await self._submit_patch_and_monitor_job(
                 k8s_client,
                 test_namespace,
-                job_spec,
+                input_file_id,
+                test_s3_bucket,
                 job_name,
-                timeout=600,
+                60,
+                job_cache,
                 is_parallel=False,
             )
 
@@ -600,12 +481,12 @@ class TestWorkerS3Integration:
         self,
         k8s_client,
         test_namespace,
-        base_job_template,
-        s3_job_template_patch,
-        test_input_data,
-        s3_config_available,
+        s3_credentials_secret,
         test_s3_bucket,
-    ):
+        test_redis,
+        test_input_data,
+        job_cache,
+    ) -> None:
         """Test 3 concurrent workers using S3 storage and Redis metadata with request locking."""
 
         # Generate unique job name and setup
@@ -615,30 +496,22 @@ class TestWorkerS3Integration:
         # Create expanded test data for parallel processing
         expanded_test_data = self._expand_test_data(test_input_data, multiplier=3)
 
-        # Setup job specification (parallel workers: parallelism=3, completions=3)
-        job_spec, job = await self._setup_job_spec(
-            job_name,
-            input_file_id,
-            base_job_template,
-            s3_job_template_patch,
-            test_s3_bucket,
-            parallelism=3,
-            completions=3,
-        )
-
         # Upload expanded test data to S3
         s3_client = await self._upload_test_data_to_s3(
             test_s3_bucket, input_file_id, expanded_test_data
         )
 
+        job: Optional[BatchJob] = None
         try:
-            # Submit job and monitor until completion (longer timeout for parallel processing)
-            await self._submit_and_monitor_job(
+            # Submit job and monitor until completion
+            job = await self._submit_patch_and_monitor_job(
                 k8s_client,
                 test_namespace,
-                job_spec,
+                input_file_id,
+                test_s3_bucket,
                 job_name,
-                timeout=800,
+                60,
+                job_cache,
                 is_parallel=True,
             )
 
@@ -697,7 +570,14 @@ class TestWorkerS3Integration:
                             container=container,
                             tail_lines=100,  # More logs for S3 debugging
                         )
-                        logger.info(f"S3 {container} logs:\n{logs}")
+                        print(
+                            f"####################### S3 {container} logs starts #######################"
+                        )
+                        for line in logs.splitlines():
+                            print(line)
+                        print(
+                            f"####################### S3 {container} logs ends #######################"
+                        )
                     except client.ApiException:
                         logger.warning(
                             f"Could not get S3 logs for container {container}"

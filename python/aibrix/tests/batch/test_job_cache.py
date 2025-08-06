@@ -49,13 +49,13 @@ def test_job_cache_callback_registration():
     updated_jobs = []
     deleted_jobs = []
 
-    def on_committed(job):
+    async def on_committed(job):
         committed_jobs.append(job)
 
-    def on_updated(old_job, new_job):
+    async def on_updated(old_job, new_job):
         updated_jobs.append((old_job, new_job))
 
-    def on_deleted(job):
+    async def on_deleted(job):
         deleted_jobs.append(job)
 
     # Register callbacks

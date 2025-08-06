@@ -144,7 +144,7 @@ class BatchStorageAdapter:
         lock_key = self._get_request_meta_output_key(job, request_index)
         return await is_request_done(lock_key)
 
-    async def prepare_job_ouput_files(self, job: BatchJob) -> None:
+    async def prepare_job_ouput_files(self, job: BatchJob) -> BatchJob:
         """Get job output file id.
 
         Args:
@@ -154,7 +154,7 @@ class BatchStorageAdapter:
             Job output file id
         """
         if job.status.temp_output_file_id or job.status.temp_error_file_id:
-            return
+            return job
 
         job_uuid = uuid.UUID(job.job_id)
         job.status.output_file_id, job.status.error_file_id = (
@@ -173,6 +173,7 @@ class BatchStorageAdapter:
             job.status.temp_output_file_id,
             job.status.temp_error_file_id,
         ) = await asyncio.gather(*tasks)
+        return job
 
     async def write_job_output_data(
         self, job: BatchJob, request_index: int, output_data: Dict[str, Any]

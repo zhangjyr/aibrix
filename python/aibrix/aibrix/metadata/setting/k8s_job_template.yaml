@@ -5,15 +5,14 @@ metadata:
   namespace: default
   labels:
     app: aibrix-batch
-    component: batch-processor
   annotations:
     # Template annotations will be merged with BatchJobSpec annotations
 spec:
+  suspend: true # !!Important: creates the job in a paused state
   template:
     metadata:
       labels:
         app: aibrix-batch
-        component: batch-processor
     spec:
       serviceAccountName: job-reader-sa
       automountServiceAccountToken: true
@@ -33,6 +32,37 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        - name: JOB_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['batch.kubernetes.io/controller-uid']
+        - name: LLM_READY_ENDPOINT
+          value: "http://localhost:8000/ready" # keep consistent with llm-engine['readinessProbe']
+        # Batch job metadata from pod annotations
+        - name: BATCH_INPUT_FILE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/input-file-id']
+        - name: BATCH_ENDPOINT
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/endpoint']
+        - name: BATCH_OUTPUT_FILE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/output-file-id']
+        - name: BATCH_TEMP_OUTPUT_FILE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/temp-output-file-id']
+        - name: BATCH_ERROR_FILE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/error-file-id']
+        - name: BATCH_TEMP_ERROR_FILE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/temp-error-file-id']
       - name: llm-engine
         image: aibrix/vllm-mock:nightly
         ports:

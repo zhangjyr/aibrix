@@ -148,7 +148,8 @@ async def test_cancel_job_already_done():
     assert result is True  # Changed: done jobs now return True
 
 
-def test_job_committed_handler():
+@pytest.mark.asyncio
+async def test_job_committed_handler():
     """Test that job_committed_handler correctly adds jobs to pending."""
     job_manager = JobManager()
 
@@ -176,14 +177,15 @@ def test_job_committed_handler():
     )
 
     # Call the handler
-    job_manager.job_committed_handler(batch_job)
+    await job_manager.job_committed_handler(batch_job)
 
     # Verify job is in pending state
     assert "test-job-id" in job_manager._pending_jobs
     assert job_manager._pending_jobs["test-job-id"] == batch_job
 
 
-def test_job_deleted_handler():
+@pytest.mark.asyncio
+async def test_job_deleted_handler():
     """Test that job_deleted_handler correctly moves jobs to done state."""
     job_manager = JobManager()
 
@@ -214,7 +216,7 @@ def test_job_deleted_handler():
     job_manager._pending_jobs["test-job-id-2"] = batch_job
 
     # Call the deleted handler
-    job_manager.job_deleted_handler(batch_job)
+    await job_manager.job_deleted_handler(batch_job)
 
     # Verify job is removed from pending (job_deleted_handler removes jobs, doesn't move them)
     assert "test-job-id-2" not in job_manager._pending_jobs
@@ -265,7 +267,7 @@ class MockJobEntityManager(JobEntityManager):
 
         # Call the committed handler
         if self._job_committed_handler:
-            self._job_committed_handler(batch_job)
+            await self._job_committed_handler(batch_job)
 
     def get_job(self, job_id: str) -> Optional[BatchJob]:
         """Mock get_job implementation."""

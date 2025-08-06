@@ -12,22 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 
+import aibrix.batch.storage.batch_metastore as metastore
+import aibrix.batch.storage.batch_storage as storage
 import kopf
 import yaml
+from aibrix.batch.job_entity import (BatchJob, BatchJobSpec, JobAnnotationKey,
+                                     JobEntityManager, k8s_job_to_batch_job)
+from aibrix.logger import init_logger
+from aibrix.storage import StorageType
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
-from aibrix.batch.job_entity import (
-    BatchJob,
-    BatchJobSpec,
-    JobAnnotationKey,
-    JobEntityManager,
-    k8s_job_to_batch_job,
-)
-from aibrix.logger import init_logger
+from .utils import merge_yaml_object
 
 # import asyncio
 # If you installed kopf[uvloop], kopf will likely set this up.
@@ -36,18 +36,22 @@ from aibrix.logger import init_logger
 # asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 
-@kopf.on.startup()
-async def configure(logger, **kwargs):
-    logger.info("Operator starting up!")
-
-
-@kopf.on.cleanup()
-async def cleanup(logger, **kwargs):
-    logger.info("Operator shutting down!")
-
-
 # Global logger for standalone functions
 logger = init_logger(__name__)
+
+# Global JobCache instance for kopf handlers
+_global_job_cache: Optional["JobCache"] = None
+
+
+def set_global_job_cache(job_cache: "JobCache") -> None:
+    """Set the global job cache instance for kopf handlers."""
+    global _global_job_cache
+    _global_job_cache = job_cache
+
+
+def get_global_job_cache() -> Optional["JobCache"]:
+    """Get the global job cache instance."""
+    return _global_job_cache
 
 
 class JobCache(JobEntityManager):
@@ -63,34 +67,70 @@ class JobCache(JobEntityManager):
         # Cache of BatchJob objects keyed by batch ID (K8s UID)
         self.active_jobs: Dict[str, BatchJob] = {}
 
+        # Register this instance as the global job cache for kopf handlers
+        set_global_job_cache(self)
+
         # Callback handlers for job lifecycle events
-        self._job_committed_handler: Optional[Callable[[BatchJob], None]] = None
-        self._job_updated_handler: Optional[Callable[[BatchJob, BatchJob], None]] = None
-        self._job_deleted_handler: Optional[Callable[[BatchJob], None]] = None
+        self._job_committed_handler: Optional[
+            Callable[[BatchJob], Coroutine[Any, Any, None]]
+        ] = None
+        self._job_updated_handler: Optional[
+            Callable[[BatchJob, BatchJob], Coroutine[Any, Any, None]]
+        ] = None
+        self._job_deleted_handler: Optional[
+            Callable[[BatchJob], Coroutine[Any, Any, None]]
+        ] = None
 
         # Load Kubernetes Job template once at initialization
-        template_path = (
-            Path(__file__).parent.parent / "setting" / "k8s_job_template.yaml"
-        )
+        template_path = Path(__file__).parent.parent / "setting"
         try:
-            with open(template_path, "r") as f:
+            path = template_path / "k8s_job_template.yaml"
+            with open(path, "r") as f:
                 self.job_template = yaml.safe_load(f)
             logger.info(
                 "Kubernetes Job template loaded successfully",
-                template_path=str(template_path),
+                template_path=str(path),
+            )  # type: ignore[call-arg]
+
+            self.storage_patches = {}
+            path = template_path / "k8s_job_s3_patch.yaml"
+            with open(path, "r") as f:
+                self.storage_patches[StorageType.S3.value] = yaml.safe_load(f)
+            logger.info(
+                "Kubernetes Job storage patch loaded successfully",
+                template_path=str(path),
+                storage=StorageType.S3,
+            )  # type: ignore[call-arg]
+
+            path = template_path / "k8s_job_tos_patch.yaml"
+            with open(path, "r") as f:
+                self.storage_patches[StorageType.TOS.value] = yaml.safe_load(f)
+            logger.info(
+                "Kubernetes Job storage patch loaded successfully",
+                template_path=str(path),
+                storage=StorageType.TOS,
+            )  # type: ignore[call-arg]
+
+            path = template_path / "k8s_job_redis_patch.yaml"
+            with open(path, "r") as f:
+                self.storage_patches[StorageType.REDIS.value] = yaml.safe_load(f)
+            logger.info(
+                "Kubernetes Job storage patch loaded successfully",
+                template_path=str(path),
+                storage=StorageType.REDIS,
             )  # type: ignore[call-arg]
         except FileNotFoundError:
             logger.error(
                 "Kubernetes Job template not found",
-                template_path=str(template_path),
+                template_path=str(path),
                 operation="__init__",
             )  # type: ignore[call-arg]
             raise RuntimeError(f"Job template not found at {template_path}")
         except yaml.YAMLError as e:
             logger.error(
                 "Failed to parse Kubernetes Job template",
-                template_path=str(template_path),
                 error=str(e),
+                template_path=str(path),
                 operation="__init__",
             )  # type: ignore[call-arg]
             raise RuntimeError(f"Invalid YAML in job template: {e}")
@@ -143,11 +183,20 @@ class JobCache(JobEntityManager):
         """
         return list(self.active_jobs.values())
 
-    def submit_job(self, session_id: str, job_spec: BatchJobSpec) -> None:
+    def submit_job(
+        self,
+        session_id: str,
+        job_spec: BatchJobSpec,
+        job_name: Optional[str] = None,
+        parallelism: int = 1,
+        prepared_job: Optional[BatchJob] = None,
+    ) -> None:
         """Submit job by creating a Kubernetes Job.
 
         Args:
             job_spec: BatchJobSpec to submit to Kubernetes.
+            job_name: Optional job name, will generate one if not provided.
+            prepared_job: Optional BatchJob with file IDs to add to pod annotations.
 
         Raises:
             RuntimeError: If Kubernetes client is not available.
@@ -158,28 +207,30 @@ class JobCache(JobEntityManager):
 
         try:
             # Convert BatchJobSpec to Kubernetes Job manifest
-            k8s_job = self._batch_job_to_k8s_job(session_id, job_spec)
+            k8s_job = self._batch_job_spec_to_k8s_job(
+                session_id, job_spec, job_name, parallelism, prepared_job
+            )
 
             # Get namespace from k8s_job, use default if not specified
-            namespace = k8s_job.metadata.namespace or "default"
+            namespace = k8s_job["metadata"].get("namespace") or "default"
             created_job = self.batch_v1_api.create_namespaced_job(
                 namespace=namespace, body=k8s_job
             )
 
             logger.info(  # type: ignore[call-arg]
                 "Job submitted to Kubernetes",
-                job_name=k8s_job.metadata.name,
+                job_name=created_job.metadata.name,
                 namespace=namespace,
                 k8s_uid=created_job.metadata.uid,
                 input_file_id=job_spec.input_file_id,
-                endpoint=job_spec.endpoint.value,
+                endpoint=job_spec.endpoint,
             )  # type: ignore[call-arg]
 
         except ApiException as e:
             logger.error(  # type: ignore[call-arg]
                 "Failed to submit job to Kubernetes",
                 input_file_id=job_spec.input_file_id,
-                endpoint=job_spec.endpoint.value,
+                endpoint=job_spec.endpoint,
                 error=str(e),
                 status_code=e.status,
                 reason=e.reason,
@@ -189,7 +240,56 @@ class JobCache(JobEntityManager):
             logger.error(  # type: ignore[call-arg]
                 "Unexpected error submitting job",
                 input_file_id=job_spec.input_file_id,
-                endpoint=job_spec.endpoint.value,
+                endpoint=job_spec.endpoint,
+                error=str(e),
+                operation="submit_job",
+            )  # type: ignore[call-arg]
+            raise
+
+    def update_job_ready(self, job: BatchJob):
+        """Update job by marking it ready info in the persist store.
+        The job suspend flag will be removed to start the execution.
+
+        Args:
+            job (BatchJob): Job to update.
+        """
+        if not self.batch_v1_api:
+            raise RuntimeError("Kubernetes client not available")
+
+        try:
+            # Convert BatchJobSpec to Kubernetes Job manifest
+            patch_body = self._batch_job_to_k8s_job_patch(job)
+
+            # Get namespace from k8s_job, use default if not specified
+            namespace = job.metadata.namespace or "default"
+            self.batch_v1_api.patch_namespaced_job(
+                name=job.metadata.name, namespace=namespace, body=patch_body
+            )
+
+            logger.info(  # type: ignore[call-arg]
+                "Job patched to Kubernetes",
+                job_name=job.metadata.name,
+                namespace=namespace,
+                patch_body=patch_body,
+            )  # type: ignore[call-arg]
+
+        except ApiException as e:
+            logger.error(  # type: ignore[call-arg]
+                "Failed to patch job to Kubernetes",
+                job_name=job.metadata.name,
+                namespace=namespace,
+                patch_body=patch_body,
+                error=str(e),
+                status_code=e.status,
+                reason=e.reason,
+            )  # type: ignore[call-arg]
+            raise
+        except Exception as e:
+            logger.error(  # type: ignore[call-arg]
+                "Unexpected error patch job",
+                job_name=job.metadata.name,
+                namespace=namespace,
+                patch_body=patch_body,
                 error=str(e),
                 operation="submit_job",
             )  # type: ignore[call-arg]
@@ -261,232 +361,278 @@ class JobCache(JobEntityManager):
             )
             raise
 
-    def _batch_job_to_k8s_job(
-        self, session_id: str, job_spec: BatchJobSpec
-    ) -> client.V1Job:
+    def _batch_job_to_k8s_job_patch(self, job: BatchJob) -> Dict[str, Any]:
+        """Convert BatchJob to Kubernetes Job patch manifest. Only annotations will be patched.
+
+        Args:
+            job_spec: BatchJob to convert.
+
+        Returns:
+            patch body object.
+        """
+        # Use pre-loaded template (deep copy to avoid modifying the original)
+        patch_body = {
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {
+                            JobAnnotationKey.OUTPUT_FILE_ID: job.status.output_file_id,
+                            JobAnnotationKey.TEMP_OUTPUT_FILE_ID: job.status.temp_output_file_id,
+                            JobAnnotationKey.ERROR_FILE_ID: job.status.error_file_id,
+                            JobAnnotationKey.TEMP_ERROR_FILE_ID: job.status.temp_error_file_id,
+                        },
+                    },
+                },
+                "suspend": False,
+            },
+        }
+        return patch_body
+
+    def _batch_job_spec_to_k8s_job(
+        self,
+        session_id: str,
+        job_spec: BatchJobSpec,
+        job_name: Optional[str] = None,
+        parallelism: int = 1,
+        prepared_job: Optional[BatchJob] = None,
+    ) -> Dict[str, Any]:
         """Convert BatchJobSpec to Kubernetes Job manifest using pre-loaded template.
 
         Args:
             job_spec: BatchJobSpec to convert.
+            job_name: Optional job name, will generate one if not provided.
+            prepared_job: Optional BatchJob with file IDs to add to pod annotations.
 
         Returns:
             Kubernetes V1Job object.
         """
-        # Use pre-loaded template (deep copy to avoid modifying the original)
-        import copy
-        import uuid
+        # Generate unique job name
+        if job_name is None:
+            job_name = f"batch-{uuid.uuid4().hex[:8]}"
 
-        job_template = copy.deepcopy(self.job_template)
-
-        # Create annotations from BatchJobSpec
-        batch_annotations = {
+        # Create pod annotations from job spec
+        pod_annotations: Dict[str, str] = {
             JobAnnotationKey.SESSION_ID.value: session_id,
             JobAnnotationKey.INPUT_FILE_ID.value: job_spec.input_file_id,
-            JobAnnotationKey.ENDPOINT.value: job_spec.endpoint.value,
-            JobAnnotationKey.COMPLETION_WINDOW.value: job_spec.completion_window.value,
+            JobAnnotationKey.ENDPOINT.value: job_spec.endpoint,
         }
 
-        # Add batch metadata as annotations
+        # Add batch metadata as pod annotations
         if job_spec.metadata:
             for key, value in job_spec.metadata.items():
-                batch_annotations[f"{JobAnnotationKey.METADATA_PREFIX.value}{key}"] = (
+                pod_annotations[f"{JobAnnotationKey.METADATA_PREFIX.value}{key}"] = (
                     value
                 )
 
-        # Merge template annotations with batch annotations
-        template_annotations = job_template.get("metadata", {}).get("annotations") or {}
-        merged_annotations = {**template_annotations, **batch_annotations}
+        # Add file IDs from prepared job if provided
+        suspend = True
+        if prepared_job and prepared_job.status:
+            if prepared_job.status.output_file_id:
+                pod_annotations[JobAnnotationKey.OUTPUT_FILE_ID.value] = (
+                    prepared_job.status.output_file_id
+                )
+            else:
+                suspend = False
 
-        # Generate unique job name
-        job_name = f"batch-{uuid.uuid4().hex[:8]}"
+            if prepared_job.status.temp_output_file_id:
+                pod_annotations[JobAnnotationKey.TEMP_OUTPUT_FILE_ID.value] = (
+                    prepared_job.status.temp_output_file_id
+                )
+            else:
+                suspend = False
 
-        # Update template with BatchJobSpec values
-        job_template["metadata"]["name"] = job_name
-        job_template["metadata"]["annotations"] = merged_annotations
+            if prepared_job.status.error_file_id:
+                pod_annotations[JobAnnotationKey.ERROR_FILE_ID.value] = (
+                    prepared_job.status.error_file_id
+                )
+            else:
+                suspend = False
 
-        # Update environment variables in the container
-        containers = job_template["spec"]["template"]["spec"]["containers"]
-        if containers:
-            env_vars = containers[0].get("env", [])
-            for env_var in env_vars:
-                if env_var["name"] == "INPUT_FILE_ID":
-                    env_var["value"] = job_spec.input_file_id
-                elif env_var["name"] == "ENDPOINT":
-                    env_var["value"] = job_spec.endpoint.value
-                elif env_var["name"] == "COMPLETION_WINDOW":
-                    env_var["value"] = job_spec.completion_window.value
+            if prepared_job.status.temp_error_file_id:
+                pod_annotations[JobAnnotationKey.TEMP_ERROR_FILE_ID.value] = (
+                    prepared_job.status.temp_error_file_id
+                )
+            else:
+                suspend = False
 
-        # Convert template dict to Kubernetes V1Job object
-        try:
-            # Create V1Job object manually from template structure
-            job = client.V1Job(
-                api_version=job_template.get("apiVersion", "batch/v1"),
-                kind=job_template.get("kind", "Job"),
-                metadata=client.V1ObjectMeta(
-                    name=job_template["metadata"]["name"],
-                    namespace=job_template["metadata"].get("namespace", "default"),
-                    labels=job_template["metadata"].get("labels", {}),
-                    annotations=job_template["metadata"]["annotations"],
-                ),
-                spec=client.V1JobSpec(
-                    template=client.V1PodTemplateSpec(
-                        metadata=client.V1ObjectMeta(
-                            labels=job_template["spec"]["template"]["metadata"].get(
-                                "labels", {}
-                            )
-                        ),
-                        spec=client.V1PodSpec(
-                            containers=[
-                                client.V1Container(
-                                    name=container["name"],
-                                    image=container["image"],
-                                    env=[
-                                        client.V1EnvVar(
-                                            name=env["name"], value=env["value"]
-                                        )
-                                        for env in container.get("env", [])
-                                    ],
-                                    resources=client.V1ResourceRequirements(
-                                        requests=container.get("resources", {}).get(
-                                            "requests"
-                                        ),
-                                        limits=container.get("resources", {}).get(
-                                            "limits"
-                                        ),
-                                    )
-                                    if container.get("resources")
-                                    else None,
-                                )
-                                for container in job_template["spec"]["template"][
-                                    "spec"
-                                ]["containers"]
-                            ],
-                            restart_policy=job_template["spec"]["template"]["spec"].get(
-                                "restartPolicy", "Never"
-                            ),
-                        ),
-                    ),
-                    backoff_limit=job_template["spec"].get("backoffLimit", 3),
-                    active_deadline_seconds=job_template["spec"].get(
-                        "activeDeadlineSeconds"
-                    ),
-                ),
-            )
-            return job
-        except Exception as e:
-            logger.error(  # type: ignore[call-arg]
-                "Failed to convert template to Kubernetes Job object",
-                error=str(e),
-                operation="_batch_job_to_k8s_job",
-            )
-            raise RuntimeError(f"Failed to create Kubernetes Job object: {e}")
+        job_patch = {
+            "metadata": {
+                "name": job_name,
+                # Minimal job-level annotations - most metadata moved to pod
+                "annotations": {
+                    "batch.job.aibrix.ai/managed-by": "aibrix",
+                },
+            },
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": pod_annotations,
+                    },
+                },
+                "activeDeadlineSeconds": job_spec.completion_window,
+                "suspend": suspend,
+                "parallelism": parallelism,
+                "completions": parallelism,
+            },
+        }
+        # Use pre-loaded template (deep copy to avoid modifying the original)
+        job_template = merge_yaml_object(self.job_template, job_patch)
 
-    # Kopf event handlers that delegate to the JobEntityManager interface
-    @kopf.on.create("batch", "v1", "jobs")  # type: ignore[arg-type]
-    async def job_created(self, logger: Any, body: Any, **kwargs: Any) -> None:
-        """Handle Kubernetes Job creation events."""
-        try:
-            # Transform K8s Job to BatchJob
-            batch_job = k8s_job_to_batch_job(body)
-            job_id = batch_job.status.job_id if batch_job.status else body.metadata.uid
-
-            # Store in cache
-            self.active_jobs[job_id] = batch_job
-
-            # Invoke callback if registered
-            if self._job_committed_handler:
-                try:
-                    self._job_committed_handler(batch_job)
-                except Exception as e:
-                    logger.error(
-                        "Error in job committed handler",
-                        error=str(e),
-                        handler="job_committed",
-                    )
-
-            logger.info(
-                "Job created",
-                job=batch_job.metadata.name,
-                namespace=batch_job.metadata.namespace,
-                job_id=job_id,
-            )
-        except ValueError as ve:
-            # For jobs without proper annotations, store basic info for backward compatibility
-            job_id = body.metadata.uid
+        # Merge storage env
+        if (
+            storage_patch := self.storage_patches.get(storage.get_storage_type().value)
+        ) is not None:
+            job_template = merge_yaml_object(job_template, storage_patch, False)
+        else:
             logger.warning(
-                "Failed to process job creation",
-                job_id=job_id,
-                reason=str(ve),
+                "No storage patch found", storage_type=storage.get_storage_type()
+            )  # type:ignore[call-arg]
+
+        # Merge metastore env
+        if (
+            metastore_patch := self.storage_patches.get(
+                metastore.get_metastore_type().value
             )
-        except Exception as e:
-            logger.error(
-                "Failed to process job creation", error=str(e), operation="job_created"
-            )
+        ) is not None:
+            job_template = merge_yaml_object(job_template, metastore_patch, False)
+        else:
+            logger.warning(
+                "No metastore patch found", storage_type=metastore.get_metastore_type()
+            )  # type:ignore[call-arg]
 
-    @kopf.on.update("batch", "v1", "jobs")  # type: ignore[arg-type]
-    async def job_updated(
-        self, logger: Any, body: Any, old: Any, new: Any, **kwargs: Any
-    ) -> None:
-        """Handle Kubernetes Job update events."""
-        try:
-            # Transform new K8s Job to BatchJob
-            new_batch_job = k8s_job_to_batch_job(body)
-            job_id = (
-                new_batch_job.status.job_id
-                if new_batch_job.status
-                else body.metadata.uid
-            )
+        return job_template
 
-            # Get old job from cache
-            old_batch_job = self.active_jobs.get(job_id)
 
-            # Update cache
-            self.active_jobs[job_id] = new_batch_job
+# Standalone kopf handlers that work with the global JobCache instance
+@kopf.on.create("batch", "v1", "jobs")  # type: ignore[arg-type]
+async def job_created_handler(logger: Any, body: Any, **kwargs: Any) -> None:
+    """Handle Kubernetes Job creation events."""
+    job_cache = get_global_job_cache()
+    if not job_cache:
+        logger.warning("No global job cache available for job creation event")
+        return
 
-            # Invoke callback if registered and we have both old and new jobs
-            if self._job_updated_handler and old_batch_job:
-                try:
-                    self._job_updated_handler(old_batch_job, new_batch_job)
-                except Exception as e:
-                    logger.error(
-                        "Error in job updated handler",
-                        error=str(e),
-                        handler="job_updated",
-                    )
+    try:
+        # Transform K8s Job to BatchJob
+        batch_job = k8s_job_to_batch_job(body)
+        job_id = batch_job.status.job_id if batch_job.status else body.metadata.uid
 
-            logger.info(
-                "Job updated",
-                job=new_batch_job.metadata.name,
-                namespace=new_batch_job.metadata.namespace,
-                job_id=job_id,
-            )
-        except Exception as e:
-            logger.error(
-                "Failed to process job update", error=str(e), operation="job_updated"
-            )
+        # Store in cache
+        job_cache.active_jobs[job_id] = batch_job
 
-    @kopf.on.delete("batch", "v1", "jobs")  # type: ignore[arg-type]
-    async def job_deleted(self, logger: Any, body: Any, **kwargs: Any) -> None:
-        """Handle Kubernetes Job deletion events."""
+        # Invoke callback if registered
+        if job_cache._job_committed_handler:
+            try:
+                await job_cache._job_committed_handler(batch_job)
+            except Exception as e:
+                logger.error(
+                    "Error in job committed handler",
+                    error=str(e),
+                    handler="job_committed",
+                )
+
+        logger.info(
+            "Job created",
+            job=batch_job.metadata.name,
+            namespace=batch_job.metadata.namespace,
+            job_id=job_id,
+        )
+    except ValueError as ve:
+        # For jobs without proper annotations, store basic info for backward compatibility
         job_id = body.metadata.uid
-        job_name = body.metadata.name
-        namespace = body.metadata.namespace
+        logger.warning(
+            "Failed to process job creation",
+            job_id=job_id,
+            reason=str(ve),
+        )
+    except Exception as e:
+        logger.error(
+            "Failed to process job creation", error=str(e), operation="job_created"
+        )
 
-        # Get job from cache before deletion
-        deleted_job = self.active_jobs.get(job_id)
 
-        if job_id in self.active_jobs:
-            del self.active_jobs[job_id]
+@kopf.on.update("batch", "v1", "jobs")  # type: ignore[arg-type]
+async def job_updated_handler(logger: Any, body: Any, **kwargs: Any) -> None:
+    """Handle Kubernetes Job update events."""
+    job_cache = get_global_job_cache()
+    if not job_cache:
+        logger.warning("No global job cache available for job update event")
+        return
 
-            # Invoke callback if registered
-            if self._job_deleted_handler and deleted_job:
-                try:
-                    self._job_deleted_handler(deleted_job)
-                except Exception as e:
-                    logger.error(
-                        "Error in job deleted handler",
-                        error=str(e),
-                        handler="job_deleted",
-                    )
+    try:
+        # Transform new K8s Job to BatchJob
+        new_batch_job = k8s_job_to_batch_job(body)
+        job_id = (
+            new_batch_job.status.job_id if new_batch_job.status else body.metadata.uid
+        )
 
-            logger.info("Job deleted", job=job_name, namespace=namespace, job_id=job_id)
+        # Get old job from cache
+        old_batch_job = job_cache.active_jobs.get(job_id)
+
+        # Update cache
+        job_cache.active_jobs[job_id] = new_batch_job
+
+        # Invoke callback if registered and we have both old and new jobs
+        if job_cache._job_updated_handler and old_batch_job:
+            try:
+                await job_cache._job_updated_handler(old_batch_job, new_batch_job)
+            except Exception as e:
+                logger.error(
+                    "Error in job updated handler",
+                    error=str(e),
+                    handler="job_updated",
+                )
+
+        logger.info(
+            "Job updated",
+            job=new_batch_job.metadata.name,
+            namespace=new_batch_job.metadata.namespace,
+            job_id=job_id,
+        )
+    except Exception as e:
+        logger.error(
+            "Failed to process job update", error=str(e), operation="job_updated"
+        )
+
+
+@kopf.on.field("batch", "v1", "jobs", field="status.conditions")  # type: ignore[arg-type]
+async def job_completion_handler(logger: Any, body: Any, **kwargs: Any) -> None:
+    """
+    This handler triggers ONLY when the 'status.conditions' field of a Job changes.
+    """
+    if not body:  # The conditions field might be None initially
+        return
+
+    await job_updated_handler(logger, body, **kwargs)  # type: ignore[call-arg, misc, arg-type]
+
+
+@kopf.on.delete("batch", "v1", "jobs")  # type: ignore[arg-type]
+async def job_deleted_handler(logger: Any, body: Any, **kwargs: Any) -> None:
+    """Handle Kubernetes Job deletion events."""
+    job_cache = get_global_job_cache()
+    if not job_cache:
+        logger.warning("No global job cache available for job deletion event")
+        return
+
+    job_id = body.metadata.uid
+    job_name = body.metadata.name
+    namespace = body.metadata.namespace
+
+    # Get job from cache before deletion
+    deleted_job = job_cache.active_jobs.get(job_id)
+
+    if job_id in job_cache.active_jobs:
+        del job_cache.active_jobs[job_id]
+
+        # Invoke callback if registered
+        if job_cache._job_deleted_handler and deleted_job:
+            try:
+                await job_cache._job_deleted_handler(deleted_job)
+            except Exception as e:
+                logger.error(
+                    "Error in job deleted handler",
+                    error=str(e),
+                    handler="job_deleted",
+                )
+
+        logger.info("Job deleted", job=job_name, namespace=namespace, job_id=job_id)

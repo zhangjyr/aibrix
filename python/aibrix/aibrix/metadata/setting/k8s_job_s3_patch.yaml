@@ -27,5 +27,3 @@ spec:
             secretKeyRef:
               name: aibrix-s3-credentials
               key: bucket-name
-        - name: REDIS_HOST
-          value: "aibrix-redis-master.aibrix-system.svc.cluster.local"

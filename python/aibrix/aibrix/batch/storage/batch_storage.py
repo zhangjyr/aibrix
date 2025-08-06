@@ -112,10 +112,10 @@ async def is_request_done(job: BatchJob, request_index: int) -> bool:
     return await p_storage.is_request_done(job, request_index)
 
 
-async def prepare_job_ouput_files(job: BatchJob) -> None:
+async def prepare_job_ouput_files(job: BatchJob) -> BatchJob:
     """Prepare job output files, including output and error file ids"""
     assert p_storage is not None
-    await p_storage.prepare_job_ouput_files(job)
+    return await p_storage.prepare_job_ouput_files(job)
 
 
 async def write_job_output_data(

@@ -40,9 +40,9 @@ class CompletionWindow(str, Enum):
 
     TWENTY_FOUR_HOURS = "24h"
 
-    def expires_at(self) -> float:
+    def expires_at(self) -> int:
         """Returns the expiration time of the completion window."""
-        return 86400.0  # Return default value
+        return 86400  # Return default value
 
 
 class BatchJobState(str, Enum):
@@ -132,11 +132,11 @@ class BatchJobSpec(NoExtraBaseModel):
     input_file_id: str = Field(
         description="The ID of an uploaded file that contains the requests for the batch",
     )
-    endpoint: BatchJobEndpoint = Field(
+    endpoint: str = Field(
         description="The API endpoint to be used for all requests in the batch"
     )
-    completion_window: CompletionWindow = Field(
-        default=CompletionWindow.TWENTY_FOUR_HOURS,
+    completion_window: int = Field(
+        default=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
         description="The time window for completion",
     )
     metadata: Optional[Dict[str, str]] = Field(
@@ -179,8 +179,8 @@ class BatchJobSpec(NoExtraBaseModel):
 
         return cls(
             input_file_id=input_file_id,
-            endpoint=validated_endpoint,
-            completion_window=validated_completion_window,
+            endpoint=validated_endpoint.value,
+            completion_window=validated_completion_window.expires_at(),
             metadata=metadata,
         )
 
@@ -399,7 +399,7 @@ class BatchJob(NoExtraBaseModel):
     status: BatchJobStatus = Field(description="Observed state of the batch job")
 
     @classmethod
-    def create_new(
+    def new(
         cls,
         name: str,
         namespace: str,
@@ -409,6 +409,24 @@ class BatchJob(NoExtraBaseModel):
         metadata: Optional[Dict[str, str]] = None,
     ) -> "BatchJob":
         """Create a new BatchJob with default values."""
+        return cls.new_from_spec(
+            name,
+            namespace,
+            spec=BatchJobSpec(
+                input_file_id=input_file_id,
+                endpoint=endpoint.value,
+                completion_window=completion_window.expires_at(),
+                metadata=metadata,
+            ),
+        )
+
+    @classmethod
+    def new_from_spec(
+        cls,
+        name: str,
+        namespace: str,
+        spec: BatchJobSpec,
+    ) -> "BatchJob":
         return cls(
             typeMeta=TypeMeta(apiVersion="batch.aibrix.ai/v1alpha1", kind="BatchJob"),
             metadata=ObjectMeta(
@@ -418,12 +436,27 @@ class BatchJob(NoExtraBaseModel):
                 resourceVersion=None,
                 deletionTimestamp=None,
             ),
-            spec=BatchJobSpec(
-                input_file_id=input_file_id,
-                endpoint=endpoint,
-                completion_window=completion_window,
-                metadata=metadata,
+            spec=spec,
+            status=BatchJobStatus(
+                jobID=str(uuid.uuid4()),
+                state=BatchJobState.CREATED,
+                createdAt=datetime.now(timezone.utc),
             ),
+        )
+
+    @classmethod
+    def new_local(
+        cls,
+        spec: BatchJobSpec,
+    ) -> "BatchJob":
+        return cls(
+            typeMeta=TypeMeta(apiVersion="", kind="LocalBatchJob"),
+            metadata=ObjectMeta(
+                creationTimestamp=datetime.now(timezone.utc),
+                resourceVersion=None,
+                deletionTimestamp=None,
+            ),
+            spec=spec,
             status=BatchJobStatus(
                 jobID=str(uuid.uuid4()),
                 state=BatchJobState.CREATED,

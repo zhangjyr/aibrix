@@ -14,26 +14,26 @@
 
 import asyncio
 import copy
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from aibrix.batch.scheduler import JobScheduler
 from aibrix.logger import init_logger
 
-from .job_entity import (
+if TYPE_CHECKING:
+    from aibrix.batch.job_driver import JobDriver
+
+from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobError,
     BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
-    BatchJobStatus,
     JobEntityManager,
-    ObjectMeta,
-    TypeMeta,
 )
-from .storage import read_job_input_info
+from aibrix.batch.job_progress_manager import JobProgressManager
+from aibrix.batch.scheduler import JobScheduler
+from aibrix.batch.storage import read_job_input_info
 
 
 # Custom exceptions for job manager
@@ -207,7 +207,7 @@ class JobMetaInfo(BatchJob):
         return True
 
 
-class JobManager:
+class JobManager(JobProgressManager):
     def __init__(self, job_entity_manager: Optional[JobEntityManager] = None):
         """
         This manages jobs in three categorical job pools.
@@ -307,26 +307,13 @@ class JobManager:
             return job_id
 
         # Local job handling.
-        job = BatchJob(
-            typeMeta=TypeMeta(apiVersion="", kind="LocalBatchJob"),
-            metadata=ObjectMeta(
-                resourceVersion=None,
-                creationTimestamp=datetime.now(timezone.utc),
-                deletionTimestamp=None,
-            ),
-            spec=job_spec,
-            status=BatchJobStatus(
-                jobID=str(uuid.uuid4()),
-                state=initial_state,
-                createdAt=datetime.now(timezone.utc),
-            ),
-        )
-        self.job_committed_handler(job)
+        job = BatchJob.new_local(job_spec)
+        await self.job_committed_handler(job)
         assert job.job_id is not None
 
         return job.job_id
 
-    def cancel_job(self, job_id: str) -> bool:
+    async def cancel_job(self, job_id: str) -> bool:
         """
         Cancel a job by job_id.
 
@@ -393,10 +380,10 @@ class JobManager:
         if job_done.status:
             job_done.status.state = BatchJobState.CANCELED
             job_done.status.cancelled_at = datetime.now()
-        self.job_updated_handler(job, job_done)
+        await self.job_updated_handler(job, job_done)
         return True
 
-    def job_committed_handler(self, job: BatchJob):
+    async def job_committed_handler(self, job: BatchJob):
         """
         This is called by job entity manager when a job is committed.
         Enhanced to resolve pending job creation futures.
@@ -420,16 +407,53 @@ class JobManager:
                     job_id=job_id,
                 )  # type: ignore[call-arg]
 
-        # Add to job schduler if available
-        assert category is self._pending_jobs
-        if category is self._pending_jobs and self._job_scheduler:
+        if category is not self._pending_jobs:
+            return
+
+        # Add to job scheduler if available (traditional workflow)
+        if self._job_scheduler:
             created_at: datetime = job.status.created_at
             logger.info("Add job to scheduler", job_id=job_id)  # type: ignore[call-arg]
             self._job_scheduler.append_job(
-                job_id, created_at.timestamp() + job.spec.completion_window.expires_at()
+                job_id, created_at.timestamp() + job.spec.completion_window
             )
+        # For metadata server (no scheduler): prepare job output files when job is committed
+        elif (
+            job.status.output_file_id is None
+            or job.status.temp_output_file_id is None
+            or job.status.error_file_id is None
+            or job.status.temp_error_file_id is None
+        ):
+            # Start a job_driver to prepare output files
+            assert self._job_entity_manager is not None
+            if not await self.start_execute_job(job):
+                self._job_entity_manager.cancel_job(job_id)
+                return
 
-    def job_updated_handler(self, old_job: BatchJob, new_job: BatchJob):
+            logger.info("Starting job preparation for new job", job_id=job_id)  # type: ignore[call-arg]
+            try:
+                job_driver = JobDriver(self)
+                prepared_job = await job_driver.prepare_job(job)
+
+                logger.info(
+                    "Job preparation completed, files ready",
+                    job_id=job_id,
+                    output_file_id=prepared_job.status.output_file_id,
+                    temp_output_file_id=prepared_job.status.temp_output_file_id,
+                    error_file_id=prepared_job.status.error_file_id,
+                    temp_error_file_id=prepared_job.status.temp_error_file_id,
+                )  # type: ignore[call-arg]
+
+                await self._job_entity_manager.update_job_ready(prepared_job)
+
+                # Leave job_updated_handler to update job location in queues
+
+            except Exception as e:
+                logger.error("Job validation failed", job_id=job_id, error=e)  # type: ignore[call-arg]
+                self.mark_job_failed(job_id)
+                self._job_entity_manager.cancel_job(job_id)
+
+    async def job_updated_handler(self, old_job: BatchJob, new_job: BatchJob):
         """
         This is called by job entity manager when a job status is updated.
         Handles state transitions when a job is cancelled or completed.
@@ -453,7 +477,17 @@ class JobManager:
             del old_category[job_id]
         new_category[job_id] = new_job
 
-    def job_deleted_handler(self, job: BatchJob):
+        # For metadata server (no scheduler): finalize job when transitioning to FINALIZING
+        if (
+            new_job.status.state == BatchJobState.FINALIZING
+            and old_job.status.state != BatchJobState.FINALIZING
+            and self._job_scheduler is None
+        ):
+            logger.info("Starting job finalization", job_id=job_id)  # type: ignore[call-arg]
+            job_driver = JobDriver(self)
+            await job_driver.finalize_job(new_job)
+
+    async def job_deleted_handler(self, job: BatchJob):
         """
         This is called by job entity manager when a job is deleted.
         """
@@ -569,14 +603,12 @@ class JobManager:
             JobUnexpectedStateError: If job is not in progress.
         """
         meta_data = self._meta_from_in_progress_job(job_id)
-        if meta_data is None:
-            return None, -1
 
         if req_id < 0 or req_id > meta_data.status.request_counts.total:
             raise ValueError(f"invalide request_id: {req_id}")
 
         meta_data.complete_one_request(req_id)
-        return meta_data, meta_data.next_request_id
+        return meta_data, meta_data.next_request_id()
 
     def mark_jobs_progresses(self, job_id, executed_requests) -> BatchJob:
         """
@@ -640,7 +672,8 @@ class JobManager:
         Raises:
             JobUnexpectedStateError: If job is not in progress.
         """
-        return self.mark_job_progress(job_id, total_requests + 1)
+        job, _ = self.mark_job_progress(job_id, total_requests + 1)
+        return job
 
     def mark_job_done(self, job_id: str) -> BatchJob:
         """

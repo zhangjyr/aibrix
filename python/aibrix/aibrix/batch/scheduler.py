@@ -21,6 +21,7 @@ from enum import Enum
 from typing import Optional
 
 import aibrix.batch.constant as constant
+from aibrix.batch.job_progress_manager import JobProgressManager
 from aibrix.logger import init_logger
 
 # JobManager will be passed as parameter to avoid circular import
@@ -129,22 +130,22 @@ class BasicCongestionControl(CCInterface):
 class JobScheduler:
     def __init__(
         self,
-        job_manager,
-        pool_size,
+        job_progress_manager: JobProgressManager,
+        pool_size: int,
         cc_controller=BasicCongestionControl(constant.DEFAULT_JOB_POOL_SIZE),
         policy=SchedulePolicy.FIFO,
-    ):
+    ) -> None:
         """
         self._jobs_queue are all the jobs.
         self._due_jobs_list stores all potential jobs that can be marked
         as expired jobs.
         self._inactive_jobs are jobs that are already invalid.
         """
-        self._job_manager = job_manager
+        self._job_progress_manager = job_progress_manager
         self.interval = constant.EXPIRE_INTERVAL
-        self._jobs_queue = queue.Queue()
-        self._inactive_jobs = set()
-        self._due_jobs_list = []
+        self._jobs_queue: queue.Queue[str] = queue.Queue()
+        self._inactive_jobs: set[str] = set()
+        self._due_jobs_list: list[tuple[str, float]] = []
 
         self._CC_controller = cc_controller
         self._current_pool_size = self._CC_controller._job_pool_size
@@ -189,7 +190,7 @@ class JobScheduler:
             # we check if this job is in active state and we try starting the job.
             while job_id and (
                 job_id in self._inactive_jobs
-                or not await self._job_manager.start_execute_job(job_id)
+                or not await self._job_progress_manager.start_execute_job(job_id)
             ):
                 if self._jobs_queue.empty():
                     job_id = None
@@ -266,7 +267,7 @@ class JobScheduler:
             job_id = self._CC_controller._running_job_pool[i]
             # Do not schedule new job in since we need to adjust capacity
             # based on new pool size representing how much underlying resource.
-            if self._job_manager.get_job_status(job_id).is_finished():
+            if self._job_progress_manager.get_job_status(job_id).is_finished():
                 self._CC_controller._running_job_pool[i] = None
 
         # Step 2, after the jobs' status are updated,

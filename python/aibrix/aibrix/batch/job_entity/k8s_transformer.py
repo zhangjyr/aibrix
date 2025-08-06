@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections.abc
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, Optional
+
+from aibrix.logger import init_logger
 
 from .batch_job import (
     BatchJob,
@@ -30,6 +33,8 @@ from .batch_job import (
 # Annotation prefix for batch job specifications
 JOB_ANNOTATION_PREFIX = "batch.job.aibrix.ai/"
 
+logger = init_logger(__name__)
+
 
 class JobAnnotationKey(str, Enum):
     """Valid annotation keys for job specifications."""
@@ -37,7 +42,6 @@ class JobAnnotationKey(str, Enum):
     SESSION_ID = f"{JOB_ANNOTATION_PREFIX}session-id"
     INPUT_FILE_ID = f"{JOB_ANNOTATION_PREFIX}input-file-id"
     ENDPOINT = f"{JOB_ANNOTATION_PREFIX}endpoint"
-    COMPLETION_WINDOW = f"{JOB_ANNOTATION_PREFIX}completion-window"
     METADATA_PREFIX = f"{JOB_ANNOTATION_PREFIX}metadata."
     OUTPUT_FILE_ID = f"{JOB_ANNOTATION_PREFIX}output-file-id"
     TEMP_OUTPUT_FILE_ID = f"{JOB_ANNOTATION_PREFIX}temp-output-file-id"
@@ -64,22 +68,29 @@ class BatchJobTransformer:
         """
         # Extract metadata with null safety
         metadata = cls._safe_get_attr(k8s_job, "metadata", {})
-        annotations: Dict[str, str] = cls._safe_get_attr(metadata, "annotations", {})
 
-        # Extract SessionID from annotations
-        session_id = annotations.get(JobAnnotationKey.SESSION_ID.value)
+        # Extract pod annotations from pod template (where we now store the batch job metadata)
+        pod_spec = cls._safe_get_attr(k8s_job, "spec", {})
+        pod_template = cls._safe_get_attr(pod_spec, "template", {})
+        pod_metadata = cls._safe_get_attr(pod_template, "metadata", {})
+        pod_annotations: Dict[str, str] = cls._safe_get_attr(
+            pod_metadata, "annotations", {}
+        )
 
-        # Extract BatchJobSpec from annotations
-        spec = cls._extract_batch_job_spec(annotations)
+        # Extract SessionID from pod annotations
+        session_id = pod_annotations.get(JobAnnotationKey.SESSION_ID.value)
 
-        # Extract ObjectMeta
+        # Extract BatchJobSpec from pod annotations
+        spec = cls._extract_batch_job_spec(pod_annotations, pod_spec)
+
+        # Extract ObjectMeta from job metadata (not pod metadata)
         object_meta = cls._extract_object_meta(metadata)
 
         # Extract TypeMeta from Kubernetes Job
         type_meta = cls._extract_type_meta(k8s_job)
 
         # Extract or create BatchJobStatus
-        status = cls._extract_batch_job_status(k8s_job, spec, annotations)
+        status = cls._extract_batch_job_status(k8s_job, spec, pod_annotations)
 
         return BatchJob(
             sessionID=session_id,
@@ -90,7 +101,9 @@ class BatchJobTransformer:
         )
 
     @classmethod
-    def _extract_batch_job_spec(cls, annotations: Dict[str, str]) -> BatchJobSpec:
+    def _extract_batch_job_spec(
+        cls, annotations: Dict[str, str], pod_spec: Any
+    ) -> BatchJobSpec:
         """Extract BatchJobSpec from Kubernetes job annotations."""
         # Extract required fields
         input_file_id = annotations.get(JobAnnotationKey.INPUT_FILE_ID.value)
@@ -99,17 +112,11 @@ class BatchJobTransformer:
                 f"Required annotation '{JobAnnotationKey.INPUT_FILE_ID.value}' not found"
             )
 
-        endpoint_str = annotations.get(JobAnnotationKey.ENDPOINT.value)
-        if not endpoint_str:
+        endpoint = annotations.get(JobAnnotationKey.ENDPOINT.value)
+        if not endpoint:
             raise ValueError(
                 f"Required annotation '{JobAnnotationKey.ENDPOINT.value}' not found"
             )
-
-        # Extract optional completion window
-        completion_window_str = annotations.get(
-            JobAnnotationKey.COMPLETION_WINDOW.value,
-            CompletionWindow.TWENTY_FOUR_HOURS.value,
-        )
 
         # Extract batch metadata (key-value pairs with prefix)
         batch_metadata = {}
@@ -120,10 +127,14 @@ class BatchJobTransformer:
                 batch_metadata[metadata_key] = value
 
         # Use BatchJobSpec.from_strings for validation and creation
-        return BatchJobSpec.from_strings(
+        return BatchJobSpec(
             input_file_id=input_file_id,
-            endpoint=endpoint_str,
-            completion_window=completion_window_str,
+            endpoint=endpoint,
+            completion_window=cls._safe_get_attr(
+                pod_spec,
+                "activeDeadlineSeconds",
+                CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+            ),
             metadata=batch_metadata if batch_metadata else None,
         )
 
@@ -187,9 +198,6 @@ class BatchJobTransformer:
         # Generate or extract batch ID
         job_id = cls._safe_get_attr(metadata, "uid") or str(uuid.uuid4())
 
-        # Map Kubernetes job phase to BatchJobState
-        state = cls._map_k8s_phase_to_batch_state(k8s_status)
-
         # Map file ids
         output_file_id = annotations.get(JobAnnotationKey.OUTPUT_FILE_ID.value)
         temp_output_file_id = annotations.get(
@@ -197,6 +205,21 @@ class BatchJobTransformer:
         )
         error_file_id = annotations.get(JobAnnotationKey.ERROR_FILE_ID.value)
         temp_error_file_id = annotations.get(JobAnnotationKey.TEMP_ERROR_FILE_ID.value)
+
+        # Map Kubernetes job phase to BatchJobState
+        validated = (
+            output_file_id is not None
+            and temp_output_file_id is not None
+            and error_file_id is not None
+            and temp_error_file_id is not None
+        )
+        state = cls._map_k8s_phase_to_batch_state(k8s_status, validated)
+        logger.debug(
+            "extracted batch job state",
+            state=state,
+            k8s_status=k8s_status,
+            type=type(k8s_status),
+        )  # type:ignore[call-arg]
 
         # Extract creation timestamp
         creation_timestamp = cls._convert_timestamp(
@@ -231,38 +254,43 @@ class BatchJobTransformer:
         )
 
     @classmethod
-    def _map_k8s_phase_to_batch_state(cls, k8s_status: Any) -> BatchJobState:
-        """Map Kubernetes job phase to BatchJobState."""
+    def _map_k8s_phase_to_batch_state(
+        cls, k8s_status: Any, validated: bool
+    ) -> BatchJobState:
+        """
+        Map Kubernetes job phase to BatchJobState. The checklist follows priority below:
+        1. Check for "Failed"
+        2. Check for "Completed"
+        3. Check for "Running"
+        4. Otherwise, it is "Just Created" / Pending
+        """
         # Handle both attribute access and dict-like access
-        phase = cls._safe_get_attr(k8s_status, "phase")
         conditions = cls._safe_get_attr(k8s_status, "conditions", [])
+        # Checklist conditions for more specific state
+        for condition in conditions:
+            condition_type = cls._safe_get_attr(condition, "type")
+            condition_status = cls._safe_get_attr(condition, "status")
+            condition_reason = cls._safe_get_attr(condition, "reason")
 
-        # Check if job is active (running)
+            # 1. Check for "Failed"
+            if condition_type == "Failed" and condition_status == "True":
+                if condition_reason == "DeadlineExceeded":
+                    return BatchJobState.EXPIRED
+                return BatchJobState.FAILED
+            # 2. Check for "Completed"
+            elif condition_type == "Complete" and condition_status == "True":
+                return BatchJobState.FINALIZING
+
+        # 3. Check for "Running"
         active: int = cls._safe_get_attr(k8s_status, "active", 0)
         succeeded: int = cls._safe_get_attr(k8s_status, "succeeded", 0)
         failed: int = cls._safe_get_attr(k8s_status, "failed", 0)
-
-        # Map based on job status
-        if succeeded > 0:
-            return BatchJobState.FINALIZING
-        elif failed > 0:
-            return BatchJobState.FAILED
-        elif active > 0:
+        running = (active + succeeded + failed) > 0
+        if running and validated:
             return BatchJobState.IN_PROGRESS
-        elif phase == "Pending":
-            return BatchJobState.CREATED
-        else:
-            # Check conditions for more specific state
-            for condition in conditions:
-                condition_type = cls._safe_get_attr(condition, "type")
-                condition_status = cls._safe_get_attr(condition, "status")
 
-                if condition_type == "Failed" and condition_status == "True":
-                    return BatchJobState.FAILED
-                elif condition_type == "Complete" and condition_status == "True":
-                    return BatchJobState.FINALIZING
-
-            return BatchJobState.CREATED
+        # 4. Otherwise, it is "Just Created" / Pending
+        return BatchJobState.CREATED
 
     @classmethod
     def _safe_get_attr(cls, obj: Any, attr: str, default: Any = None) -> Any:
@@ -270,18 +298,13 @@ class BatchJobTransformer:
         if obj is None:
             return default
 
-        # Try attribute access first
-        if hasattr(obj, attr):
-            ret = getattr(obj, attr)
-            if ret is None:
-                return default
-            return ret
+        # Try dict-like access, use collections.abc.Mapping to support kopf.body
+        if isinstance(obj, collections.abc.Mapping):
+            val = obj.get(attr, None)
+        else:
+            val = getattr(obj, attr, None)
 
-        # Try dict-like access
-        if isinstance(obj, dict):
-            return obj.get(attr, default)
-
-        return default
+        return default if val is None else val
 
     @classmethod
     def _convert_timestamp(cls, timestamp: Any) -> Optional[datetime]:

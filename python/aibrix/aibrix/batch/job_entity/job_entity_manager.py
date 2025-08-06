@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Callable, Optional
+from typing import Any, Callable, Coroutine, Optional
 
 from .batch_job import BatchJob, BatchJobSpec
 
@@ -25,7 +25,9 @@ class JobEntityManager(ABC):
     Any storage implementation are transparent to external components.
     """
 
-    def on_job_committed(self, handler: Callable[[BatchJob], None]):
+    def on_job_committed(
+        self, handler: Callable[[BatchJob], Coroutine[Any, Any, None]]
+    ):
         """Register a job committed callback.
 
         Args:
@@ -33,9 +35,13 @@ class JobEntityManager(ABC):
                 The callback function. It should accept a single `BatchJob` object
                 representing the committed job and return `None`.
         """
-        self._job_committed_handler: Optional[Callable[[BatchJob], None]] = handler
+        self._job_committed_handler: Optional[
+            Callable[[BatchJob], Coroutine[Any, Any, None]]
+        ] = handler
 
-    def on_job_updated(self, handler: Callable[[BatchJob, BatchJob], None]):
+    def on_job_updated(
+        self, handler: Callable[[BatchJob, BatchJob], Coroutine[Any, Any, None]]
+    ):
         """Register a job updated callback.
 
         Args:
@@ -44,11 +50,11 @@ class JobEntityManager(ABC):
                 representing the old job and new job and return `None`.
                 Example: `lambda old_job, new_job: logger.info("Job updated", old_id=old_job.id, new_id=new_job.id)`
         """
-        self._job_updated_handler: Optional[Callable[[BatchJob, BatchJob], None]] = (
-            handler
-        )
+        self._job_updated_handler: Optional[
+            Callable[[BatchJob, BatchJob], Coroutine[Any, Any, None]]
+        ] = handler
 
-    def on_job_deleted(self, handler: Callable[[BatchJob], None]):
+    def on_job_deleted(self, handler: Callable[[BatchJob], Coroutine[Any, Any, None]]):
         """Register a job deleted callback.
 
         Args:
@@ -57,7 +63,9 @@ class JobEntityManager(ABC):
                 representing the deleted job and return `None`.
                 Example: `lambda deleted_job: logger.info("Job deleted", job_id=deleted_job.id)`
         """
-        self._job_deleted_handler: Optional[Callable[[BatchJob], None]] = handler
+        self._job_deleted_handler: Optional[
+            Callable[[BatchJob], Coroutine[Any, Any, None]]
+        ] = handler
 
     def is_scheduler_enabled(self) -> bool:
         """Check if JobEntityManager has own scheduler enabled."""
@@ -71,6 +79,14 @@ class JobEntityManager(ABC):
             job (BatchJob): Job to add.
         """
         pass
+
+    @abstractmethod
+    def update_job_ready(self, job: BatchJob):
+        """Update job by marking job ready with required information.
+
+        Args:
+            job (BatchJob): Job to update.
+        """
 
     @abstractmethod
     def cancel_job(self, job_id: str):

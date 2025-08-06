@@ -21,11 +21,14 @@ import httpx
 
 import aibrix.batch.constant as constant
 import aibrix.batch.storage as storage
-from aibrix.batch.job_entity import BatchJob, BatchJobState
-from aibrix.batch.job_manager import JobManager
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobError,
+    BatchJobErrorCode,
+    BatchJobState,
+)
+from aibrix.batch.job_progress_manager import JobProgressManager
 from aibrix.logger import init_logger
-
-from .job_entity import BatchJobError, BatchJobErrorCode
 
 logger = init_logger(__name__)
 
@@ -59,11 +62,11 @@ class ProxyInferenceEngineClient(InferenceEngineClient):
 class JobDriver:
     def __init__(
         self,
-        manager: JobManager,
+        progress_manager: JobProgressManager,
         inference_client: Optional[InferenceEngineClient] = None,
     ) -> None:
         """ """
-        self._job_manager = manager
+        self._progress_manager = progress_manager
         if inference_client is None:
             self._inference_client = InferenceEngineClient()
         else:
@@ -74,7 +77,7 @@ class JobDriver:
         Execute complete job workflow: prepare -> execute -> finalize.
         This function executes all three steps.
         """
-        job = self._job_manager.get_job(job_id)
+        job = self._progress_manager.get_job(job_id)
         if job is None:
             logger.warning("Job not found", job_id=job_id)
             return
@@ -87,7 +90,7 @@ class JobDriver:
         if not has_temp_files:
             # Step 1: Prepare job output files
             logger.debug("Temp files not created, creating...", job_id=job_id)
-            await storage.prepare_job_ouput_files(job)
+            job = await storage.prepare_job_ouput_files(job)
 
         logger.debug(
             "Confirmed temp files",
@@ -178,7 +181,7 @@ class JobDriver:
 
                 # Retry inference request up to 3 times with exponential backoff
                 request_output, last_error = await self._retry_inference_request(
-                    job.spec.endpoint.value, request_input["body"], job_id, line_no
+                    job.spec.endpoint, request_input["body"], job_id, line_no
                 )
 
                 # Build standardized response
@@ -234,6 +237,27 @@ class JobDriver:
             state=job.status.state.value if job else None,
         )  # type: ignore[call-arg]
         return job
+
+    async def prepare_job(self, job: BatchJob) -> BatchJob:
+        """
+        Prepare job output files by creating multipart uploads.
+        This is called by metadata server when a new job is committed.
+        """
+        logger.debug("Preparing job output files")  # type: ignore[call-arg]
+        job = await storage.prepare_job_ouput_files(job)
+        logger.debug("Job output files prepared")  # type: ignore[call-arg]
+        return job
+
+    async def finalize_job(self, job: BatchJob) -> BatchJob:
+        """
+        Finalize the job by removing all data.
+        """
+        assert job.status.state == BatchJobState.FINALIZING
+
+        await storage.finalize_job_output_data(job)
+
+        logger.debug("Completed job", job_id=job.job_id)  # type: ignore[call-arg]
+        return self._sync_job_status(job.job_id)
 
     def store_output(self, output_id, request_id, result):
         """
@@ -327,17 +351,17 @@ class JobDriver:
         Update job's status back to job manager.
         """
         if total > 0:
-            return self._job_manager.mark_job_total(job_id, total)
+            return self._progress_manager.mark_job_total(job_id, total)
         elif reqeust_id < 0:
-            return self._job_manager.mark_job_done(job_id)
+            return self._progress_manager.mark_job_done(job_id)
         else:
-            return self._job_manager.mark_jobs_progresses(job_id, [reqeust_id])
+            return self._progress_manager.mark_jobs_progresses(job_id, [reqeust_id])
 
     def _get_next_request(self, job_id: str) -> tuple[BatchJob, int]:
         """
         Get next request id from job manager.
         """
-        return self._job_manager.get_job_next_request(job_id)
+        return self._progress_manager.get_job_next_request(job_id)
 
     def _sync_job_status_and_get_next_request(
         self, job_id: str, request_id: int
@@ -345,6 +369,6 @@ class JobDriver:
         """
         Sync job status and get next request, with None checking.
         """
-        return self._job_manager.mark_job_progress_and_get_next_request(
+        return self._progress_manager.mark_job_progress_and_get_next_request(
             job_id, request_id
         )

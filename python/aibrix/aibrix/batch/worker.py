@@ -18,13 +18,20 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
-from kubernetes import client, config
 
 from aibrix.batch.driver import BatchDriver
-from aibrix.batch.job_entity import BatchJob, BatchJobTransformer
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobSpec,
+    BatchJobState,
+    BatchJobStatus,
+    BatchJobTransformer,
+)
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -35,8 +42,8 @@ class LLMHealthChecker:
 
     def __init__(
         self,
-        health_url: str = "http://localhost:8000/health",
-        check_interval: int = 5,
+        health_url: str,
+        check_interval: int = 1,
         timeout: int = 300,
     ):
         self.health_url = health_url
@@ -77,24 +84,124 @@ class BatchWorker:
         self.driver: Optional[BatchDriver] = None
         self.llm_engine_base_url: Optional[str] = None
 
+    def load_job_from_env(self) -> BatchJob:
+        """Generate BatchJob from environment variables set by pod annotations."""
+        logger.info("Loading job specification from environment variables...")
+
+        # Get basic job information
+        job_name = os.getenv("JOB_NAME")
+        job_ns = os.getenv("JOB_NAMESPACE")
+        job_id = os.getenv("JOB_UID")
+
+        if not job_id:
+            raise ValueError("JOB_UID environment variable is required")
+        if not job_name:
+            raise ValueError("JOB_NAME environment variable is required")
+        if not job_ns:
+            raise ValueError("JOB_NAMESPACE environment variable is required")
+
+        # Get batch job metadata from environment variables
+        input_file_id = os.getenv("BATCH_INPUT_FILE_ID")
+        endpoint = os.getenv("BATCH_ENDPOINT")
+        # Expiration window is set on Job spec: activeDeadlineSeconds
+
+        # Get file IDs
+        output_file_id = os.getenv("BATCH_OUTPUT_FILE_ID")
+        temp_output_file_id = os.getenv("BATCH_TEMP_OUTPUT_FILE_ID")
+        error_file_id = os.getenv("BATCH_ERROR_FILE_ID")
+        temp_error_file_id = os.getenv("BATCH_TEMP_ERROR_FILE_ID")
+
+        if not input_file_id:
+            raise ValueError("BATCH_INPUT_FILE_ID environment variable is required")
+        if not endpoint:
+            raise ValueError("BATCH_ENDPOINT environment variable is required")
+
+        logger.info(
+            "Confirmed Job",
+            name=job_name,
+            namespace=job_ns,
+            job_id=job_id,
+            input_file_id=input_file_id,
+            endpoint=endpoint,
+        )  # type: ignore[call-arg]
+
+        try:
+            # Initialize health checker
+            health_url = os.getenv("LLM_READY_ENDPOINT", "http://localhost:8000/health")
+            self.health_checker = LLMHealthChecker(health_url)
+            logger.info("Set health checker", health_url=health_url)  # type: ignore[call-arg]
+
+            # Try to construct base URL from health URL
+            parsed = urlparse(health_url)
+            base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+            self.llm_engine_base_url = base_url
+            logger.info("Set LLM engine base URL", base_url=base_url)  # type: ignore[call-arg]
+
+            # Create BatchJobSpec
+            spec = BatchJobSpec.from_strings(
+                input_file_id=input_file_id,
+                endpoint=endpoint,
+                metadata=None,
+            )
+
+            # Determine state based on file IDs (as in current transformer logic)
+            validated = (
+                output_file_id is not None
+                and temp_output_file_id is not None
+                and error_file_id is not None
+                and temp_error_file_id is not None
+            )
+            state = BatchJobState.IN_PROGRESS if validated else BatchJobState.CREATED
+
+            # Create BatchJobStatus
+            status = BatchJobStatus(
+                jobID=job_id,
+                state=state,
+                outputFileID=output_file_id,
+                tempOutputFileID=temp_output_file_id,
+                errorFileID=error_file_id,
+                tempErrorFileID=temp_error_file_id,
+                createdAt=datetime.now(timezone.utc),
+            )
+
+            # Create BatchJob
+            batch_job = BatchJob.new_from_spec(job_name, job_ns, spec)
+            batch_job.status = status
+
+            logger.info(
+                "Successfully generated BatchJob from environment variables",
+                job_name=batch_job.metadata.name,
+                job_namespace=batch_job.metadata.namespace,
+                job_id=batch_job.job_id,
+                state=state.value,
+                validated=validated,
+            )  # type: ignore[call-arg]
+
+            return batch_job
+        except Exception as e:
+            raise RuntimeError(
+                f"Error creating BatchJob from environment variables: {e}"
+            ) from e
+
     def load_job_from_k8s(self, llm_engine_container_name: str) -> BatchJob:
         """Load and transform the parent Kubernetes Job to BatchJob."""
         logger.info("Loading job specification from Kubernetes API...")
 
-        # Load the in-cluster configuration
+        # Load k8s batch api client
+        from kubernetes import client, config
+
         try:
             config.load_incluster_config()
         except config.ConfigException:
             logger.warning("Failed to load in-cluster config, trying local config...")
             config.load_kube_config()
-
-        # The Batch V1 API is used for Jobs
-        api_client = client.BatchV1Api()
+        batch_api_client = client.BatchV1Api()
 
         # Get the Job name and namespace from environment variables
+        # Get basic job information
         job_name = os.getenv("JOB_NAME")
         namespace = os.getenv("JOB_NAMESPACE")
-
         if not job_name:
             raise ValueError("JOB_NAME environment variable is required")
         if not namespace:
@@ -105,13 +212,13 @@ class BatchWorker:
         try:
             # Fetch the Job object
             logger.info("Fetching Job spec from the Kubernetes API...")
-            k8s_job = api_client.read_namespaced_job(name=job_name, namespace=namespace)
+            k8s_job = batch_api_client.read_namespaced_job(
+                name=job_name, namespace=namespace
+            )
 
             # Extract LLM engine information and initialize health checker
-            health_url, check_interval = self.extract_llm_engine_info(
-                k8s_job, llm_engine_container_name
-            )
-            self.health_checker = LLMHealthChecker(health_url, check_interval)
+            health_url = os.getenv("LLM_READY_ENDPOINT", "http://localhost:8000/health")
+            self.health_checker = LLMHealthChecker(health_url)
 
             # Transform k8s Job to BatchJob using BatchJobTransformer
             batch_job = BatchJobTransformer.from_k8s_job(k8s_job)
@@ -228,13 +335,46 @@ class BatchWorker:
         )  # type: ignore[call-arg]
 
         # Commit job to job manager
-        self.driver.job_manager.job_committed_handler(batch_job)
+        await self.driver.job_manager.job_committed_handler(batch_job)
         logger.info("Job committed to manager", job_id=job_id)  # type: ignore[call-arg]
 
         # Wait until job reaches FINALIZING state
         await self.wait_for_finalizing(job_id)
 
         return job_id
+
+    async def wait_for_in_progress(
+        self, job: BatchJob, max_wait: int = 300
+    ) -> BatchJob:
+        """Wait for job to reach IN_PROGRESS state by watching Kubernetes job updates.
+
+        Raises:
+            ReadTimeoutError if job does not reach IN_PROGRESS state within max_wait seconds.
+        """
+        if job.status.state != BatchJobState.CREATED:
+            logger.info(
+                "Job already in non-CREATED state",
+                job_id=job.job_id,
+                current_state=job.status.state.value,
+                output_file_id=job.status.output_file_id,
+                temp_output_file_id=job.status.temp_output_file_id,
+                error_file_id=job.status.error_file_id,
+                temp_error_file_id=job.status.temp_error_file_id,
+            )  # type: ignore[call-arg]
+            return job
+
+        logger.info(
+            "Waiting for job to reach IN_PROGRESS state",
+            job_id=job.job_id,
+            job_name=job.metadata.name,
+            namespace=job.metadata.namespace,
+            max_wait=max_wait,
+        )  # type: ignore[call-arg]
+
+        # [TODO][NOW] Use metestore to watch in_progress status.
+
+        # Unlikely, should raise ReadTimeoutError
+        return job
 
     async def wait_for_finalizing(self, job_id: str, max_wait: int = 600):
         """Wait for job to reach FINALIZING state."""
@@ -263,13 +403,29 @@ class BatchWorker:
     async def run(self, args: argparse.Namespace) -> int:
         """Main worker execution flow."""
         try:
-            # Step 1: Load job specification from Kubernetes API (this also initializes health checker)
-            batch_job = self.load_job_from_k8s(args.llm_engine_container_name)
+            # Step 1: Load job specification
+            batchJob: Optional[BatchJob] = None
+            try:
+                if args.load_job_from_api:
+                    batch_job = self.load_job_from_k8s(args.llm_engine_container_name)
+            except Exception:
+                pass
+
+            # Use env as a fallback
+            if batchJob is None:
+                batch_job = self.load_job_from_env()
+
             logger.info(
                 "Loaded job specification",
                 input_file_id=batch_job.spec.input_file_id,
                 endpoint=batch_job.spec.endpoint,
             )  # type: ignore[call-arg]
+
+            # Wait for job to become IN_PROGRESS (metadata server will prepare the job)
+            batch_job = await self.wait_for_in_progress(batch_job)
+            if batch_job.status.state != BatchJobState.IN_PROGRESS:
+                logger.error("Job failed to reach IN_PROGRESS state")
+                return 1
 
             # Step 2: Wait for vLLM service to become ready
             assert (
@@ -387,6 +543,11 @@ async def worker_main() -> int:
     loop.add_signal_handler(signal.SIGINT, stop.set_result, None)
 
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--load-job-from-api",
+        action="store_true",
+        help="load job spec from api server",
+    )
     parser.add_argument(
         "--llm-engine-container-name",
         type=str,

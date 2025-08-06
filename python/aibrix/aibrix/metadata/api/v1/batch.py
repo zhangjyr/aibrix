@@ -14,9 +14,10 @@
 
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
+import humanize
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -138,18 +139,23 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     if created_at_unix is None:
         created_at_unix = int(datetime.now().timestamp())
 
+    delta = timedelta(seconds=spec.completion_window)
+    completion_window = humanize.precisedelta(
+        delta, minimum_unit="seconds", format="%d"
+    )
+
     return BatchResponse(
         id=status.job_id,
-        endpoint=spec.endpoint.value,
+        endpoint=spec.endpoint,
         errors=BatchErrors(data=status.errors) if status.errors else None,
         input_file_id=spec.input_file_id,
-        completion_window=spec.completion_window.value,
+        completion_window=completion_window,
         status=status.state.value,
         output_file_id=status.output_file_id,
         error_file_id=status.error_file_id,
         created_at=created_at_unix,
         in_progress_at=dt_to_unix(status.in_progress_at),
-        expires_at=created_at_unix + int(spec.completion_window.expires_at()),
+        expires_at=created_at_unix + spec.completion_window,
         finalizing_at=dt_to_unix(status.finalizing_at),
         completed_at=dt_to_unix(status.completed_at),
         failed_at=dt_to_unix(status.failed_at),
@@ -348,4 +354,5 @@ async def list_batches(
 
     except Exception as e:
         logger.error("Unexpected error listing batches", error=str(e))  # type: ignore[call-arg]
+        raise HTTPException(status_code=500, detail="Internal server error")
         raise HTTPException(status_code=500, detail="Internal server error")

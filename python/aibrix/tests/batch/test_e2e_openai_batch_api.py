@@ -241,6 +241,166 @@ async def test_openai_batch_api_e2e():
 
 
 @pytest.mark.asyncio
+async def test_openai_batch_api_metadata_server_workflow():
+    """
+    End-to-end test for OpenAI Batch API with metadata server workflow:
+    1. Upload sample input file via Files API
+    2. Create batch job via Batch API (using metadata server mode)
+    3. Verify metadata server prepares job output files
+    4. Simulate worker execution by checking IN_PROGRESS state
+    5. Poll job status until completion
+    6. Download and verify output via Files API
+    """
+    app = create_test_app()
+
+    with TestClient(app) as client:
+        # Step 1: Upload sample input file via Files API
+        print("Step 1: Uploading batch input file...")
+
+        input_data = generate_batch_input_data(
+            2
+        )  # Smaller batch for metadata server test
+        files = {
+            "file": ("metadata_batch_input.jsonl", input_data, "application/jsonl")
+        }
+        data = {"purpose": "batch"}
+
+        upload_response = client.post("/v1/files", files=files, data=data)
+        assert (
+            upload_response.status_code == 200
+        ), f"File upload failed: {upload_response.text}"
+
+        upload_result = upload_response.json()
+        input_file_id = upload_result["id"]
+        print(f"✅ File uploaded successfully with ID: {input_file_id}")
+
+        # Step 2: Create batch job via Batch API (metadata server mode)
+        print("Step 2: Creating batch job with metadata server workflow...")
+
+        batch_request = {
+            "input_file_id": input_file_id,
+            "endpoint": "/v1/chat/completions",
+            "completion_window": "24h",
+        }
+
+        batch_response = client.post("/v1/batches", json=batch_request)
+        assert (
+            batch_response.status_code == 200
+        ), f"Batch creation failed: {batch_response.text}"
+
+        batch_result = batch_response.json()
+        batch_id = batch_result["id"]
+        print(f"✅ Batch created successfully with ID: {batch_id}")
+
+        # Step 3: Verify metadata server prepared job output files
+        print("Step 3: Checking if job output files are prepared...")
+
+        # Poll for a short time to see if job moves through states
+        preparation_polls = 5
+        for attempt in range(preparation_polls):
+            status_response = client.get(f"/v1/batches/{batch_id}")
+            assert (
+                status_response.status_code == 200
+            ), f"Status check failed: {status_response.text}"
+
+            status_result = status_response.json()
+            current_status = status_result["status"]
+            print(f"  Preparation check {attempt + 1}: Status = {current_status}")
+
+            # Check if we have output file IDs which indicates preparation is done
+            output_file_id = status_result.get("output_file_id")
+            error_file_id = status_result.get("error_file_id")
+
+            if output_file_id and error_file_id:
+                print("✅ Job output files prepared by metadata server!")
+                break
+            elif current_status in ["failed", "cancelled", "expired"]:
+                pytest.fail(f"Job failed during preparation: {current_status}")
+
+            await asyncio.sleep(0.5)
+
+        # Step 4: Simulate worker workflow - wait for IN_PROGRESS
+        print("Step 4: Waiting for job to reach IN_PROGRESS state...")
+
+        in_progress_polls = 10
+        for attempt in range(in_progress_polls):
+            status_response = client.get(f"/v1/batches/{batch_id}")
+            status_result = status_response.json()
+            current_status = status_result["status"]
+
+            print(f"  IN_PROGRESS check {attempt + 1}: Status = {current_status}")
+
+            if current_status == "in_progress":
+                print("✅ Job reached IN_PROGRESS state - worker can start execution!")
+                break
+            elif current_status in ["failed", "cancelled", "expired"]:
+                pytest.fail(f"Job failed before reaching IN_PROGRESS: {current_status}")
+
+            await asyncio.sleep(0.5)
+
+        # Step 5: Poll job status until completion (metadata server should finalize)
+        print("Step 5: Polling job status until completion...")
+
+        max_polls = 15  # Extended for metadata server workflow
+        poll_interval = 1
+
+        for attempt in range(max_polls):
+            status_response = client.get(f"/v1/batches/{batch_id}")
+            status_result = status_response.json()
+            current_status = status_result["status"]
+
+            print(f"  Completion check {attempt + 1}: Status = {current_status}")
+
+            if current_status == "completed":
+                print(
+                    "✅ Batch job completed successfully with metadata server workflow!"
+                )
+                output_file_id = status_result["output_file_id"]
+                assert (
+                    output_file_id is not None
+                ), "Expected output_file_id for completed batch"
+                break
+            elif current_status == "failed":
+                pytest.fail(
+                    f"Batch job failed: {status_result.get('errors', 'Unknown error')}"
+                )
+            elif current_status in ["cancelled", "expired"]:
+                pytest.fail(f"Batch job was {current_status}")
+
+            await asyncio.sleep(poll_interval)
+        else:
+            pytest.fail(
+                f"Batch job did not complete within {max_polls * poll_interval} seconds"
+            )
+
+        # Step 6: Download and verify output via Files API
+        print("Step 6: Downloading and verifying output...")
+
+        output_response = client.get(f"/v1/files/{output_file_id}/content")
+        assert (
+            output_response.status_code == 200
+        ), f"Output download failed: {output_response.text}"
+
+        output_content = output_response.content.decode("utf-8")
+        assert output_content, "Output file is empty"
+
+        # Verify output content structure
+        is_valid = verify_batch_output_content(output_content, 2)
+        assert (
+            is_valid
+        ), f"Output content verification failed. Content:\n{output_content}"
+
+        print("✅ Output downloaded and verified successfully!")
+        print(f"Output content preview:\n{output_content[:200]}...")
+
+        print(
+            "\n🎉 Metadata server workflow E2E test completed successfully! "
+            "Job preparation, worker coordination, and finalization working correctly."
+        )
+        await app.state.job_controller.clear_job(batch_id)
+
+
+@pytest.mark.asyncio
 async def test_batch_api_error_handling():
     """Test error handling in batch API."""
     app = create_test_app()

@@ -16,23 +16,21 @@ import asyncio
 import copy
 import json
 import os
-import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-import aibrix.batch.storage as _storage
-import aibrix.batch.storage.batch_metastore as _metastore
 import boto3
 import pytest
 import yaml
-from aibrix.batch.job_entity import (BatchJob, BatchJobSpec, BatchJobState,
-                                     BatchJobTransformer)
+from kubernetes import client, config
+
+import aibrix.batch.storage as _storage
+import aibrix.batch.storage.batch_metastore as _metastore
+from aibrix.batch.job_entity import BatchJob, BatchJobSpec, BatchJobState
 from aibrix.logger import init_logger
 from aibrix.metadata.cache.job import JobCache
-from aibrix.metadata.cache.utils import merge_yaml_object
 from aibrix.storage.types import StorageType
-from kubernetes import client, config
 
 logger = init_logger(__name__)
 

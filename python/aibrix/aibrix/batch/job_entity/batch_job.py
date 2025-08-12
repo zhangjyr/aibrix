@@ -15,7 +15,7 @@
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_core import core_schema
@@ -51,20 +51,9 @@ class BatchJobState(str, Enum):
     CREATED = "created"
     VALIDATING = "validating"
     IN_PROGRESS = "in_progress"
-    FINALIZING = "finalizing"
-    COMPLETED = "completed"
-    EXPIRED = "expired"
-    FAILED = "failed"
     CANCELLING = "cancelling"
-    CANCELED = "canceled"
-
-    def is_finished(self):
-        return self in [
-            BatchJobState.COMPLETED,
-            BatchJobState.FAILED,
-            BatchJobState.CANCELED,
-            BatchJobState.EXPIRED,
-        ]
+    FINALIZING = "finalizing"
+    FINALIZED = "finalized"
 
 
 class BatchJobErrorCode(str, Enum):
@@ -76,15 +65,18 @@ class BatchJobErrorCode(str, Enum):
     INVALID_METADATA = "invalid_metadata"
     AUTHENTICATION_ERROR = "authentication_error"
     INFERENCE_FAILED = "inference_failed"
+    PREPARE_OUTPUT_ERROR = "prepare_output_failed"
+    FINALIZING_ERROR = "finalizing_failed"
     UNKNOWN_ERROR = "unknown_error"
 
 
 class ConditionType(str, Enum):
     """Types of conditions for batch job status."""
 
-    READY = "Ready"
-    PROCESSING = "Processing"
-    FAILED = "Failed"
+    COMPLETED = "completed"
+    EXPIRED = "expired"
+    FAILED = "failed"
+    CANCELED = "canceled"
 
 
 class ConditionStatus(str, Enum):
@@ -127,7 +119,7 @@ class Condition(NoExtraBaseModel):
 
 
 class BatchJobSpec(NoExtraBaseModel):
-    """Defines the desired state of a Batch job, which is OpenAI batch compatible."""
+    """Defines the specification of a Batch job input."""
 
     input_file_id: str = Field(
         description="The ID of an uploaded file that contains the requests for the batch",
@@ -142,7 +134,6 @@ class BatchJobSpec(NoExtraBaseModel):
     metadata: Optional[Dict[str, str]] = Field(
         default=None,
         description="Set of up to 16 key-value pairs to attach to the batch object",
-        max_length=16,
     )
 
     @classmethod
@@ -277,26 +268,38 @@ class BatchJobError(Exception):
     def __get_pydantic_core_schema__(cls, source, handler) -> core_schema.CoreSchema:
         """
         Returns the pydantic-core schema for this class, allowing it to be
-        used directly within Pydantic models.
+        used directly within Pydantic models for both validation and serialization.
         """
-        # This defines the schema for the arguments to __init__
-        arguments_schema = core_schema.model_fields_schema(
-            {
-                "code": core_schema.model_field(core_schema.str_schema()),
-                "message": core_schema.model_field(core_schema.str_schema()),
-                "param": core_schema.model_field(
-                    core_schema.nullable_schema(core_schema.str_schema())
-                ),
-                "line": core_schema.model_field(
-                    core_schema.nullable_schema(core_schema.str_schema())
-                ),
+        def serialize_batch_job_error(instance: "BatchJobError") -> Dict[str, Any]:
+            """Custom serializer for BatchJobError."""
+            return {
+                "code": instance.code,
+                "message": instance.message,
+                "param": instance.param,
+                "line": instance.line,
             }
-        )
-        return core_schema.call_schema(
-            arguments_schema,
-            function=cls,
-        )
 
+        def validate_batch_job_error(value) -> "BatchJobError":
+            """Custom validator for BatchJobError."""
+            if isinstance(value, cls):
+                return value
+            elif isinstance(value, dict):
+                return cls(
+                    code=BatchJobErrorCode(value["code"]),
+                    message=value["message"],
+                    param=value.get("param"),
+                    line=value.get("line"),
+                )
+            else:
+                raise ValueError(f"Cannot convert {type(value)} to BatchJobError")
+
+        return core_schema.no_info_plain_validator_function(
+            function=validate_batch_job_error,
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                function=serialize_batch_job_error,
+                return_schema=core_schema.dict_schema(),
+            ),
+        )
 
 class BatchJobStatus(NoExtraBaseModel):
     """Defines the observed state of BatchJobSpec."""
@@ -379,10 +382,64 @@ class BatchJobStatus(NoExtraBaseModel):
         description="Timestamp of when the batch job get cancelled",
     )
 
-    conditions: Optional[Condition] = Field(
+    conditions: Optional[List[Condition]] = Field(
         default=None,
         description="Conditions represent the latest available observations of the batch job's state",
     )
+
+    @property
+    def finished(self) -> bool:
+        return self.state == BatchJobState.FINALIZED
+
+    @property
+    def completed(self) -> bool:
+        return self.finished and self.check_condition(ConditionType.COMPLETED)
+
+    @property
+    def failed(self) -> bool:
+        return (
+            self.finished
+            and self.check_condition(ConditionType.FAILED)
+            and not self.check_condition(ConditionType.EXPIRED)
+        )
+
+    @property
+    def expired(self) -> bool:
+        return self.finished and self.check_condition(ConditionType.EXPIRED)
+
+    @property
+    def canceled(self) -> bool:
+        return self.finished and self.check_condition(ConditionType.CANCELED)
+
+    @property
+    def condition(self) -> Optional[ConditionType]:
+        if self.conditions is None:
+            return None
+        elif self.check_condition(ConditionType.COMPLETED):
+            return ConditionType.COMPLETED
+        elif self.check_condition(ConditionType.EXPIRED):
+            return ConditionType.EXPIRED
+        elif self.check_condition(ConditionType.FAILED):
+            return ConditionType.FAILED
+        elif self.check_condition(ConditionType.CANCELED):
+            return ConditionType.CANCELED
+        else:
+            return None
+
+    def check_condition(self, type: ConditionType) -> bool:
+        if self.conditions is None:
+            return False
+
+        for condition in self.conditions:
+            if condition.type == type:
+                return True
+
+        return False
+
+    def add_condition(self, condition: Condition):
+        if self.conditions is None:
+            self.conditions = []
+        self.conditions.append(condition)
 
 
 class BatchJob(NoExtraBaseModel):

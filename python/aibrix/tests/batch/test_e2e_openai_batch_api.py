@@ -20,20 +20,36 @@ import pytest
 from fastapi.testclient import TestClient
 
 from aibrix.metadata.app import build_app
+from aibrix.metadata.setting import settings
+from aibrix.storage import StorageType
 
 
-def create_test_app():
+def create_test_app(
+    enable_k8s_job: bool = False,
+    storage_type: StorageType = StorageType.LOCAL,
+    metastore_type: StorageType = StorageType.LOCAL,
+    params={},
+):
     """Create a FastAPI app configured for e2e testing."""
-    return build_app(
+    # Save old settings
+    oldStorage, oldMetaStore = settings.STORAGE_TYPE, settings.METASTORE_TYPE
+    # Override settings
+    settings.STORAGE_TYPE, settings.METASTORE_TYPE = storage_type, metastore_type
+    # Create app
+    app = build_app(
         argparse.Namespace(
             host=None,
             port=8100,
             enable_fastapi_docs=False,
             disable_batch_api=False,
-            enable_k8s_job=False,
+            enable_k8s_job=enable_k8s_job,
             e2e_test=True,
-        )
+        ),
+        params,
     )
+    # RESTORE settings
+    settings.STORAGE_TYPE, settings.METASTORE_TYPE = oldStorage, oldMetaStore
+    return app
 
 
 def generate_batch_input_data(num_requests: int = 3) -> str:
@@ -62,7 +78,7 @@ def generate_batch_input_data(num_requests: int = 3) -> str:
 
 
 def verify_batch_output_content(
-    output_content: str, expected_requests: int = 3
+    output_content: str, expected_requests: int
 ) -> bool:
     """Verify that batch output content has the expected structure."""
     lines = output_content.strip().split("\n")
@@ -73,23 +89,36 @@ def verify_batch_output_content(
 
     for i, line in enumerate(lines):
         try:
-            response = json.loads(line)
+            output = json.loads(line)
 
             # Check required fields in OpenAI batch response format
-            # [TODO][NEXT] check required_fields = ["id", "custom_id", "response"]
-            required_fields = ["custom_id"]  # For now, just check custom_id
+            required_fields = ["id", "custom_id", "response"]
             for field in required_fields:
-                if field not in response:
+                if field not in output:
                     print(f"Missing required field '{field}' in response {i+1}")
                     return False
 
             # Verify custom_id matches expected pattern
             expected_custom_id = f"request-{i+1}"
-            if response["custom_id"] != expected_custom_id:
+            if output["custom_id"] != expected_custom_id:
                 print(
-                    f"Expected custom_id '{expected_custom_id}', got '{response['custom_id']}'"
+                    f"Expected custom_id '{expected_custom_id}', got '{output['custom_id']}'"
                 )
                 return False
+
+            response = output["response"]
+            required_fields = ["status_code", "request_id", "body"]
+            for field in required_fields:
+                if field not in response:
+                    print(f"Missing required field 'response.{field}' in response {i+1}")
+                    return False
+
+            body = response["body"]
+            required_fields = ["model"]  # For now, just check model
+            for field in required_fields:
+                if field not in body:
+                    print(f"Missing required field 'response.body.{field}' in response {i+1}")
+                    return False
 
         except json.JSONDecodeError as e:
             print(f"Invalid JSON in output line {i+1}: {e}")
@@ -175,6 +204,13 @@ async def test_openai_batch_api_e2e():
                 assert (
                     output_file_id is not None
                 ), "Expected output_file_id for completed batch"
+
+                request_counts = status_result.get("request_counts")
+                assert request_counts is not None
+                assert request_counts["total"] == 3
+                assert request_counts["completed"] == 3
+                assert request_counts["failed"] == 0
+
                 break
             elif current_status == "failed":
                 pytest.fail(
@@ -237,11 +273,16 @@ async def test_openai_batch_api_e2e():
         print(
             "\n🎉 E2E test completed successfully! All OpenAI Batch API endpoints working correctly."
         )
-        await app.state.job_controller.clear_job(batch_id)
+        await app.state.batch_driver.clear_job(batch_id)
 
 
 @pytest.mark.asyncio
-async def test_openai_batch_api_metadata_server_workflow():
+async def test_openai_batch_api_metadata_server_workflow(
+    k8s_config,
+    test_s3_bucket,
+    s3_credentials_secret,
+    redis_config_available,
+):
     """
     End-to-end test for OpenAI Batch API with metadata server workflow:
     1. Upload sample input file via Files API
@@ -251,15 +292,18 @@ async def test_openai_batch_api_metadata_server_workflow():
     5. Poll job status until completion
     6. Download and verify output via Files API
     """
-    app = create_test_app()
+    app = create_test_app(
+        enable_k8s_job=True,
+        storage_type=StorageType.S3,
+        metastore_type=StorageType.REDIS,
+        params={"bucket_name": test_s3_bucket},
+    )
 
     with TestClient(app) as client:
         # Step 1: Upload sample input file via Files API
         print("Step 1: Uploading batch input file...")
 
-        input_data = generate_batch_input_data(
-            2
-        )  # Smaller batch for metadata server test
+        input_data = generate_batch_input_data(10)
         files = {
             "file": ("metadata_batch_input.jsonl", input_data, "application/jsonl")
         }
@@ -322,10 +366,11 @@ async def test_openai_batch_api_metadata_server_workflow():
         # Step 4: Simulate worker workflow - wait for IN_PROGRESS
         print("Step 4: Waiting for job to reach IN_PROGRESS state...")
 
-        in_progress_polls = 10
+        in_progress_polls = 3
         for attempt in range(in_progress_polls):
             status_response = client.get(f"/v1/batches/{batch_id}")
             status_result = status_response.json()
+            print(status_result)
             current_status = status_result["status"]
 
             print(f"  IN_PROGRESS check {attempt + 1}: Status = {current_status}")
@@ -336,17 +381,18 @@ async def test_openai_batch_api_metadata_server_workflow():
             elif current_status in ["failed", "cancelled", "expired"]:
                 pytest.fail(f"Job failed before reaching IN_PROGRESS: {current_status}")
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
 
         # Step 5: Poll job status until completion (metadata server should finalize)
         print("Step 5: Polling job status until completion...")
 
-        max_polls = 15  # Extended for metadata server workflow
+        max_polls = 20  # Extended for metadata server workflow
         poll_interval = 1
 
         for attempt in range(max_polls):
             status_response = client.get(f"/v1/batches/{batch_id}")
             status_result = status_response.json()
+            print(status_result)
             current_status = status_result["status"]
 
             print(f"  Completion check {attempt + 1}: Status = {current_status}")
@@ -359,6 +405,13 @@ async def test_openai_batch_api_metadata_server_workflow():
                 assert (
                     output_file_id is not None
                 ), "Expected output_file_id for completed batch"
+
+                request_counts = status_result.get("request_counts")
+                assert request_counts is not None
+                assert request_counts["total"] == 10
+                assert request_counts["completed"] == 10
+                assert request_counts["failed"] == 0
+
                 break
             elif current_status == "failed":
                 pytest.fail(
@@ -385,7 +438,7 @@ async def test_openai_batch_api_metadata_server_workflow():
         assert output_content, "Output file is empty"
 
         # Verify output content structure
-        is_valid = verify_batch_output_content(output_content, 2)
+        is_valid = verify_batch_output_content(output_content, 10)
         assert (
             is_valid
         ), f"Output content verification failed. Content:\n{output_content}"
@@ -397,8 +450,7 @@ async def test_openai_batch_api_metadata_server_workflow():
             "\n🎉 Metadata server workflow E2E test completed successfully! "
             "Job preparation, worker coordination, and finalization working correctly."
         )
-        await app.state.job_controller.clear_job(batch_id)
-
+        await app.state.batch_driver.clear_job(batch_id)
 
 @pytest.mark.asyncio
 async def test_batch_api_error_handling():
@@ -432,7 +484,6 @@ async def test_batch_api_error_handling():
 
         response = client.post("/v1/files/", files=files, data=data)
         assert response.status_code == 400  # Should fail due to invalid file extension
-
 
 if __name__ == "__main__":
     # Allow running the test directly

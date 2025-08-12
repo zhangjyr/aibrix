@@ -10,9 +10,12 @@ kind: ClusterRole
 metadata:
   name: api-extension-clusterrole
 rules:
-  - apiGroups: ["batch"]
+  - apiGroups: ["batch"] # for batch job watching
     resources: ["jobs"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["coordination.k8s.io"] # for kopf high availability
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

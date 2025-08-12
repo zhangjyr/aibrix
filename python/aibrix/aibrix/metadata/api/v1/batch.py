@@ -13,16 +13,24 @@
 # limitations under the License.
 
 import asyncio
+import traceback
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import humanize
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from aibrix.batch.job_entity import BatchJob, BatchJobError, BatchJobSpec
-from aibrix.batch.job_manager import JobManager
+from aibrix.batch import BatchDriver
+from aibrix.batch.job_entity import (
+    BatchJob,
+    BatchJobEndpoint,
+    BatchJobError,
+    BatchJobSpec,
+    BatchJobStatus,
+    CompletionWindow,
+)
 from aibrix.logger import init_logger
 
 logger = init_logger(__name__)
@@ -31,6 +39,35 @@ router = APIRouter()
 
 
 # OpenAI Batch API request/response models
+
+
+class BatchSpec(BaseModel):
+    """Defines the specification of a Batch job input, which is OpenAI batch compatible."""
+
+    input_file_id: str = Field(
+        description="The ID of an uploaded file that contains the requests for the batch",
+    )
+    endpoint: BatchJobEndpoint = Field(
+        description="The API endpoint to be used for all requests in the batch"
+    )
+    completion_window: CompletionWindow = Field(
+        default=CompletionWindow.TWENTY_FOUR_HOURS,
+        description="The time window for completion",
+    )
+    metadata: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Set of up to 16 key-value pairs to attach to the batch object",
+        max_length=16,
+    )
+
+    @classmethod
+    def newBatchJobSpec(cls, spec: "BatchSpec") -> BatchJobSpec:
+        return BatchJobSpec(
+            input_file_id=spec.input_file_id,
+            endpoint=spec.endpoint.value,
+            completion_window=spec.completion_window.expires_at(),
+            metadata=spec.metadata,
+        )
 
 
 class BatchRequestCounts(BaseModel):
@@ -119,8 +156,8 @@ class BatchListResponse(BaseModel):
 
 def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     """Convert BatchJob to OpenAI batch response format."""
-    status = batch_job.status
-    spec = batch_job.spec
+    status: BatchJobStatus = batch_job.status
+    spec: BatchJobSpec = batch_job.spec
 
     def dt_to_unix(dt: Optional[datetime]) -> Optional[int]:
         """Convert datetime to unix timestamp."""
@@ -144,13 +181,20 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
         delta, minimum_unit="seconds", format="%d"
     )
 
+    state = status.state.value
+    if status.finished:
+        condition = status.condition
+        if condition is None:
+            raise ValueError("job finalized without condition")
+        state = condition.value
+
     return BatchResponse(
         id=status.job_id,
         endpoint=spec.endpoint,
         errors=BatchErrors(data=status.errors) if status.errors else None,
         input_file_id=spec.input_file_id,
         completion_window=completion_window,
-        status=status.state.value,
+        status=state,
         output_file_id=status.output_file_id,
         error_file_id=status.error_file_id,
         created_at=created_at_unix,
@@ -168,7 +212,9 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
 
 
 @router.post("/")
-async def create_batch(request: Request, batch_request: BatchJobSpec) -> BatchResponse:
+async def create_batch(
+    request: Request, batch_request: BatchJobSpec = Depends(BatchSpec.newBatchJobSpec)
+) -> BatchResponse:
     """Create a new batch.
 
     Creates a new batch for processing multiple requests. The batch will be
@@ -176,7 +222,7 @@ async def create_batch(request: Request, batch_request: BatchJobSpec) -> BatchRe
     """
     try:
         # Get job controller from app state
-        job_manager: JobManager = request.app.state.job_controller.job_manager
+        batch_driver: BatchDriver = request.app.state.batch_driver
 
         # Generate session ID for tracking
         session_id = str(uuid.uuid4())
@@ -190,13 +236,15 @@ async def create_batch(request: Request, batch_request: BatchJobSpec) -> BatchRe
         )  # type: ignore[call-arg]
 
         # Create job using JobManager
-        job_id = await job_manager.create_job_with_spec(
-            session_id=session_id,
-            job_spec=batch_request,
+        job_id = await batch_driver.run_coroutine(
+            batch_driver.job_manager.create_job_with_spec(
+                session_id=session_id,
+                job_spec=batch_request,
+            )
         )
 
         # Retrieve the created job
-        job = job_manager.get_job(job_id)
+        job = await batch_driver.run_coroutine(batch_driver.job_manager.get_job(job_id))
         if not job:
             logger.error("Created job not found", job_id=job_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=500, detail="Created batch not found")
@@ -227,12 +275,14 @@ async def get_batch(request: Request, batch_id: str) -> BatchResponse:
     """
     try:
         # Get job controller from app state
-        job_manager: JobManager = request.app.state.job_controller.job_manager
+        batch_driver: BatchDriver = request.app.state.batch_driver
 
         logger.debug("Retrieving batch", batch_id=batch_id)  # type: ignore[call-arg]
 
         # Get job from manager
-        job = job_manager.get_job(batch_id)
+        job = await batch_driver.run_coroutine(
+            batch_driver.job_manager.get_job(batch_id)
+        )
         if not job:
             logger.warning("Batch not found", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=404, detail="Batch not found")
@@ -244,6 +294,7 @@ async def get_batch(request: Request, batch_id: str) -> BatchResponse:
         logger.error(
             "Unexpected error retrieving batch", batch_id=batch_id, error=str(e)
         )  # type: ignore[call-arg]
+        logger.error(f"Stack trace: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -256,24 +307,30 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
     """
     try:
         # Get job controller from app state
-        job_manager: JobManager = request.app.state.job_controller.job_manager
+        batch_driver: BatchDriver = request.app.state.batch_driver
 
         logger.info("Cancelling batch", batch_id=batch_id)  # type: ignore[call-arg]
 
         # Check if job exists
-        job = job_manager.get_job(batch_id)
+        job = await batch_driver.run_coroutine(
+            batch_driver.job_manager.get_job(batch_id)
+        )
         if not job:
             logger.warning("Batch not found for cancellation", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=404, detail="Batch not found")
 
         # Cancel the job
-        success = job_manager.cancel_job(batch_id)
+        success = await batch_driver.run_coroutine(
+            batch_driver.job_manager.cancel_job(batch_id)
+        )
         if not success:
             logger.warning("Failed to cancel batch", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=400, detail="Batch cannot be cancelled")
 
         # Get updated job status
-        updated_job = job_manager.get_job(batch_id)
+        updated_job = await batch_driver.run_coroutine(
+            batch_driver.job_manager.get_job(batch_id)
+        )
         if not updated_job:
             logger.error("Job not found after cancellation", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=500, detail="Internal server error")
@@ -304,14 +361,16 @@ async def list_batches(
     """
     try:
         # Get job controller from app state
-        job_manager: JobManager = request.app.state.job_controller.job_manager
+        batch_driver: BatchDriver = request.app.state.batch_driver
 
         logger.debug("Listing batches", after=after, limit=limit)  # type: ignore[call-arg]
 
         # Get all jobs from the manager
         # Note: This is a simple implementation. In production, you'd want
         # proper pagination and filtering in the JobManager
-        all_jobs: List[BatchJob] = await job_manager.list_jobs()
+        all_jobs: List[BatchJob] = await batch_driver.run_coroutine(
+            batch_driver.job_manager.list_jobs()
+        )
 
         # Apply cursor-based pagination
         if after:
@@ -354,5 +413,4 @@ async def list_batches(
 
     except Exception as e:
         logger.error("Unexpected error listing batches", error=str(e))  # type: ignore[call-arg]
-        raise HTTPException(status_code=500, detail="Internal server error")
         raise HTTPException(status_code=500, detail="Internal server error")

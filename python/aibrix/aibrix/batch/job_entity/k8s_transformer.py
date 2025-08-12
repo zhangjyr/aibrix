@@ -16,7 +16,7 @@ import collections.abc
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from aibrix.logger import init_logger
 
@@ -26,6 +26,9 @@ from .batch_job import (
     BatchJobState,
     BatchJobStatus,
     CompletionWindow,
+    Condition,
+    ConditionStatus,
+    ConditionType,
     ObjectMeta,
     TypeMeta,
 )
@@ -206,6 +209,9 @@ class BatchJobTransformer:
         error_file_id = annotations.get(JobAnnotationKey.ERROR_FILE_ID.value)
         temp_error_file_id = annotations.get(JobAnnotationKey.TEMP_ERROR_FILE_ID.value)
 
+        # Extract conditions from Kubernetes job
+        conditions = cls._extract_conditions(k8s_status)
+
         # Map Kubernetes job phase to BatchJobState
         validated = (
             output_file_id is not None
@@ -213,7 +219,7 @@ class BatchJobTransformer:
             and error_file_id is not None
             and temp_error_file_id is not None
         )
-        state = cls._map_k8s_phase_to_batch_state(k8s_status, validated)
+        state = cls._map_k8s_phase_to_batch_state(k8s_status, validated, conditions)
         logger.debug(
             "extracted batch job state",
             state=state,
@@ -251,37 +257,69 @@ class BatchJobTransformer:
             createdAt=creation_timestamp,
             inProgressAt=start_time,
             finalizingAt=completion_time,
+            conditions=conditions,
         )
 
     @classmethod
+    def _extract_conditions(cls, k8s_status: Any) -> Optional[List[Condition]]:
+        """Extract and convert Kubernetes conditions to AIBrix Condition objects."""
+        k8s_conditions = cls._safe_get_attr(k8s_status, "conditions")
+        if k8s_conditions is None:
+            return None
+
+        conditions = []
+        for k8s_condition in k8s_conditions:
+            condition_type = cls._safe_get_attr(k8s_condition, "type")
+            condition_status = cls._safe_get_attr(k8s_condition, "status")
+            condition_reason = cls._safe_get_attr(k8s_condition, "reason")
+            condition_message = cls._safe_get_attr(k8s_condition, "message")
+
+            # Extract and convert timestamp
+            last_transition_time = cls._convert_timestamp(
+                cls._safe_get_attr(k8s_condition, "lastTransitionTime")
+            )
+            if not last_transition_time:
+                last_transition_time = datetime.now(timezone.utc)
+
+            # Map Kubernetes condition types to AIBrix ConditionType
+            aibrix_condition_type = None
+            if condition_type == "Complete" and condition_status == "True":
+                aibrix_condition_type = ConditionType.COMPLETED
+            elif condition_type == "Failed" and condition_status == "True":
+                if condition_reason == "DeadlineExceeded":
+                    aibrix_condition_type = ConditionType.EXPIRED
+                else:
+                    aibrix_condition_type = ConditionType.FAILED
+
+            # Only add conditions that map to our types
+            if aibrix_condition_type:
+                conditions.append(
+                    Condition(
+                        type=aibrix_condition_type,
+                        status=ConditionStatus.TRUE,  # We only add True conditions
+                        lastTransitionTime=last_transition_time,
+                        reason=condition_reason,
+                        message=condition_message,
+                    )
+                )
+
+        return conditions if len(conditions) > 0 else None
+
+    @classmethod
     def _map_k8s_phase_to_batch_state(
-        cls, k8s_status: Any, validated: bool
+        cls, k8s_status: Any, validated: bool, conditions: Optional[List[Condition]]
     ) -> BatchJobState:
         """
         Map Kubernetes job phase to BatchJobState. The checklist follows priority below:
-        1. Check for "Failed"
-        2. Check for "Completed"
-        3. Check for "Running"
-        4. Otherwise, it is "Just Created" / Pending
+        1. If ConditionTypes are available, the state should always be FINALIZING
+        2. Check for "Running"
+        3. Otherwise, it is "Just Created" / Pending
         """
-        # Handle both attribute access and dict-like access
-        conditions = cls._safe_get_attr(k8s_status, "conditions", [])
-        # Checklist conditions for more specific state
-        for condition in conditions:
-            condition_type = cls._safe_get_attr(condition, "type")
-            condition_status = cls._safe_get_attr(condition, "status")
-            condition_reason = cls._safe_get_attr(condition, "reason")
+        # 1. If ConditionTypes are available, the state should always be FINALIZING
+        if conditions and len(conditions) > 0:
+            return BatchJobState.FINALIZING
 
-            # 1. Check for "Failed"
-            if condition_type == "Failed" and condition_status == "True":
-                if condition_reason == "DeadlineExceeded":
-                    return BatchJobState.EXPIRED
-                return BatchJobState.FAILED
-            # 2. Check for "Completed"
-            elif condition_type == "Complete" and condition_status == "True":
-                return BatchJobState.FINALIZING
-
-        # 3. Check for "Running"
+        # 2. Check for "Running"
         active: int = cls._safe_get_attr(k8s_status, "active", 0)
         succeeded: int = cls._safe_get_attr(k8s_status, "succeeded", 0)
         failed: int = cls._safe_get_attr(k8s_status, "failed", 0)
@@ -289,7 +327,7 @@ class BatchJobTransformer:
         if running and validated:
             return BatchJobState.IN_PROGRESS
 
-        # 4. Otherwise, it is "Just Created" / Pending
+        # 3. Otherwise, it is "Just Created" / Pending
         return BatchJobState.CREATED
 
     @classmethod

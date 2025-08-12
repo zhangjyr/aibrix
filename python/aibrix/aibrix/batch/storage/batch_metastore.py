@@ -42,10 +42,12 @@ def initialize_batch_metastore(storage_type=StorageType.AUTO, params={}):
 
     # Create new storage instance and wrap with adapter
     try:
+        logger.info(
+            "Initializing batch metastore", storage_type=storage_type, params=params
+        )  # type: ignore[call-arg]
         p_metastore = create_storage(storage_type, base_path=".metastore", **params)
-        logger.info(f"Initialized batch metastore with type: {storage_type}")
     except Exception as e:
-        logger.error(f"Failed to initialize storage: {e}")
+        logger.error("Failed to initialize metastore", error=str(e))  # type: ignore[call-arg]
         raise
 
 
@@ -167,3 +169,31 @@ async def unlock_request(key: str, status: str) -> bool:
         True if status was set successfully
     """
     return await set_metadata(key, status)
+
+
+async def list_metastore_keys(prefix: str) -> list[str]:
+    """List all keys from metastore matching the given prefix.
+
+    Args:
+        prefix: Key prefix to filter
+
+    Returns:
+        List of keys matching the prefix
+    """
+    assert p_metastore is not None
+
+    keys = []
+    continuation_token = None
+
+    while True:
+        batch_keys, continuation_token = await p_metastore.list_objects(
+            prefix=prefix,
+            continuation_token=continuation_token,
+            limit=1000,  # Process in batches of 1000
+        )
+        keys.extend(batch_keys)
+
+        if continuation_token is None:
+            break
+
+    return keys

@@ -24,6 +24,9 @@ import aibrix.batch.constant as constant
 from aibrix.batch.job_progress_manager import JobProgressManager
 from aibrix.logger import init_logger
 
+from .job_driver import InferenceEngineClient, JobDriver
+from .job_entity import BatchJobError, BatchJobErrorCode
+
 # JobManager will be passed as parameter to avoid circular import
 
 logger = init_logger(__name__)
@@ -150,8 +153,6 @@ class JobScheduler:
         self._CC_controller = cc_controller
         self._current_pool_size = self._CC_controller._job_pool_size
         # Start the loop process in an async way
-        self._job_cleanup_loop = asyncio.get_running_loop()
-        self._job_cleanup_task = asyncio.create_task(self.job_cleanup_loop())
         self._policy = policy
 
     def configure_job_pool_size(self, new_pool_size):
@@ -229,7 +230,48 @@ class JobScheduler:
                 policy=str(self._policy),
             )  # type: ignore[call-arg]
 
-    async def job_cleanup_loop(self):
+    async def start(self, inference_client: Optional[InferenceEngineClient]):
+        self._serve_loop = asyncio.get_running_loop()
+        logger.info("in start")
+        self._jobs_running_task = self._serve_loop.create_task(
+            self.jobs_running_loop(inference_client)
+        )
+        logger.info("running loop set up")
+        self._jobs_cleanup_task = self._serve_loop.create_task(self.jobs_cleanup_loop())
+        logger.info("cleanup loop set up")
+
+    async def jobs_running_loop(
+        self, inference_client: Optional[InferenceEngineClient]
+    ):
+        """
+        This loop is going through all active jobs in scheduler.
+        For now, the executing unit is one request. Later if necessary,
+        we can support a batch size of request per execution.
+        """
+        logger.info("Starting scheduling...")
+        job_driver = JobDriver(self._job_progress_manager, inference_client)
+        while True:
+            one_job = await self.round_robin_get_job()
+            if one_job:
+                try:
+                    await job_driver.execute_job(one_job)
+                except Exception as e:
+                    job = await self._job_progress_manager.mark_job_failed(
+                        one_job,
+                        BatchJobError(
+                            code=BatchJobErrorCode.INFERENCE_FAILED, message=str(e)
+                        ),
+                    )
+                    logger.error(
+                        "Failed to execute job",
+                        job_id=one_job,
+                        status=job.status.state.value,
+                        error=str(e),
+                    )  # type: ignore[call-arg]
+                    raise
+            await asyncio.sleep(0)
+
+    async def jobs_cleanup_loop(self):
         """
         This is a long-running process to check if jobs have expired or not.
         """
@@ -242,20 +284,19 @@ class JobScheduler:
             )  # Calculate remaining time
             await asyncio.sleep(time_to_next_run)  # Wait for the remaining time
 
-    async def close(self):
+    async def stop(self):
         """Properly shutdown the driver and cancel running tasks"""
-        loop = asyncio.get_running_loop()
-        if self._job_cleanup_loop and loop is not self._job_cleanup_loop:
+        assert getattr(self, "_serve_loop") == asyncio.get_running_loop()
+        # Cancel running loop
+        if not self._jobs_running_task.done():
+            self._jobs_running_task.cancel()
             try:
-                asyncio.run_coroutine_threadsafe(
-                    self.close(), self._job_cleanup_loop
-                ).result(timeout=5)
-            except Exception:
+                await self._jobs_running_task
+            except asyncio.CancelledError:
                 pass
-            return
-
-        if self._job_cleanup_task and not self._job_cleanup_task.done():
-            self._job_cleanup_task.cancel()
+        # Cancel cleanup loop
+        if not self._jobs_cleanup_task.done():
+            self._jobs_cleanup_task.cancel()
 
     async def round_robin_get_job(self):
         # Step 1
@@ -267,7 +308,7 @@ class JobScheduler:
             job_id = self._CC_controller._running_job_pool[i]
             # Do not schedule new job in since we need to adjust capacity
             # based on new pool size representing how much underlying resource.
-            if self._job_progress_manager.get_job_status(job_id).is_finished():
+            if (await self._job_progress_manager.get_job_status(job_id)).finished:
                 self._CC_controller._running_job_pool[i] = None
 
         # Step 2, after the jobs' status are updated,

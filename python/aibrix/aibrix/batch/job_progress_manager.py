@@ -14,7 +14,7 @@
 
 from typing import List, Optional, Protocol, Tuple
 
-from .job_entity import BatchJob, BatchJobState
+from .job_entity import BatchJob, BatchJobError, BatchJobStatus
 
 
 class JobProgressManager(Protocol):
@@ -25,7 +25,7 @@ class JobProgressManager(Protocol):
     between job execution logic and job lifecycle management.
     """
 
-    def get_job(self, job_id: str) -> Optional[BatchJob]:
+    async def get_job(self, job_id: str) -> Optional[BatchJob]:
         """Get job by ID.
 
         Args:
@@ -36,7 +36,7 @@ class JobProgressManager(Protocol):
         """
         ...
 
-    def get_job_status(self, job_id: str) -> Optional[BatchJobState]:
+    async def get_job_status(self, job_id: str) -> Optional[BatchJobStatus]:
         """Get the current status of a job."""
         ...
 
@@ -47,7 +47,7 @@ class JobProgressManager(Protocol):
         """
         ...
 
-    def mark_job_total(self, job_id: str, total_requests: int) -> BatchJob:
+    async def mark_job_total(self, job_id: str, total_requests: int) -> BatchJob:
         """Mark the total number of requests for a job.
 
         Args:
@@ -62,7 +62,7 @@ class JobProgressManager(Protocol):
         """
         ...
 
-    def mark_job_done(self, job_id: str) -> BatchJob:
+    async def mark_job_done(self, job_id: str) -> BatchJob:
         """Mark job as completed.
 
         Args:
@@ -76,7 +76,19 @@ class JobProgressManager(Protocol):
         """
         ...
 
-    def mark_jobs_progresses(
+    async def mark_job_failed(self, job_id: str, ex: BatchJobError) -> BatchJob:
+        """Mark job as failed.
+
+        Args:
+            job_id: Job identifier
+            ex: BatchJobError that cause the failure
+
+        Raises:
+            JobUnexpectedStateError: If job is not in progress.
+        """
+        ...
+
+    async def mark_jobs_progresses(
         self, job_id: str, executed_requests: List[int]
     ) -> BatchJob:
         """Mark multiple requests as completed.
@@ -93,7 +105,7 @@ class JobProgressManager(Protocol):
         """
         ...
 
-    def get_job_next_request(self, job_id: str) -> Tuple[BatchJob, int]:
+    async def get_job_next_request(self, job_id: str) -> Tuple[BatchJob, int]:
         """Get the next request ID to execute.
 
         Args:
@@ -107,7 +119,7 @@ class JobProgressManager(Protocol):
         """
         ...
 
-    def mark_job_progress_and_get_next_request(
+    async def mark_job_progress_and_get_next_request(
         self, job_id: str, req_id: int
     ) -> Tuple[BatchJob, int]:
         """Mark a request as completed and get the next request ID.

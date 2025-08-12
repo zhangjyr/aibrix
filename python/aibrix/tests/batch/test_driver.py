@@ -50,6 +50,7 @@ async def test_batch_driver_job_creation():
     driver = BatchDriver(
         storage_type=StorageType.LOCAL, metastore_type=StorageType.LOCAL
     )
+    await driver.start()
 
     # Test that driver is properly initialized
     assert driver is not None
@@ -80,7 +81,7 @@ async def test_batch_driver_job_creation():
         print(f"Created job_id: {job_id}")
 
         # Test status retrieval
-        job = driver.job_manager.get_job(job_id)
+        job = await driver.job_manager.get_job(job_id)
         assert job is not None
         print(f"Job status: {job.status.state}")
         assert job.status.state == BatchJobState.CREATED
@@ -89,7 +90,7 @@ async def test_batch_driver_job_creation():
         await driver.clear_job(job_id)
     finally:
         # Shutdown driver
-        await driver.close()
+        await driver.stop()
 
         # Clean up temporary file
         Path(temp_path).unlink(missing_ok=True)
@@ -105,6 +106,7 @@ async def test_batch_driver_integration():
     driver = BatchDriver(
         storage_type=StorageType.LOCAL, metastore_type=StorageType.LOCAL
     )
+    await driver.start()
 
     # Create temporary input file
     with tempfile.NamedTemporaryFile(
@@ -130,14 +132,14 @@ async def test_batch_driver_integration():
         assert job_id is not None
         print(f"Created job_id: {job_id}")
 
-        job = driver.job_manager.get_job(job_id)
+        job = await driver.job_manager.get_job(job_id)
         assert job is not None
         print(f"Initial status: {job.status.state}")
         assert job.status.state == BatchJobState.CREATED
 
         # 3. Wait for job to be scheduled and start processing
         await asyncio.sleep(3 * constant.EXPIRE_INTERVAL)
-        job = driver.job_manager.get_job(job_id)
+        job = await driver.job_manager.get_job(job_id)
         assert job is not None
         print(f"Status after scheduling: {job.status.state}")
         assert job.status.state == BatchJobState.IN_PROGRESS
@@ -147,14 +149,15 @@ async def test_batch_driver_integration():
         # 4. Wait for job to complete
         while True:
             await asyncio.sleep(1 * constant.EXPIRE_INTERVAL)
-            job = driver.job_manager.get_job(job_id)
+            job = await driver.job_manager.get_job(job_id)
             assert job is not None
             print(f"Progressing: {job.status.state}")
-            if job.status.state.is_finished():
+            if job.status.finished:
                 break
 
         print(f"Final status: {job.status.state}")
-        assert job.status.state == BatchJobState.COMPLETED
+        assert job.status.state == BatchJobState.FINALIZED
+        assert job.status.completed
         assert job.status.output_file_id is not None
         assert job.status.error_file_id is not None
 
@@ -175,14 +178,14 @@ async def test_batch_driver_integration():
 
     finally:
         # Shutdown driver
-        await driver.close()
+        await driver.stop()
 
         # Clean up temporary file
         Path(temp_path).unlink(missing_ok=True)
 
 
 @pytest.mark.asyncio
-async def test_batch_driver_resumming():
+async def test_batch_driver_resuming():
     """
     Integration test for the batch driver workflow.
     Tests job creation, scheduling, execution, and result retrieval.
@@ -191,6 +194,7 @@ async def test_batch_driver_resumming():
     driver = BatchDriver(
         storage_type=StorageType.LOCAL, metastore_type=StorageType.LOCAL
     )
+    await driver.start()
 
     # Create temporary input file
     with tempfile.NamedTemporaryFile(
@@ -217,14 +221,14 @@ async def test_batch_driver_resumming():
         assert job_id is not None
         print(f"Created job_id: {job_id}")
 
-        job = driver.job_manager.get_job(job_id)
+        job = await driver.job_manager.get_job(job_id)
         assert job is not None
         print(f"Initial status: {job.status.state}")
         assert job.status.state == BatchJobState.IN_PROGRESS
 
         # 3. Wait for job to be scheduled and start processing
         await asyncio.sleep(3 * constant.EXPIRE_INTERVAL)
-        job = driver.job_manager.get_job(job_id)
+        job = await driver.job_manager.get_job(job_id)
         assert job is not None
         print(f"Status after scheduling: {job.status.state}")
         assert job.status.state == BatchJobState.IN_PROGRESS
@@ -234,14 +238,15 @@ async def test_batch_driver_resumming():
         # 4. Wait for job to complete
         while True:
             await asyncio.sleep(1 * constant.EXPIRE_INTERVAL)
-            job = driver.job_manager.get_job(job_id)
+            job = await driver.job_manager.get_job(job_id)
             assert job is not None
             print(f"Progressing: {job.status.state}")
-            if job.status.state.is_finished():
+            if job.status.finished:
                 break
 
         print(f"Final status: {job.status.state}")
-        assert job.status.state == BatchJobState.COMPLETED
+        assert job.status.state == BatchJobState.FINALIZED
+        assert job.status.completed
         assert job.status.output_file_id is not None
         assert job.status.error_file_id is not None
 
@@ -262,7 +267,7 @@ async def test_batch_driver_resumming():
 
     finally:
         # Shutdown driver
-        await driver.close()
+        await driver.stop()
 
         # Clean up temporary file
         Path(temp_path).unlink(missing_ok=True)

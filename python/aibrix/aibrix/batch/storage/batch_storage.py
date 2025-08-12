@@ -38,11 +38,13 @@ def initialize_storage(storage_type=StorageType.AUTO, params={}):
 
     # Create new storage instance and wrap with adapter
     try:
+        logger.info(
+            "Initializing batch storage", storage_type=storage_type, params=params
+        )  # type: ignore[call-arg]
         storage = create_storage(storage_type, **params)
         p_storage = BatchStorageAdapter(storage)
-        logger.info(f"Initialized batch storage with type: {storage_type}")
     except Exception as e:
-        logger.error(f"Failed to initialize storage: {e}")
+        logger.error("Failed to initialize storage", error=str(e))  # type: ignore[call-arg]
         raise
 
 

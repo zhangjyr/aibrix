@@ -385,8 +385,8 @@ class BatchWorker:
         start_time = time.time()
 
         while time.time() - start_time < max_wait:
-            job = self.driver.job_manager.get_job(job_id)
-            if job and job.status.state.is_finished():
+            job = await self.driver.job_manager.get_job(job_id)
+            if job and job.status.finished:
                 logger.info(
                     "Job reached final state",
                     job_id=job_id,
@@ -437,19 +437,21 @@ class BatchWorker:
 
             # Step 3: Initialize BatchDriver
             self.driver = BatchDriver(llm_engine_endpoint=self.llm_engine_base_url)
+            await self.driver.start()
             logger.info("BatchDriver initialized successfully")
 
             # Step 4: Execute batch job
             job_id = await self.execute_batch_job(batch_job)
             logger.info("Batch worker completed successfully", job_id=job_id)  # type: ignore[call-arg]
 
+            await self.driver.stop()
             return 0
 
         except Exception as e:
             file, lineno, func_name = get_error_details(e)
             logger.error(
                 "Batch worker failed",
-                error=e,
+                error=str(e),
                 file=file,
                 lineno=lineno,
                 function=func_name,
@@ -460,7 +462,7 @@ class BatchWorker:
             # Cleanup driver if initialized
             if self.driver:
                 logger.info("Cleaning up BatchDriver...")
-                await self.driver.close()
+                await self.driver.stop()
 
 
 def get_error_details(ex: Exception) -> tuple[str, int | None, str]:

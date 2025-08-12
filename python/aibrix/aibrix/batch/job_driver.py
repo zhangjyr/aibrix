@@ -65,7 +65,18 @@ class JobDriver:
         progress_manager: JobProgressManager,
         inference_client: Optional[InferenceEngineClient] = None,
     ) -> None:
-        """ """
+        """
+        JobDriver drives job progress after a job being started. The progress expreiences three phases:
+        1. Job preparing: job output file and error file are prepared.
+        2. Job executing: tasks in the job are read and executed, possibly in parallel, without order reservation.
+        3. Job finalizing: aggregate job outputs and errors.
+
+        Usage:
+        * Call execute_job() to execute all phases. This is usually be the case if running in API server with scheduler enabled.
+        * Call prepare_job() for Job preparing. API server runs without scheduler will call this to prepara job.
+        * Call execute_worker() for Job executing, supporting parallel exeuction. LLM colocated worker will call this.
+        * Call finalize_job() for Job finalizing. API server runs without scheduler will call this to aggregate outputs.
+        """
         self._progress_manager = progress_manager
         if inference_client is None:
             self._inference_client = InferenceEngineClient()
@@ -77,7 +88,7 @@ class JobDriver:
         Execute complete job workflow: prepare -> execute -> finalize.
         This function executes all three steps.
         """
-        job = self._progress_manager.get_job(job_id)
+        job = await self._progress_manager.get_job(job_id)
         if job is None:
             logger.warning("Job not found", job_id=job_id)
             return
@@ -108,7 +119,17 @@ class JobDriver:
                 await storage.finalize_job_output_data(job)
 
             logger.debug("Completed job", job_id=job_id)
-            self._sync_job_status(job_id)
+            await self._sync_job_status(job_id)
+
+    async def prepare_job(self, job: BatchJob) -> BatchJob:
+        """
+        Prepare job output files by creating multipart uploads.
+        This is called by metadata server when a new job is committed.
+        """
+        logger.debug("Preparing job output files")  # type: ignore[call-arg]
+        job = await storage.prepare_job_ouput_files(job)
+        logger.debug("Job output files prepared")  # type: ignore[call-arg]
+        return job
 
     async def execute_worker(self, job_id) -> BatchJob:
         """
@@ -116,7 +137,7 @@ class JobDriver:
         This function only executes step 2 (the core execution loop).
         """
         # Verify job status and get minimum unfinished request id
-        job, line_no = self._get_next_request(job_id)
+        job, line_no = await self._get_next_request(job_id)
         if line_no < 0:
             logger.warning(
                 "Job has something wrong with metadata in job manager, nothing left to execute",
@@ -145,12 +166,12 @@ class JobDriver:
                             job_id=job_id,
                             request_id=last_line_no,
                         )  # type: ignore[call-arg]
-                        job, line_no = self._sync_job_status_and_get_next_request(
+                        job, line_no = await self._sync_job_status_and_get_next_request(
                             job_id, last_line_no
                         )
                     else:
                         # Simply skipped the request and get next request id
-                        job, line_no = self._get_next_request(job_id)
+                        job, line_no = await self._get_next_request(job_id)
                     logger.debug(
                         "Will test next request",
                         job_id=job_id,
@@ -200,7 +221,7 @@ class JobDriver:
 
                 assert last_line_no == line_no
                 logger.debug("Job request executed", job_id=job_id, request_id=line_no)  # type: ignore[call-arg]
-                job, line_no = self._sync_job_status_and_get_next_request(
+                job, line_no = await self._sync_job_status_and_get_next_request(
                     job_id, last_line_no
                 )
                 logger.debug(
@@ -215,11 +236,11 @@ class JobDriver:
 
             # For the first round, this shows we read end of input and we now know the total
             if last_line_no == line_no:
-                job = self._sync_job_status(
+                job = await self._sync_job_status(
                     job_id, total=line_no
                 )  # Now that total == request_id
                 # We need to confirm that all is execute by try starting next round
-                job, line_no = self._get_next_request(job_id)
+                job, line_no = await self._get_next_request(job_id)
                 logger.debug(
                     "Confirmed total requests",
                     job_id=job_id,
@@ -238,16 +259,6 @@ class JobDriver:
         )  # type: ignore[call-arg]
         return job
 
-    async def prepare_job(self, job: BatchJob) -> BatchJob:
-        """
-        Prepare job output files by creating multipart uploads.
-        This is called by metadata server when a new job is committed.
-        """
-        logger.debug("Preparing job output files")  # type: ignore[call-arg]
-        job = await storage.prepare_job_ouput_files(job)
-        logger.debug("Job output files prepared")  # type: ignore[call-arg]
-        return job
-
     async def finalize_job(self, job: BatchJob) -> BatchJob:
         """
         Finalize the job by removing all data.
@@ -257,13 +268,7 @@ class JobDriver:
         await storage.finalize_job_output_data(job)
 
         logger.debug("Completed job", job_id=job.job_id)  # type: ignore[call-arg]
-        return self._sync_job_status(job.job_id)
-
-    def store_output(self, output_id, request_id, result):
-        """
-        Write the request result back to storage.
-        """
-        storage.put_job_results(output_id, request_id, [result])
+        return await self._sync_job_status(job.job_id)
 
     async def _retry_inference_request(
         self,
@@ -346,29 +351,31 @@ class JobDriver:
 
         return response
 
-    def _sync_job_status(self, job_id, reqeust_id=-1, total=0) -> BatchJob:
+    async def _sync_job_status(self, job_id, reqeust_id=-1, total=0) -> BatchJob:
         """
         Update job's status back to job manager.
         """
         if total > 0:
-            return self._progress_manager.mark_job_total(job_id, total)
+            return await self._progress_manager.mark_job_total(job_id, total)
         elif reqeust_id < 0:
-            return self._progress_manager.mark_job_done(job_id)
+            return await self._progress_manager.mark_job_done(job_id)
         else:
-            return self._progress_manager.mark_jobs_progresses(job_id, [reqeust_id])
+            return await self._progress_manager.mark_jobs_progresses(
+                job_id, [reqeust_id]
+            )
 
-    def _get_next_request(self, job_id: str) -> tuple[BatchJob, int]:
+    async def _get_next_request(self, job_id: str) -> tuple[BatchJob, int]:
         """
         Get next request id from job manager.
         """
-        return self._progress_manager.get_job_next_request(job_id)
+        return await self._progress_manager.get_job_next_request(job_id)
 
-    def _sync_job_status_and_get_next_request(
+    async def _sync_job_status_and_get_next_request(
         self, job_id: str, request_id: int
     ) -> tuple[BatchJob, int]:
         """
         Sync job status and get next request, with None checking.
         """
-        return self._progress_manager.mark_job_progress_and_get_next_request(
+        return await self._progress_manager.mark_job_progress_and_get_next_request(
             job_id, request_id
         )

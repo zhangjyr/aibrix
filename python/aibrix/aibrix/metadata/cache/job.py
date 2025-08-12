@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 import kopf
 import yaml
-from kubernetes import client, config
+from kubernetes import client
 from kubernetes.client.rest import ApiException
 
 import aibrix.batch.storage.batch_metastore as metastore
@@ -35,7 +36,6 @@ from aibrix.storage import StorageType
 
 from .utils import merge_yaml_object
 
-# import asyncio
 # If you installed kopf[uvloop], kopf will likely set this up.
 # Otherwise, you can explicitly set it:
 # import uvloop
@@ -47,7 +47,6 @@ logger = init_logger(__name__)
 
 # Global JobCache instance for kopf handlers
 _global_job_cache: Optional["JobCache"] = None
-
 
 def set_global_job_cache(job_cache: "JobCache") -> None:
     """Set the global job cache instance for kopf handlers."""
@@ -78,13 +77,13 @@ class JobCache(JobEntityManager):
 
         # Callback handlers for job lifecycle events
         self._job_committed_handler: Optional[
-            Callable[[BatchJob], Coroutine[Any, Any, None]]
+            Callable[[BatchJob], Coroutine[Any, Any, bool]]
         ] = None
         self._job_updated_handler: Optional[
-            Callable[[BatchJob, BatchJob], Coroutine[Any, Any, None]]
+            Callable[[BatchJob, BatchJob], Coroutine[Any, Any, bool]]
         ] = None
         self._job_deleted_handler: Optional[
-            Callable[[BatchJob], Coroutine[Any, Any, None]]
+            Callable[[BatchJob], Coroutine[Any, Any, bool]]
         ] = None
 
         # Load Kubernetes Job template once at initialization
@@ -141,24 +140,7 @@ class JobCache(JobEntityManager):
             )  # type: ignore[call-arg]
             raise RuntimeError(f"Invalid YAML in job template: {e}")
 
-        # Initialize Kubernetes client
-        try:
-            # Try to load in-cluster config first (for pod environments)
-            config.load_incluster_config()
-        except config.ConfigException:
-            try:
-                # Fall back to local kubeconfig
-                config.load_kube_config()
-            except config.ConfigException:
-                logger.warning(
-                    "Failed to load Kubernetes configuration",
-                    reason="no_kubeconfig_or_incluster",
-                )  # type: ignore[call-arg]
-                self.batch_v1_api = None
-            else:
-                self.batch_v1_api = client.BatchV1Api()
-        else:
-            self.batch_v1_api = client.BatchV1Api()
+        self.batch_v1_api = client.BatchV1Api()
 
     def is_scheduler_enabled(self) -> bool:
         """Check if JobEntityManager has own scheduler enabled."""
@@ -189,7 +171,7 @@ class JobCache(JobEntityManager):
         """
         return list(self.active_jobs.values())
 
-    def submit_job(
+    async def submit_job(
         self,
         session_id: str,
         job_spec: BatchJobSpec,
@@ -219,8 +201,10 @@ class JobCache(JobEntityManager):
 
             # Get namespace from k8s_job, use default if not specified
             namespace = k8s_job["metadata"].get("namespace") or "default"
-            created_job = self.batch_v1_api.create_namespaced_job(
-                namespace=namespace, body=k8s_job
+            created_job = await asyncio.to_thread(
+                self.batch_v1_api.create_namespaced_job,
+                namespace=namespace,
+                body=k8s_job,
             )
 
             logger.info(  # type: ignore[call-arg]
@@ -252,7 +236,7 @@ class JobCache(JobEntityManager):
             )  # type: ignore[call-arg]
             raise
 
-    def update_job_ready(self, job: BatchJob):
+    async def update_job_ready(self, job: BatchJob):
         """Update job by marking it ready info in the persist store.
         The job suspend flag will be removed to start the execution.
 
@@ -268,8 +252,11 @@ class JobCache(JobEntityManager):
 
             # Get namespace from k8s_job, use default if not specified
             namespace = job.metadata.namespace or "default"
-            self.batch_v1_api.patch_namespaced_job(
-                name=job.metadata.name, namespace=namespace, body=patch_body
+            await asyncio.to_thread(
+                self.batch_v1_api.patch_namespaced_job,
+                name=job.metadata.name,
+                namespace=namespace,
+                body=patch_body,
             )
 
             logger.info(  # type: ignore[call-arg]
@@ -301,7 +288,7 @@ class JobCache(JobEntityManager):
             )  # type: ignore[call-arg]
             raise
 
-    def cancel_job(self, job_id: str) -> None:
+    async def cancel_job(self, job_id: str) -> None:
         """Cancel job by deleting the Kubernetes Job.
 
         Args:
@@ -325,7 +312,8 @@ class JobCache(JobEntityManager):
         job_name = job.metadata.name
         try:
             # Delete the Kubernetes Job
-            self.batch_v1_api.delete_namespaced_job(
+            await asyncio.to_thread(
+                self.batch_v1_api.delete_namespaced_job,
                 name=job_name,
                 namespace=namespace,
                 propagation_policy="Foreground",  # Delete pods too
@@ -364,6 +352,66 @@ class JobCache(JobEntityManager):
                 job_id=job_id,
                 error=str(e),
                 operation="cancel_job",
+            )
+            raise
+
+    async def delete_job(self, job: BatchJob) -> None:
+        """Cancel job by deleting the Kubernetes Job.
+
+        Args:
+            job_id: Job ID (batch ID) to cancel.
+
+        Raises:
+            RuntimeError: If Kubernetes client is not available.
+            KeyError: If job is not found in cache.
+            ApiException: If Kubernetes API call fails.
+        """
+        if not self.batch_v1_api:
+            raise RuntimeError("Kubernetes client not available")
+
+        namespace = job.metadata.namespace or "default"
+        job_name = job.metadata.name
+        try:
+            # Delete the Kubernetes Job
+            await asyncio.to_thread(
+                self.batch_v1_api.delete_namespaced_job,
+                name=job_name,
+                namespace=namespace,
+                propagation_policy="Foreground",  # Delete pods too
+            )
+
+            logger.info(  # type: ignore[call-arg]
+                "Job deletion requested in Kubernetes",
+                job_id=job.job_id,
+                job=job_name,
+                namespace=namespace,
+            )
+        except ApiException as e:
+            if e.status == 404:
+                logger.warning(  # type: ignore[call-arg]
+                    "Job not found in Kubernetes for deletion",
+                    job=job_name,
+                    namespace=namespace,
+                )
+            else:
+                logger.error(  # type: ignore[call-arg]
+                    "Failed to delete job in Kubernetes",
+                    job_id=job.job_id,
+                    job=job_name,
+                    namespace=namespace,
+                    error=str(e),
+                    status_code=e.status,
+                    reason=e.reason,
+                )
+                raise
+        except Exception as e:
+            logger.error(  # type: ignore[call-arg]
+                "Unexpected error deleting job",
+                job_id=job.job_id,
+                job=job_name,
+                namespace=namespace,
+                error=str(e),
+                operation="delete_job",
             )
             raise
 
@@ -508,10 +556,11 @@ class JobCache(JobEntityManager):
 
         return job_template
 
+logger.info("kopf job handlers imported")
 
 # Standalone kopf handlers that work with the global JobCache instance
 @kopf.on.create("batch", "v1", "jobs")  # type: ignore[arg-type]
-async def job_created_handler(logger: Any, body: Any, **kwargs: Any) -> None:
+async def job_created_handler(body: Any, **kwargs: Any) -> None:
     """Handle Kubernetes Job creation events."""
     job_cache = get_global_job_cache()
     if not job_cache:
@@ -523,26 +572,27 @@ async def job_created_handler(logger: Any, body: Any, **kwargs: Any) -> None:
         batch_job = k8s_job_to_batch_job(body)
         job_id = batch_job.status.job_id if batch_job.status else body.metadata.uid
 
-        # Store in cache
-        job_cache.active_jobs[job_id] = batch_job
-
-        # Invoke callback if registered
-        if job_cache._job_committed_handler:
-            try:
-                await job_cache._job_committed_handler(batch_job)
-            except Exception as e:
-                logger.error(
-                    "Error in job committed handler",
-                    error=str(e),
-                    handler="job_committed",
-                )
-
         logger.info(
             "Job created",
-            job=batch_job.metadata.name,
-            namespace=batch_job.metadata.namespace,
             job_id=job_id,
-        )
+            name=batch_job.metadata.name,
+            namespace=batch_job.metadata.namespace,
+            state=batch_job.status.state.value,
+        )  # type: ignore[call-arg]
+
+        # Invoke callback if registered
+        try:
+            if await job_cache.job_committed(batch_job):
+                # Store in cache
+                job_cache.active_jobs[job_id] = batch_job
+            else:
+                await job_cache.delete_job(batch_job)
+        except Exception as e:
+            logger.error(
+                "Error in job committed handler",
+                error=str(e),
+                handler="job_committed",
+            )  # type: ignore[call-arg]
     except ValueError as ve:
         # For jobs without proper annotations, store basic info for backward compatibility
         job_id = body.metadata.uid
@@ -550,15 +600,15 @@ async def job_created_handler(logger: Any, body: Any, **kwargs: Any) -> None:
             "Failed to process job creation",
             job_id=job_id,
             reason=str(ve),
-        )
+        )  # type: ignore[call-arg]
     except Exception as e:
         logger.error(
             "Failed to process job creation", error=str(e), operation="job_created"
-        )
+        )  # type: ignore[call-arg]
 
 
 @kopf.on.update("batch", "v1", "jobs")  # type: ignore[arg-type]
-async def job_updated_handler(logger: Any, body: Any, **kwargs: Any) -> None:
+async def job_updated_handler(body: Any, **kwargs: Any) -> None:
     """Handle Kubernetes Job update events."""
     job_cache = get_global_job_cache()
     if not job_cache:
@@ -574,46 +624,50 @@ async def job_updated_handler(logger: Any, body: Any, **kwargs: Any) -> None:
 
         # Get old job from cache
         old_batch_job = job_cache.active_jobs.get(job_id)
-
-        # Update cache
-        job_cache.active_jobs[job_id] = new_batch_job
-
-        # Invoke callback if registered and we have both old and new jobs
-        if job_cache._job_updated_handler and old_batch_job:
-            try:
-                await job_cache._job_updated_handler(old_batch_job, new_batch_job)
-            except Exception as e:
-                logger.error(
-                    "Error in job updated handler",
-                    error=str(e),
-                    handler="job_updated",
-                )
+        if old_batch_job is None:
+            logger.warning("Job updating ignored due to job not found", job_id=job_id)  # type: ignore[call-arg]
+            return
 
         logger.info(
             "Job updated",
-            job=new_batch_job.metadata.name,
-            namespace=new_batch_job.metadata.namespace,
             job_id=job_id,
-        )
+            name=new_batch_job.metadata.name,
+            namespace=new_batch_job.metadata.namespace,
+            old_state=old_batch_job.status.state.value if old_batch_job else "unknown",
+            new_state=new_batch_job.status.state.value,
+        )  # type: ignore[call-arg]
+
+        # Invoke callback if registered and we have both old and new jobs
+        try:
+            if await job_cache.job_updated(old_batch_job, new_batch_job):
+                # Update cache
+                job_cache.active_jobs[job_id] = new_batch_job
+        except Exception as uhe:
+            logger.error(
+                "Error in job updated handler",
+                error=str(uhe),
+                handler="job_updated",
+            )  # type: ignore[call-arg]
     except Exception as e:
         logger.error(
             "Failed to process job update", error=str(e), operation="job_updated"
-        )
+        )  # type: ignore[call-arg]
 
 
 @kopf.on.field("batch", "v1", "jobs", field="status.conditions")  # type: ignore[arg-type]
-async def job_completion_handler(logger: Any, body: Any, **kwargs: Any) -> None:
+async def job_completion_handler(body: Any, **kwargs: Any) -> None:
     """
     This handler triggers ONLY when the 'status.conditions' field of a Job changes.
     """
     if not body:  # The conditions field might be None initially
         return
 
-    await job_updated_handler(logger, body, **kwargs)  # type: ignore[call-arg, misc, arg-type]
+    await job_updated_handler(body, **kwargs)  # type: ignore[call-arg, misc, arg-type]
 
 
-@kopf.on.delete("batch", "v1", "jobs")  # type: ignore[arg-type]
-async def job_deleted_handler(logger: Any, body: Any, **kwargs: Any) -> None:
+# Set optional = True to prevent kopf add the finalizer.
+@kopf.on.delete("batch", "v1", "jobs", optional=True)  # type: ignore[arg-type]
+async def job_deleted_handler(body: Any, **kwargs: Any) -> None:
     """Handle Kubernetes Job deletion events."""
     job_cache = get_global_job_cache()
     if not job_cache:
@@ -626,19 +680,30 @@ async def job_deleted_handler(logger: Any, body: Any, **kwargs: Any) -> None:
 
     # Get job from cache before deletion
     deleted_job = job_cache.active_jobs.get(job_id)
+    if deleted_job is None:
+        logger.info(
+            "Job deleted event ignore, no job found",
+            job_id=job_id,
+            name=job_name,
+            namespace=namespace,
+        )  # type: ignore[call-arg]
+        return
 
-    if job_id in job_cache.active_jobs:
-        del job_cache.active_jobs[job_id]
+    logger.info(
+        "Job deleted",
+        job_id=job_id,
+        job=deleted_job.metadata.name,
+        namespace=deleted_job.metadata.namespace,
+        state=deleted_job.status.state.value,
+    )  # type: ignore[call-arg]
 
-        # Invoke callback if registered
-        if job_cache._job_deleted_handler and deleted_job:
-            try:
-                await job_cache._job_deleted_handler(deleted_job)
-            except Exception as e:
-                logger.error(
-                    "Error in job deleted handler",
-                    error=str(e),
-                    handler="job_deleted",
-                )
-
-        logger.info("Job deleted", job=job_name, namespace=namespace, job_id=job_id)
+    # Invoke callback if registered
+    try:
+        if await job_cache.job_deleted(deleted_job):
+            del job_cache.active_jobs[job_id]
+    except Exception as e:
+        logger.error(
+            "Error in job deleted handler",
+            error=str(e),
+            handler="job_deleted",
+        )  # type: ignore[call-arg]

@@ -33,8 +33,8 @@ class Settings(AIBrixSettings):
     EXTERNAL_API_URL: Optional[str] = None  # Example: URL for an external microservice
 
     # --- File API settings ---
-    STORAGE_TYPE: StorageType = StorageType.LOCAL
-    METASTORE_TYPE: StorageType = StorageType.LOCAL
+    STORAGE_TYPE: StorageType = StorageType.AUTO
+    METASTORE_TYPE: StorageType = StorageType.AUTO
     MAX_FILE_SIZE: int = 1024 * 1024 * 1024  # 1G in bytes
 
 

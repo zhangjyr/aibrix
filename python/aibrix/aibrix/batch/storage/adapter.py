@@ -15,7 +15,7 @@
 import asyncio
 import json
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from aibrix.batch.job_entity import BatchJob
 from aibrix.logger import init_logger
@@ -25,6 +25,7 @@ from .batch_metastore import (
     delete_metadata,
     get_metadata,
     is_request_done,
+    list_metastore_keys,
     lock_request,
     unlock_request,
 )
@@ -220,30 +221,92 @@ class BatchStorageAdapter:
             and job.status.temp_error_file_id
         )
 
+        # 1. List all keys from metastore with the job prefix
+        prefix = self._get_request_meta_output_key(job, None)
+        all_keys = await list_metastore_keys(prefix)
+
+        # 2. Extract indices from keys and determine maximum index for total count
+        indices = []
+        for key in all_keys:
+            # Extract index from key format: batch:{job_id}:done/{idx}
+            try:
+                idx_str = key[len(prefix) :]  # Get the index part
+                idx = int(idx_str)
+                indices.append(idx)
+            except ValueError:
+                logger.warning(
+                    "Invalid key format found in metastore",
+                    key=key,
+                    job_id=job.job_id,
+                )  # type: ignore[call-arg]
+                continue
+
+        # Sort indices to ensure proper ordering
+        indices.sort()
+
+        # 3. Calculate actual counts based on metastore keys
+        launched = len(indices)
+        total = indices[-1] + 1 if launched > 0 else 0
+
+        logger.info(
+            "Finalizing job output data using metastore keys",
+            job_id=job.job_id,
+            launched=launched,
+            total=total,
+        )  # type: ignore[call-arg]
+
+        # Fetch metadata for all found keys
+        keys = [self._get_request_meta_output_key(job, idx) for idx in indices]
+        etag_results = await asyncio.gather(*[get_metadata(key) for key in keys])
+
+        # Process results and categorize into outputs and errors
         output: List[Dict[str, str | int]] = []
         error: List[Dict[str, str | int]] = []
-        keys = []
-        for i in range(job.status.request_counts.launched):
-            keys.append(self._get_request_meta_output_key(job, i))
+        completed = 0
+        failed = 0
+        valid_keys = []
 
-        etag_results = await asyncio.gather(*[get_metadata(key) for key in keys])
-        exists = 0
-        for i, etag_result in enumerate(etag_results):
+        for idx, key, etag_result in zip(indices, keys, etag_results):
             meta_val, exist = etag_result
             if not exist:
                 continue
 
-            # Compact keys
-            keys[exists] = keys[i]
-            exists += 1
+            valid_keys.append(key)
 
             etag, is_error = self._parse_request_meta_output_val(meta_val)
-            val: Dict[str, str | int] = {"etag": etag, "part_number": i}
+            val: Dict[str, str | int] = {"etag": etag, "part_number": idx}
+
             if is_error:
                 error.append(val)
+                failed += 1
             else:
                 output.append(val)
-        keys = keys[:exists]
+                completed += 1
+
+        # 4. Update job object with calculated request counts if they differ
+        if (
+            job.status.request_counts.total != total
+            or job.status.request_counts.launched != launched
+            or job.status.request_counts.completed != completed
+            or job.status.request_counts.failed != failed
+        ):
+            logger.info(
+                "Updating job request counts based on metastore data",
+                job_id=job.job_id,
+                old_total=job.status.request_counts.total,
+                new_total=total,
+                old_launched=job.status.request_counts.launched,
+                new_launched=launched,
+                old_completed=job.status.request_counts.completed,
+                new_completed=completed,
+                old_failed=job.status.request_counts.failed,
+                new_failed=failed,
+            )  # type: ignore[call-arg]
+
+            job.status.request_counts.total = total
+            job.status.request_counts.launched = launched
+            job.status.request_counts.completed = completed
+            job.status.request_counts.failed = failed
 
         # Aggregate results
         await asyncio.gather(
@@ -259,8 +322,9 @@ class BatchStorageAdapter:
             ),
         )
 
-        # Delete metadata
-        await asyncio.gather(*[delete_metadata(key) for key in keys])
+        # Delete metadata for valid keys only
+        if valid_keys:
+            await asyncio.gather(*[delete_metadata(key) for key in valid_keys])
 
     async def read_job_output_data(self, file_id: str) -> List[Dict[str, Any]]:
         """Read job results output from storage.
@@ -291,8 +355,11 @@ class BatchStorageAdapter:
         except Exception as e:
             logger.error(f"Failed to delete data for job {file_id}: {e}")
 
-    def _get_request_meta_output_key(self, job: BatchJob, idx: int) -> str:
-        return f"batch:{job.job_id}:done/{idx}"
+    def _get_request_meta_output_key(self, job: BatchJob, idx: Optional[int]) -> str:
+        prefix = f"batch:{job.job_id}:done/"
+        if idx is None:
+            return prefix
+        return f"{prefix}{idx}"
 
     def _get_request_meta_output_val(self, is_error: bool, etag: str) -> str:
         return f"{'error' if is_error else 'output'}:{etag}"

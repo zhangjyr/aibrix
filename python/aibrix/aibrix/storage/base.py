@@ -17,7 +17,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from io import BytesIO, StringIO
-from typing import Any, AsyncIterator, BinaryIO, Optional, TextIO, Union
+from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
 
 from .reader import Reader
 from .types import StorageType
@@ -146,7 +146,7 @@ class BaseStorage(ABC):
         key: str,
         data: Union[bytes, str, BinaryIO, TextIO, Reader],
         content_type: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict[str, str]] = None,
         options: Optional[PutObjectOptions] = None,
     ) -> bool:
         """Put an object to storage.

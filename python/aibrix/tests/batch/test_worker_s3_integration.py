@@ -15,15 +15,13 @@
 import asyncio
 import copy
 import json
-import os
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 
 import boto3
 import pytest
-import yaml
-from kubernetes import client, config
+from kubernetes import client
 
 import aibrix.batch.storage as _storage
 import aibrix.batch.storage.batch_metastore as _metastore
@@ -38,146 +36,14 @@ logger = init_logger(__name__)
 class TestWorkerS3Integration:
     """Test worker with S3 storage and Redis metadata integration."""
 
-    @pytest.fixture(scope="class")
-    def s3_config_available(self):
-        """Check if S3 configuration is available locally."""
-        try:
-            # Check for AWS credentials
-            session = boto3.Session()
-            credentials = session.get_credentials()
-
-            if not credentials:
-                pytest.skip("No AWS credentials found")
-
-            # Check for required environment variables or default credentials
-            access_key = credentials.access_key
-            secret_key = credentials.secret_key
-
-            if not access_key or not secret_key:
-                pytest.skip("AWS credentials incomplete")
-
-            # Test S3 access
-            s3_client = session.client("s3")
-            s3_client.list_buckets()
-
-            return {
-                "access_key": access_key,
-                "secret_key": secret_key,
-                "region": session.region_name or "us-west-2",
-            }
-
-        except Exception as e:
-            pytest.skip(f"S3 configuration not available: {e}")
-
     @pytest.fixture
-    def test_s3_bucket(self, s3_config_available):
+    def init_storage(self, test_s3_bucket):
         """Get or create test S3 bucket."""
-        bucket_name = os.getenv("AIBRIX_TEST_S3_BUCKET")
-
-        session = boto3.Session()
-        s3_client = session.client("s3")
-
         try:
-            # Try to access the bucket
-            s3_client.head_bucket(Bucket=bucket_name)
-            logger.info(f"Using existing S3 bucket: {bucket_name}")
-
-            _storage.initialize_storage(StorageType.S3, {"bucket_name": bucket_name})
-        except s3_client.exceptions.NoSuchBucket:
-            pytest.skip(
-                f"Test bucket {bucket_name} does not exist. Set TEST_S3_BUCKET env var or create bucket."
-            )
-        except Exception as e:
-            pytest.skip(f"Cannot access S3 bucket {bucket_name}: {e}")
-
-        return bucket_name
-
-    @pytest.fixture(scope="class")
-    def test_redis(self):
-        """Check if Redis configuration is available locally."""
-        try:
+            _storage.initialize_storage(StorageType.S3, {"bucket_name": test_s3_bucket})
             _metastore.initialize_batch_metastore(StorageType.REDIS)
         except Exception as e:
-            pytest.skip(f"Redis metastore not available: {e}")
-
-    @pytest.fixture(scope="class")
-    def k8s_client(self):
-        """Initialize Kubernetes client."""
-        try:
-            config.load_incluster_config()
-        except config.ConfigException:
-            config.load_kube_config()
-
-        return client.BatchV1Api()
-
-    @pytest.fixture(scope="class")
-    def test_namespace(self):
-        """Use default namespace for testing."""
-        return "default"
-
-    @pytest.fixture
-    def s3_credentials_secret(
-        self, k8s_client, test_namespace, s3_config_available, test_s3_bucket
-    ):
-        """Create K8s secret with S3 credentials from YAML template."""
-        import base64
-
-        # Load secret template from YAML
-        secret_template_path = Path(__file__).parent / "testdata" / "s3_secret.yaml"
-        with open(secret_template_path, "r") as f:
-            secret_template = yaml.safe_load(f)
-
-        core_v1 = client.CoreV1Api()
-        secret_name = secret_template["metadata"]["name"]
-
-        # Populate secret data with actual values (K8s expects base64 encoded values)
-        secret_template["data"] = {
-            "access-key-id": base64.b64encode(
-                s3_config_available["access_key"].encode()
-            ).decode(),
-            "secret-access-key": base64.b64encode(
-                s3_config_available["secret_key"].encode()
-            ).decode(),
-            "region": base64.b64encode(s3_config_available["region"].encode()).decode(),
-            "bucket-name": base64.b64encode(test_s3_bucket.encode()).decode(),
-        }
-
-        # Update namespace
-        secret_template["metadata"]["namespace"] = test_namespace
-
-        # Create K8s Secret object
-        secret = client.V1Secret(
-            metadata=client.V1ObjectMeta(name=secret_name, namespace=test_namespace),
-            data=secret_template["data"],
-            type=secret_template["type"],
-        )
-
-        try:
-            # Delete existing secret if it exists
-            try:
-                core_v1.delete_namespaced_secret(
-                    name=secret_name, namespace=test_namespace
-                )
-            except client.ApiException as e:
-                if e.status != 404:
-                    raise
-
-            # Create the secret
-            core_v1.create_namespaced_secret(namespace=test_namespace, body=secret)
-            logger.info(f"Created K8s secret: {secret_name}")
-
-            yield secret_name
-
-        finally:
-            # Cleanup: delete the secret
-            try:
-                core_v1.delete_namespaced_secret(
-                    name=secret_name, namespace=test_namespace
-                )
-                logger.info(f"Deleted K8s secret: {secret_name}")
-            except client.ApiException as e:
-                if e.status != 404:
-                    logger.warning(f"Failed to cleanup secret {secret_name}: {e}")
+            pytest.skip(f"Cannot initialize S3 storage and redis metastore: {e}")
 
     @pytest.fixture
     def test_input_data(self):
@@ -225,7 +91,6 @@ class TestWorkerS3Integration:
 
     async def _submit_patch_and_monitor_job(
         self,
-        k8s_client: Any,
         test_namespace: str,
         input_file_id: str,
         test_s3_bucket: str,
@@ -238,7 +103,7 @@ class TestWorkerS3Integration:
         Submit job to Kubernetes and monitor until completion.
 
         Args:
-            k8s_client: Kubernetes client
+            batch_client: Kubernetes batch client
             test_namespace: Kubernetes namespace
             job_spec: Job specification
             job_name: Name of the job
@@ -251,20 +116,25 @@ class TestWorkerS3Integration:
 
         # Set up job monitoring with kopf-powered JobCache
         main_loop = asyncio.get_running_loop()
+        main_loop.name = "test"
         job_committed = main_loop.create_future()
         job_done = main_loop.create_future()
 
-        async def job_commited_handler(job: BatchJob):
+        async def job_commited_handler(job: BatchJob) -> bool:
             if not job_committed.done():
                 main_loop.call_soon_threadsafe(job_committed.set_result, job)
+                return True
 
-        async def job_updated_handler(_: BatchJob, newJob: BatchJob):
-            if (
-                newJob.status.state == BatchJobState.FINALIZING
-                or newJob.status.state == BatchJobState.FAILED
-            ):
-                if not job_done.done():
-                    main_loop.call_soon_threadsafe(job_done.set_result, newJob)
+            return False
+
+        async def job_updated_handler(_: BatchJob, newJob: BatchJob) -> bool:
+            if job_done.done():
+                return False
+
+            if newJob.status.state == BatchJobState.FINALIZING:
+                main_loop.call_soon_threadsafe(job_done.set_result, newJob)
+
+            return True
 
         # Register handlers with the kopf-powered JobCache
         job_cache.on_job_committed(job_commited_handler)
@@ -275,7 +145,7 @@ class TestWorkerS3Integration:
         )
 
         # Create job
-        job_cache.submit_job(
+        await job_cache.submit_job(
             "test-session-id",
             job_spec,
             job_name=job_name,
@@ -296,7 +166,7 @@ class TestWorkerS3Integration:
             # Emulate job_driver behavior and create tempfiles
             prepared_job = await _storage.prepare_job_ouput_files(created_job)
 
-            job_cache.update_job_ready(prepared_job)
+            await job_cache.update_job_ready(prepared_job)
             logger.info(
                 "Batch job patched with file ids successfully:",
                 job_name=job_name,
@@ -313,7 +183,7 @@ class TestWorkerS3Integration:
             return finished_job
 
         except Exception as e:
-            await self._log_pod_details(k8s_client, test_namespace, job_name)
+            await self._log_pod_details(test_namespace, job_name)
             pytest.fail(
                 f"S3 {job_type} job did not complete within {timeout} seconds, error={str(e)}"
             )
@@ -325,7 +195,6 @@ class TestWorkerS3Integration:
         test_s3_bucket: str,
         input_file_id: str,
         job: Any,
-        k8s_client: Any,
         test_namespace: str,
         job_name: str,
     ) -> None:
@@ -337,7 +206,7 @@ class TestWorkerS3Integration:
             test_s3_bucket: S3 bucket name
             input_file_id: Input file identifier
             job: BatchJob object
-            k8s_client: Kubernetes client
+            batch_client: Kubernetes batch client
             test_namespace: Kubernetes namespace
             job_name: Job name
         """
@@ -380,7 +249,8 @@ class TestWorkerS3Integration:
 
         # Delete the Kubernetes job
         try:
-            k8s_client.delete_namespaced_job(
+            batch_client = client.BatchV1Api()
+            batch_client.delete_namespaced_job(
                 name=job_name,
                 namespace=test_namespace,
                 propagation_policy="Background",
@@ -416,11 +286,11 @@ class TestWorkerS3Integration:
     @pytest.mark.asyncio
     async def test_single_worker(
         self,
-        k8s_client,
+        k8s_config,
         test_namespace,
         s3_credentials_secret,
         test_s3_bucket,
-        test_redis,
+        init_storage,
         test_input_data,
         job_cache,
     ) -> None:
@@ -439,7 +309,6 @@ class TestWorkerS3Integration:
         try:
             # Submit job and monitor until completion
             job = await self._submit_patch_and_monitor_job(
-                k8s_client,
                 test_namespace,
                 input_file_id,
                 test_s3_bucket,
@@ -469,7 +338,6 @@ class TestWorkerS3Integration:
                 test_s3_bucket,
                 input_file_id,
                 job,
-                k8s_client,
                 test_namespace,
                 job_name,
             )
@@ -477,11 +345,11 @@ class TestWorkerS3Integration:
     @pytest.mark.asyncio
     async def test_parallel_workers(
         self,
-        k8s_client,
+        k8s_config,
         test_namespace,
         s3_credentials_secret,
         test_s3_bucket,
-        test_redis,
+        init_storage,
         test_input_data,
         job_cache,
     ) -> None:
@@ -503,7 +371,6 @@ class TestWorkerS3Integration:
         try:
             # Submit job and monitor until completion
             job = await self._submit_patch_and_monitor_job(
-                k8s_client,
                 test_namespace,
                 input_file_id,
                 test_s3_bucket,
@@ -535,12 +402,11 @@ class TestWorkerS3Integration:
                 test_s3_bucket,
                 input_file_id,
                 job,
-                k8s_client,
                 test_namespace,
                 job_name,
             )
 
-    async def _log_pod_details(self, k8s_client, namespace, job_name):
+    async def _log_pod_details(self, namespace, job_name):
         """Log pod details for debugging."""
         core_v1 = client.CoreV1Api()
 

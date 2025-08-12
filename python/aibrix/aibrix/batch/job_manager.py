@@ -16,24 +16,25 @@ import asyncio
 import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from aibrix.logger import init_logger
-
-if TYPE_CHECKING:
-    from aibrix.batch.job_driver import JobDriver
-
+from aibrix.batch.job_driver import JobDriver
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobError,
     BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
+    BatchJobStatus,
+    Condition,
+    ConditionStatus,
+    ConditionType,
     JobEntityManager,
 )
 from aibrix.batch.job_progress_manager import JobProgressManager
 from aibrix.batch.scheduler import JobScheduler
 from aibrix.batch.storage import read_job_input_info
+from aibrix.logger import init_logger
 
 
 # Custom exceptions for job manager
@@ -110,16 +111,16 @@ class JobMetaInfo(BatchJob):
     def get_request_bit(self, req_id):
         return self._request_progress_bits[req_id]
 
-    def get_job_status(self) -> BatchJobState:
-        return self.status.state
-
     def complete_one_request(self, req_id, failed: bool = False):
         """
         This is called after an inference call. If all requests
         are done, we need to update its status to be completed.
         """
         if req_id == self.status.request_counts.total:
-            self.status.request_counts.total -= 1  # Fix total count
+            # Fix total count and launched count on total decided.
+            self.status.request_counts.total -= 1
+            if self.status.request_counts.launched > self.status.request_counts.total:
+                self.status.request_counts.launched = self.status.request_counts.total
             self._no_total = False
         elif not self._request_progress_bits[req_id]:
             self.set_request_executed(req_id)
@@ -208,7 +209,34 @@ class JobMetaInfo(BatchJob):
 
 
 class JobManager(JobProgressManager):
-    def __init__(self, job_entity_manager: Optional[JobEntityManager] = None):
+    # Valid state transitions are defined as:
+    # 1. Started -> Validating -> In_progress -> Finalizing -> Finalzed(condition: completed)
+    # 2. Started/Validating -> Finalzed (condition: failed)
+    # 3. In_progress -> Finalizing -> Finalized (condition: failed)
+    # 4. Started/Validating -> Canceling -> Finalized (condition: canceled)
+    # 5. In_progress -> Canceling -> Finalizing -> Finalized (condition: canceled)
+    # 6. Started/Validating -> Finalized (condition: expired)
+    # 7. In_progress -> Finalizing -> Finalized (condition: expired)
+    VALID_STATE_TRANSITIONS = {
+        BatchJobState.CREATED: [BatchJobState.VALIDATING],
+        BatchJobState.VALIDATING: [
+            BatchJobState.IN_PROGRESS,
+            BatchJobState.FINALIZED,  # For failed/expired conditions
+            BatchJobState.CANCELLING,  # For cancellation
+        ],
+        BatchJobState.IN_PROGRESS: [
+            BatchJobState.FINALIZING,
+            BatchJobState.CANCELLING,  # For cancellation
+        ],
+        BatchJobState.FINALIZING: [BatchJobState.FINALIZED],
+        BatchJobState.CANCELLING: [
+            BatchJobState.FINALIZED,
+            BatchJobState.FINALIZING,  # For in_progress -> cancelling -> finalizing
+        ],
+        BatchJobState.FINALIZED: [],  # Terminal state
+    }
+
+    def __init__(self) -> None:
         """
         This manages jobs in three categorical job pools.
         1. _pending_jobs are jobs that are not scheduled yet
@@ -216,25 +244,30 @@ class JobManager(JobProgressManager):
         Theses are the input to the job scheduler.
         3. _done_jobs are inactive jobs. This needs to be updated periodically.
         """
+        super().__init__()
+
         self._pending_jobs: dict[str, BatchJob] = {}
         self._in_progress_jobs: dict[str, BatchJob] = {}
         self._done_jobs: dict[str, BatchJob] = {}
         self._job_scheduler: Optional[JobScheduler] = None
-        self._job_entity_manager: Optional[JobEntityManager] = job_entity_manager
+        self._job_entity_manager: Optional[JobEntityManager] = None
 
         # Track jobs being created with JobEntityManager
         self._creating_jobs: Dict[str, asyncio.Future[str]] = {}
         self._creation_timeouts: Dict[str, asyncio.Task] = {}
         self._session_metadata: Dict[str, Dict[str, Any]] = {}
 
-        # Register job lifecycle handlers if entity manager is available
-        if self._job_entity_manager:
-            self._job_entity_manager.on_job_committed(self.job_committed_handler)
-            self._job_entity_manager.on_job_updated(self.job_updated_handler)
-            self._job_entity_manager.on_job_deleted(self.job_deleted_handler)
-
-    def set_scheduler(self, scheduler: JobScheduler):
+    def set_scheduler(self, scheduler: JobScheduler) -> None:
         self._job_scheduler = scheduler
+
+    async def set_job_entity_manager(
+        self, job_entity_manager: JobEntityManager
+    ) -> None:
+        self._job_entity_manager = job_entity_manager
+        # Register job lifecycle handlers within loop context
+        self._job_entity_manager.on_job_committed(self.job_committed_handler)
+        self._job_entity_manager.on_job_updated(self.job_updated_handler)
+        self._job_entity_manager.on_job_deleted(self.job_deleted_handler)
 
     async def create_job(
         self,
@@ -293,21 +326,33 @@ class JobManager(JobProgressManager):
                 # Will trigger job committed handler
                 # Note: When using job_entity_manager, the job_id will be available after the committed handler
                 # For now, we return None since we don't have immediate access to the generated job_id
-                self._job_entity_manager.submit_job(session_id, job_spec)
-                job_id = await asyncio.wait_for(job_future, timeout=timeout)
+                submitted = asyncio.create_task(
+                    self._job_entity_manager.submit_job(session_id, job_spec)
+                )
+                timeouted = asyncio.create_task(
+                    asyncio.wait_for(job_future, timeout=timeout)
+                )
+
+                print(f"start wait {datetime.now()}")
+                _, job_id = await asyncio.gather(submitted, timeouted)
+                print(f"end wait {datetime.now()}")
                 logger.info(
                     "Job created successfully", session_id=session_id, job_id=job_id
                 )  # type: ignore[call-arg]
             except Exception:
+                print(f"timeout {datetime.now()}")
                 raise
             finally:
                 # Clean up tracking
                 del self._creating_jobs[session_id]
 
+            if job_id is None:
+                raise RuntimeError("Job ID was not set during creation")
             return job_id
 
         # Local job handling.
         job = BatchJob.new_local(job_spec)
+        job.status.state = initial_state
         await self.job_committed_handler(job)
         assert job.job_id is not None
 
@@ -324,6 +369,8 @@ class JobManager(JobProgressManager):
         The method considers the situation that while before signaling, the job is in pending or processing,
         but before job_deleted_handler is called, the job may have completed.
 
+        Noted: job not will be deleted from job_manager
+
         Args:
             job_id: The ID of the job to cancel
 
@@ -335,55 +382,135 @@ class JobManager(JobProgressManager):
         job_in_progress = False
         if job_id in self._pending_jobs:
             job = self._pending_jobs[job_id]
-            # Delete from pending jobs to avoid the job being scheduled. Status will be updated later
             del self._pending_jobs[job_id]
+            logger.debug("Job removed from a category", category="_pending_jobs")  # type: ignore[call-arg]
         elif job_id in self._in_progress_jobs:
             job = self._in_progress_jobs[job_id]
             job_in_progress = True
+            del self._in_progress_jobs[job_id]
+            logger.debug("Job removed from a category", category="job_in_progress")  # type: ignore[call-arg]
         elif job_id in self._done_jobs:
             # Job is already done (completed, failed, expired, or cancelled)
             logger.debug("Job is already in final state", job_id=job_id)  # type: ignore[call-arg]
-            return True
+            return False
         else:
             logger.warning("Job not found", job_id=job_id)  # type: ignore[call-arg]
             return False
 
         # Check if job is already in a final state (race condition protection)
         # We allow CANCELLING job be signalled again.
-        if job.status and job.status.state in [
-            BatchJobState.COMPLETED,
-            BatchJobState.FAILED,
-            BatchJobState.EXPIRED,
-            BatchJobState.CANCELED,
-        ]:
-            logger.info(  # type: ignore[call-arg]
-                "Job is already in final state", job_id=job_id, state=job.status.state
+        if job.status.finished:
+            logger.debug(  # type: ignore[call-arg]
+                "Job is finished ", job_id=job_id, state=job.status.state
             )
+            self._done_jobs[job_id] = job  # correct job queue.
+            logger.debug("Job added to a category", category="_done_jobs")  # type: ignore[call-arg]
             return False
+        elif job.status.state == BatchJobState.FINALIZING:
+            logger.info(  # type: ignore[call-arg]
+                "Job is finalizing", job_id=job_id, state=job.status.state
+            )
+            self._in_progress_jobs[job_id] = job  # correct job queue.
+            logger.debug("Job added to a category", category="_in_progress_jobs")  # type: ignore[call-arg]
+            return False
+
+        # Start cancel
+        job.status.state = BatchJobState.CANCELLING
+        job.status.cancelling_at = datetime.now()
+        # make sure job in _in_progress_jobs to match current state
+        self._in_progress_jobs[job_id] = job
+        logger.debug("Job added to a category", category="_in_progress_jobs")  # type: ignore[call-arg]
 
         if self._job_entity_manager:
             # Signal the entity manager to cancel the job
             # The actual state update will be handled by job_deleted_handler or job_updated_handler when called back
-            self._job_entity_manager.cancel_job(job_id)
+            await self._job_entity_manager.cancel_job(job_id)
             return True
 
-        # For local jobs, directly call job_deleted_handler
+        # For local jobs, transit directly
         job_done = copy.deepcopy(job)
-        if job_done.status:
-            job_done.status.state = BatchJobState.CANCELLING
-            job_done.status.cancelling_at = datetime.now()
         if job_in_progress:
             # [TODO][NEXT] zhangjyr
             # Remove all related requests from scheduler and proxy
-            del self._in_progress_jobs[job_id]
+            pass
 
         if job_done.status:
-            job_done.status.state = BatchJobState.CANCELED
-            job_done.status.cancelled_at = datetime.now()
+            job_done.status.add_condition(
+                Condition(
+                    type=ConditionType.CANCELED,
+                    status=ConditionStatus.TRUE,
+                    lastTransitionTime=datetime.now(),
+                )
+            )
+            job_done.status.state = BatchJobState.FINALIZED
+            job_done.status.cancelled_at = datetime.now(timezone.utc)
         await self.job_updated_handler(job, job_done)
         return True
 
-    async def job_committed_handler(self, job: BatchJob):
+    async def delete_job(self, job_id: str) -> bool:
+        """
+        Delete a job by job_id. Only finished job can be deleted.
+
+        Args:
+            job_id: The ID of the job to cancel
+
+        Returns:
+            bool: True if deletion was initiated successfully, False otherwise
+        """
+        # Check if job exists in any state
+        if (job := self._done_jobs[job_id]) is None:
+            # Job is not already done (completed, failed, expired, or cancelled)
+            logger.error("Job is not in final state on deleting", job_id=job_id)  # type: ignore[call-arg]
+            return False
+
+        if self._job_entity_manager:
+            # Signal the entity manager to delete the job
+            # The actual state update will be handled by job_deleted_handler when called back
+            await self._job_entity_manager.delete_job(job)
+            return True
+
+        # For local jobs, transit directly
+        return await self.job_deleted_handler(job)
+
+    def _validate_state_transition(
+        self, old_job: Optional[BatchJob], new_job: BatchJob
+    ) -> bool:
+        """Validate if the state transition is allowed based on the defined rules.
+
+        Args:
+            old_job: The previous job state (None for new jobs)
+            new_job: The new job state
+
+        Returns:
+            True if transition is valid, False otherwise
+        """
+        if old_job is None:
+            # New job, allow any initial state
+            return True
+
+        old_state = old_job.status.state
+        new_state = new_job.status.state
+
+        # Same state is always valid
+        if old_state == new_state:
+            return True
+
+        # Check if transition is in valid transitions
+        valid_next_states = self.VALID_STATE_TRANSITIONS.get(old_state, [])
+        is_valid = new_state in valid_next_states
+
+        if not is_valid:
+            logger.warning(
+                "Invalid state transition for job",
+                job_id=new_job.status.job_id,
+                old_state=old_state,
+                new_state=new_state,
+                valid_transitions=valid_next_states,
+            )  # type: ignore[call-arg]
+
+        return is_valid
+
+    async def job_committed_handler(self, job: BatchJob) -> bool:
         """
         This is called by job entity manager when a job is committed.
         Enhanced to resolve pending job creation futures.
@@ -391,24 +518,34 @@ class JobManager(JobProgressManager):
         job_id = job.job_id
         if not job_id:
             logger.error("Job ID not found in comitted job")
-            return
-
-        category = self._categorize_jobs(job, first_seen=True)
-        category[job_id] = job
+            return False
 
         # Check if this job resolves a pending creation
-        if job.session_id and job.session_id in self._creating_jobs:
-            future = self._creating_jobs[job.session_id]
-            if not future.done():
+        if job.session_id:
+            if (
+                future := self._creating_jobs.get(job.session_id)
+            ) is not None and not future.done():
                 future.set_result(job_id)
                 logger.debug(
                     "Job creation future resolved",
                     session_id=job.session_id,
                     job_id=job_id,
                 )  # type: ignore[call-arg]
+            else:
+                # Ignore
+                logger.warning(
+                    "Job creation timeout or already created",
+                    session_id=job.session_id,
+                    job_id=job_id,
+                )  # type: ignore[call-arg]
+                return False
+
+        category, name = self._categorize_jobs(job, first_seen=True)
+        category[job_id] = job
+        logger.debug("Job added to a category", category=name)  # type: ignore[call-arg]
 
         if category is not self._pending_jobs:
-            return
+            return True
 
         # Add to job scheduler if available (traditional workflow)
         if self._job_scheduler:
@@ -423,13 +560,12 @@ class JobManager(JobProgressManager):
             or job.status.temp_output_file_id is None
             or job.status.error_file_id is None
             or job.status.temp_error_file_id is None
-        ):
-            # Start a job_driver to prepare output files
-            assert self._job_entity_manager is not None
-            if not await self.start_execute_job(job):
-                self._job_entity_manager.cancel_job(job_id)
-                return
+        ) and self._job_entity_manager is not None:
+            # Try starting job immiediately with job validation.
+            if not await self.start_execute_job(job_id):
+                return True
 
+            # Initiate job preparing, see JobDriver for details
             logger.info("Starting job preparation for new job", job_id=job_id)  # type: ignore[call-arg]
             try:
                 job_driver = JobDriver(self)
@@ -447,47 +583,103 @@ class JobManager(JobProgressManager):
                 await self._job_entity_manager.update_job_ready(prepared_job)
 
                 # Leave job_updated_handler to update job location in queues
-
             except Exception as e:
-                logger.error("Job validation failed", job_id=job_id, error=e)  # type: ignore[call-arg]
-                self.mark_job_failed(job_id)
-                self._job_entity_manager.cancel_job(job_id)
+                logger.error("Job preparation failed", job_id=job_id, error=str(e))  # type: ignore[call-arg]
+                await self.mark_job_failed(
+                    job_id,
+                    BatchJobError(
+                        code=BatchJobErrorCode.PREPARE_OUTPUT_ERROR, message=str(e)
+                    ),
+                )
+                # No need to stop job because only update_job_ready will start job.
 
-    async def job_updated_handler(self, old_job: BatchJob, new_job: BatchJob):
+        return True
+
+    async def job_updated_handler(self, old_job: BatchJob, new_job: BatchJob) -> bool:
         """
         This is called by job entity manager when a job status is updated.
         Handles state transitions when a job is cancelled or completed.
+        Validates state transitions according to defined rules.
         """
-        job_id = old_job.job_id
-        if not job_id:
-            logger.error("Job ID not found in updated job")
-            return
-        if not old_job.status or not new_job.status:
-            logger.error("Job status not found in updated job", job_id=job_id)  # type: ignore[call-arg]
-            return
+        try:
+            job_id = old_job.job_id
+            if not job_id:
+                logger.error("Job ID not found in updated job")
+                return False
 
-        # Categorize jobs
-        old_category = self._categorize_jobs(old_job)
-        new_category = self._categorize_jobs(new_job)
-        if old_category is new_category:
-            return
+            # Categorize jobs
+            old_category, old_name = self._categorize_jobs(old_job)
+            new_category, new_name = self._categorize_jobs(new_job)
+            # Load cache job, possibily with local metainfo.
+            old_job_in_category = old_category.get(job_id)
+            if old_job_in_category is None:
+                logger.warning(
+                    "Job is not in old category, ignore updating",
+                    old_category=old_name,
+                    new_category=new_name,
+                )  # type: ignore[call-arg]
+                return False
+            old_job = old_job_in_category
 
-        # Move job from old category to new category
-        if job_id in old_category:
-            del old_category[job_id]
-        new_category[job_id] = new_job
+            # Validate state transition
+            if not self._validate_state_transition(old_job, new_job):
+                logger.warning(
+                    "Invalid state transition for job - rejecting update",
+                    job_id=job_id,
+                )  # type: ignore[call-arg]
+                return False
 
-        # For metadata server (no scheduler): finalize job when transitioning to FINALIZING
-        if (
-            new_job.status.state == BatchJobState.FINALIZING
-            and old_job.status.state != BatchJobState.FINALIZING
-            and self._job_scheduler is None
-        ):
-            logger.info("Starting job finalization", job_id=job_id)  # type: ignore[call-arg]
-            job_driver = JobDriver(self)
-            await job_driver.finalize_job(new_job)
+            # Mark post-state-transition flags
+            finalizing_needed = (
+                new_job.status.state == BatchJobState.FINALIZING
+                and old_job.status.state != BatchJobState.FINALIZING
+                and self._job_scheduler is None
+            )
+            logger.debug(
+                "job_updated_handler passed state transition",
+                old_job=old_job.status.state,
+                new_job=new_job.status.state,
+                finalizing_needed=finalizing_needed,
+            )
 
-    async def job_deleted_handler(self, job: BatchJob):
+            # No category change, try update status
+            if old_category == new_category:
+                # avoid override local metainfo by update status only
+                old_job.status = new_job.status
+                new_job = old_job
+            else:
+                # Move job from old category to new category
+                del old_category[job_id]
+                new_category[job_id] = new_job
+                logger.debug(
+                    "Job moved to a new category",
+                    old_category=old_name,
+                    new_category=new_name,
+                )  # type: ignore[call-arg]
+
+            # For metadata server (no scheduler): finalize job when transitioning to FINALIZING
+            if finalizing_needed:
+                try:
+                    logger.info("Starting job finalization", job_id=job_id)  # type: ignore[call-arg]
+                    job_driver = JobDriver(self)
+                    await job_driver.finalize_job(new_job)
+                except Exception as fe:
+                    logger.error(
+                        "Job finalization failed", job_id=job_id, error=str(fe)
+                    )  # type: ignore[call-arg]
+                    await self.mark_job_failed(
+                        job_id,
+                        BatchJobError(
+                            code=BatchJobErrorCode.FINALIZING_ERROR, message=str(fe)
+                        ),
+                    )
+
+            return True
+        except Exception as e:
+            logger.error("except in job_updated_handler", error=str(e))
+            raise
+
+    async def job_deleted_handler(self, job: BatchJob) -> bool:
         """
         This is called by job entity manager when a job is deleted.
         """
@@ -496,22 +688,25 @@ class JobManager(JobProgressManager):
             # [TODO][NEXT] zhangjyr
             # Remove all related requests from scheduler and proxy, and call job_updated_handler, followed by job_deleted_handler() again.
             logger.warning("Job is in progress, cannot be deleted", job_id=job_id)  # type: ignore[call-arg]
-            return
+            return True
 
         if job_id in self._pending_jobs:
             del self._pending_jobs[job_id]
+            logger.debug("Job removed from a category", category="_pending_jobs")  # type: ignore[call-arg]
+            return True
+
         if job_id in self._done_jobs:
             del self._done_jobs[job_id]
+            logger.debug("Job removed from a category", category="_done_jobs")  # type: ignore[call-arg]
 
-    def get_job(self, job_id) -> Optional[BatchJob]:
+        return True
+
+    async def get_job(self, job_id) -> Optional[BatchJob]:
         """
         This retrieves a job's status to users.
         Job scheduler does not need to check job status. It can directly
         check the job pool for scheduling, such as pending_jobs.
         """
-        if self._job_entity_manager:
-            return self._job_entity_manager.get_job(job_id)
-
         if job_id in self._pending_jobs:
             return self._pending_jobs[job_id]
         elif job_id in self._in_progress_jobs:
@@ -521,10 +716,10 @@ class JobManager(JobProgressManager):
 
         return None
 
-    def get_job_status(self, job_id: str) -> Optional[BatchJobState]:
+    async def get_job_status(self, job_id: str) -> Optional[BatchJobStatus]:
         """Get the current status of a job."""
-        job = self.get_job(job_id)
-        return job.status.state if job else None
+        job = await self.get_job(job_id)
+        return job.status if job else None
 
     async def list_jobs(self) -> List[BatchJob]:
         """List all jobs."""
@@ -545,7 +740,7 @@ class JobManager(JobProgressManager):
 
         return all_jobs
 
-    async def start_execute_job(self, job_id) -> bool:
+    async def start_execute_job(self, job_id: str) -> bool:
         """
         This interface should be called by scheduler.
         User is not allowed to choose a job to be scheduled.
@@ -564,6 +759,11 @@ class JobManager(JobProgressManager):
             # Only update state for first validation.
             meta_data.status.state = BatchJobState.VALIDATING
         self._in_progress_jobs[job_id] = meta_data
+        logger.debug(
+            "Job moved to new category",
+            old_category="_pending_jobs",
+            new_category="_in_progress_jobs",
+        )  # type: ignore[call-arg]
 
         try:
             # [TODO][NOW] This should be moved to job_driver.
@@ -575,16 +775,12 @@ class JobManager(JobProgressManager):
                 meta_data.status.state = BatchJobState.IN_PROGRESS
         except BatchJobError as e:
             logger.error("Job validation failed", job_id=job_id, error=str(e))  # type: ignore[call-arg]
-            meta_data.status.state = BatchJobState.FAILED
-            meta_data.status.failed_at = datetime.now(timezone.utc)
-            meta_data.status.errors = [e]
-            del self._in_progress_jobs[job_id]
-            self._done_jobs[job_id] = meta_data
+            await self.mark_job_failed(job_id, e)
             return False
 
         return True
 
-    def get_job_endpoint(self, job_id) -> str:
+    async def get_job_endpoint(self, job_id: str) -> str:
         if job_id in self._pending_jobs:
             job = self._pending_jobs[job_id]
         elif job_id in self._in_progress_jobs:
@@ -594,7 +790,7 @@ class JobManager(JobProgressManager):
             return ""
         return str(job.spec.endpoint)
 
-    def mark_job_progress(self, job_id: str, req_id: int) -> Tuple[BatchJob, int]:
+    async def mark_job_progress(self, job_id: str, req_id: int) -> Tuple[BatchJob, int]:
         """
         This is used to sync job's progress, called by job driver.
         It is guaranteed that each request is executed at least once.
@@ -602,7 +798,7 @@ class JobManager(JobProgressManager):
         Raises:
             JobUnexpectedStateError: If job is not in progress.
         """
-        meta_data = self._meta_from_in_progress_job(job_id)
+        meta_data = await self._meta_from_in_progress_job(job_id)
 
         if req_id < 0 or req_id > meta_data.status.request_counts.total:
             raise ValueError(f"invalide request_id: {req_id}")
@@ -610,7 +806,9 @@ class JobManager(JobProgressManager):
         meta_data.complete_one_request(req_id)
         return meta_data, meta_data.next_request_id()
 
-    def mark_jobs_progresses(self, job_id, executed_requests) -> BatchJob:
+    async def mark_jobs_progresses(
+        self, job_id: str, executed_requests: List[int]
+    ) -> BatchJob:
         """
         This is the batch operation to sync jobs' progresses, called by job driver.
         It is guaranteed that each request is executed at least once.
@@ -618,7 +816,7 @@ class JobManager(JobProgressManager):
         Raises:
             JobUnexpectedStateError: If job is not in progress.
         """
-        meta_data = self._meta_from_in_progress_job(job_id)
+        meta_data = await self._meta_from_in_progress_job(job_id)
 
         request_len = meta_data.status.request_counts.total
         for req_id in executed_requests:
@@ -634,7 +832,7 @@ class JobManager(JobProgressManager):
 
         return meta_data
 
-    def get_job_next_request(self, job_id) -> Tuple[BatchJob, int]:
+    async def get_job_next_request(self, job_id: str) -> Tuple[BatchJob, int]:
         """
         Get next request id to execute, see JobMetaInfo::next_request_id for details
 
@@ -644,10 +842,10 @@ class JobManager(JobProgressManager):
         Raises:
             JobUnexpectedStateError: If job is not in progress.
         """
-        meta_data = self._meta_from_in_progress_job(job_id)
+        meta_data = await self._meta_from_in_progress_job(job_id)
         return meta_data, meta_data.next_request_id()
 
-    def mark_job_progress_and_get_next_request(
+    async def mark_job_progress_and_get_next_request(
         self, job_id: str, req_id: int
     ) -> Tuple[BatchJob, int]:
         """
@@ -660,61 +858,90 @@ class JobManager(JobProgressManager):
         Raises:
             JobUnexpectedStateError: If job is not in progress.
         """
-        meta_data = self._meta_from_in_progress_job(job_id)
+        meta_data = await self._meta_from_in_progress_job(job_id)
 
         meta_data.complete_one_request(req_id)
         return meta_data, meta_data.next_request_id()
 
-    def mark_job_total(self, job_id, total_requests) -> BatchJob:
+    async def mark_job_total(self, job_id: str, total_requests: int) -> BatchJob:
         """
         This is used to set job's total requests when stream reader sees the end of the request.
 
         Raises:
             JobUnexpectedStateError: If job is not in progress.
         """
-        job, _ = self.mark_job_progress(job_id, total_requests + 1)
+        job, _ = await self.mark_job_progress(job_id, total_requests + 1)
         return job
 
-    def mark_job_done(self, job_id: str) -> BatchJob:
+    async def mark_job_done(self, job_id: str) -> BatchJob:
         """
         Mark job done.
 
         Raises:
             JobUnexpectedStateError: If job is not in progress and not finalizing.
         """
-        meta_data = self._meta_from_in_progress_job(job_id)
+        meta_data = await self._meta_from_in_progress_job(job_id)
 
         if meta_data.status.state != BatchJobState.FINALIZING:
+            logger.error("Job is not in finalizing state", state=meta_data.status.state)  # type: ignore[call-arg]
             raise JobUnexpectedStateError(
-                "Job is not in finalizing state, current state", meta_data.status.state
+                "Job is not in finalizing state", meta_data.status.state
             )
 
         del self._in_progress_jobs[job_id]
-        self._done_jobs[job_id] = meta_data
         meta_data.status.completed_at = datetime.now(timezone.utc)
-        meta_data.status.state = BatchJobState.COMPLETED
-        logger.info("Job is completed", job_id=job_id)  # type: ignore[call-arg]
+        if meta_data.status.condition is None:
+            meta_data.status.add_condition(
+                Condition(
+                    type=ConditionType.COMPLETED,
+                    status=ConditionStatus.TRUE,
+                    lastTransitionTime=meta_data.status.completed_at,
+                )
+            )
+        meta_data.status.state = BatchJobState.FINALIZED
+        self._done_jobs[job_id] = meta_data
+        logger.debug(
+            "Job moved to new category",
+            old_category="_in_progress_jobs",
+            new_category="_done_jobs",
+        )  # type: ignore[call-arg]
 
+        logger.info("Job is completed", job_id=job_id)  # type: ignore[call-arg]
         return meta_data
 
-    def mark_job_failed(self, job_id: str) -> Optional[BatchJob]:
+    async def mark_job_failed(self, job_id: str, ex: BatchJobError) -> BatchJob:
         """
         Mark job failed.
 
         Raises:
             JobUnexpectedStateError: If job is not in progress.
         """
-        meta_data = self._meta_from_in_progress_job(job_id)
+        meta_data = await self._meta_from_in_progress_job(job_id)
 
         del self._in_progress_jobs[job_id]
         meta_data.status.failed_at = datetime.now(timezone.utc)
-        meta_data.status.state = BatchJobState.FAILED
+        meta_data.status.add_condition(
+            Condition(
+                type=ConditionType.FAILED,
+                status=ConditionStatus.TRUE,
+                lastTransitionTime=meta_data.status.failed_at,
+                reason=ex.code,
+                message=ex.message,
+            )
+        )
+        meta_data.status.state = BatchJobState.FINALIZED
+        meta_data.status.errors = [ex]
         self._done_jobs[job_id] = meta_data
+        logger.debug(
+            "Job moved to new category",
+            old_category="_in_progress_jobs",
+            new_category="_done_jobs",
+        )  # type: ignore[call-arg]
 
         logger.info("Job failed", job_id=job_id)  # type: ignore[call-arg]
         return meta_data
 
-    def expire_job(self, job_id):
+    async def expire_job(self, job_id: str) -> bool:
         """
         This is called by scheduler. When a job arrives at its
         specified due time, scheduler will mark this expired.
@@ -724,8 +951,13 @@ class JobManager(JobProgressManager):
         if job_id in self._pending_jobs:
             job = self._pending_jobs[job_id]
             del self._pending_jobs[job_id]
-            job.status.state = BatchJobState.EXPIRED
+            job.status.state = BatchJobState.FINALIZED
             self._done_jobs[job_id] = job
+            logger.debug(
+                "Job moved to new category",
+                old_category="_pending_jobs",
+                new_category="_done_jobs",
+            )  # type: ignore[call-arg]
         elif job_id in self._in_progress_jobs:
             # Now a job can not be expired once it gets scheduled, considering
             # that expiring a partial executed job wastes resources.
@@ -740,7 +972,7 @@ class JobManager(JobProgressManager):
 
         return True
 
-    def sync_job_to_storage(self, jobId):
+    async def sync_job_to_storage(self, job_id: str):
         """
         [TODO] Xin
         This is used to serialize everything here to storage to make sure
@@ -749,9 +981,9 @@ class JobManager(JobProgressManager):
         """
         pass
 
-    def _meta_from_in_progress_job(self, job_id) -> JobMetaInfo:
+    async def _meta_from_in_progress_job(self, job_id: str) -> JobMetaInfo:
         if job_id not in self._in_progress_jobs:
-            job = self.get_job(job_id)
+            job = await self.get_job(job_id)
             raise JobUnexpectedStateError(
                 "Job has not been scheduled yet or has been scheduled",
                 job.status.state if job else None,
@@ -764,23 +996,18 @@ class JobManager(JobProgressManager):
 
     def _categorize_jobs(
         self, job: BatchJob, first_seen: bool = False
-    ) -> dict[str, BatchJob]:
+    ) -> Tuple[dict[str, BatchJob], str]:
         """
         This is used to categorize jobs into pending, in progress, and done.
         """
         if not job.status:
-            return self._pending_jobs
+            return self._pending_jobs, "_pending_jobs"
         if job.status.state == BatchJobState.CREATED:
-            return self._pending_jobs
-        elif job.status.state in [
-            BatchJobState.COMPLETED,
-            BatchJobState.FAILED,
-            BatchJobState.EXPIRED,
-            BatchJobState.CANCELED,
-        ]:
-            return self._done_jobs
+            return self._pending_jobs, "_pending_jobs"
+        elif job.status.finished:
+            return self._done_jobs, "_done_jobs"
         elif first_seen and self._job_scheduler:
             # We need to pending jobs to be scheduled to make progress
-            return self._pending_jobs
+            return self._pending_jobs, "_pending_jobs"
         else:
-            return self._in_progress_jobs
+            return self._in_progress_jobs, "_in_progress_jobs"

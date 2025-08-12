@@ -143,10 +143,10 @@ async def create_file(
 
         # Generate metadata
         created_at = int(time.time())
-        metadata = {
-            "filename": file.filename,
+        metadata: dict[str, str] = {
+            "filename": file.filename or "",
             "purpose": purpose.value,
-            "created_at": created_at,
+            "created_at": str(created_at),  # requires all value a string.
         }
         try:
             await storage.put_object(
@@ -181,7 +181,7 @@ async def create_file(
     except Exception as e:
         logger.error("Unexpected error uploading file", error=str(e))  # type: ignore[call-arg]
         error_response = _create_error_response("Internal server error")
-        raise HTTPException(status_code=500, detail=error_response)
+        raise  # HTTPException(status_code=500, detail=error_response)
 
 
 @router.get("/{file_id}/content")

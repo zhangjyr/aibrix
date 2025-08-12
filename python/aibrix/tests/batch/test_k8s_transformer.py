@@ -22,6 +22,8 @@ from aibrix.batch.job_entity import (
     BatchJobEndpoint,
     BatchJobState,
     CompletionWindow,
+    ConditionStatus,
+    ConditionType,
     k8s_job_to_batch_job,
 )
 
@@ -158,6 +160,46 @@ def _get_job_succees_obj():
             "terminating": 0,
             "uncountedTerminatedPods": {},
             "ready": 0,
+        },
+    }
+
+
+def _get_job_failed_obj():
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": "test-batch-job",
+            "namespace": "default",
+            "uid": "test-uid-123",
+            "creationTimestamp": "2024-01-01T12:00:00Z",
+        },
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        "batch.job.aibrix.ai/input-file-id": "file-123",
+                        "batch.job.aibrix.ai/endpoint": "/v1/embeddings",
+                        "batch.job.aibrix.ai/output-file-id": "output-123",
+                        "batch.job.aibrix.ai/error-file-id": "error-123",
+                        "batch.job.aibrix.ai/temp-output-file-id": "temp-output-123",
+                        "batch.job.aibrix.ai/temp-error-file-id": "temp-error-123",
+                    },
+                },
+            },
+        },
+        "status": {
+            "conditions": [
+                {
+                    "type": "Failed",
+                    "status": "True",
+                    "lastTransitionTime": "2025-08-05T05:26:25Z",
+                    "reason": "BackoffLimitExceeded",
+                    "message": "Job has reached the specified backoff limit",
+                },
+            ],
+            "startTime": "2025-08-05T05:26:13Z",
+            "failed": 1,
         },
     }
 
@@ -305,6 +347,8 @@ def test_k8s_job_dict_access():
     assert batch_job.metadata.name == "test-batch-job"
     assert batch_job.spec.endpoint == BatchJobEndpoint.EMBEDDINGS
     assert batch_job.status.state == BatchJobState.CREATED
+    assert not batch_job.status.finished
+    assert batch_job.status.condition is None
 
     batch_job = k8s_job_to_batch_job(_get_job_in_progress_obj())
 
@@ -313,6 +357,8 @@ def test_k8s_job_dict_access():
     assert batch_job.metadata.name == "test-batch-job"
     assert batch_job.spec.endpoint == BatchJobEndpoint.EMBEDDINGS
     assert batch_job.status.state == BatchJobState.IN_PROGRESS
+    assert not batch_job.status.finished
+    assert batch_job.status.condition is None
 
     batch_job = k8s_job_to_batch_job(_get_job_succees_obj())
 
@@ -321,9 +367,15 @@ def test_k8s_job_dict_access():
     assert batch_job.metadata.name == "test-batch-job"
     assert batch_job.spec.endpoint == BatchJobEndpoint.EMBEDDINGS
     assert batch_job.status.state == BatchJobState.FINALIZING
+    assert not batch_job.status.finished
+    assert not batch_job.status.completed
+    assert batch_job.status.condition == ConditionType.COMPLETED
 
     batch_job = k8s_job_to_batch_job(_get_job_expired_obj())
-    assert batch_job.status.state == BatchJobState.EXPIRED
+    batch_job.status.state == BatchJobState.FINALIZING
+    assert not batch_job.status.finished
+    assert not batch_job.status.expired
+    assert batch_job.status.condition == ConditionType.EXPIRED
 
 
 def test_k8s_job_obj_access():
@@ -336,6 +388,8 @@ def test_k8s_job_obj_access():
     assert batch_job.metadata.name == "test-batch-job"
     assert batch_job.spec.endpoint == BatchJobEndpoint.EMBEDDINGS
     assert batch_job.status.state == BatchJobState.CREATED
+    assert not batch_job.status.finished
+    assert batch_job.status.condition is None
 
     obj = dict_to_obj(_get_job_in_progress_obj())
     batch_job = k8s_job_to_batch_job(obj)
@@ -345,6 +399,8 @@ def test_k8s_job_obj_access():
     assert batch_job.metadata.name == "test-batch-job"
     assert batch_job.spec.endpoint == BatchJobEndpoint.EMBEDDINGS
     assert batch_job.status.state == BatchJobState.IN_PROGRESS
+    assert not batch_job.status.finished
+    assert batch_job.status.condition is None
 
     obj = dict_to_obj(_get_job_succees_obj())
     batch_job = k8s_job_to_batch_job(obj)
@@ -354,10 +410,16 @@ def test_k8s_job_obj_access():
     assert batch_job.metadata.name == "test-batch-job"
     assert batch_job.spec.endpoint == BatchJobEndpoint.EMBEDDINGS
     assert batch_job.status.state == BatchJobState.FINALIZING
+    assert not batch_job.status.finished
+    assert not batch_job.status.completed
+    assert batch_job.status.condition == ConditionType.COMPLETED
 
     obj = dict_to_obj(_get_job_expired_obj())
     batch_job = k8s_job_to_batch_job(obj)
-    assert batch_job.status.state == BatchJobState.EXPIRED
+    batch_job.status.state == BatchJobState.FINALIZING
+    assert not batch_job.status.finished
+    assert not batch_job.status.expired
+    assert batch_job.status.condition == ConditionType.EXPIRED
 
 
 def test_k8s_job_kopf_access():
@@ -371,6 +433,8 @@ def test_k8s_job_kopf_access():
     assert batch_job.metadata.name == "test-batch-job"
     assert batch_job.spec.endpoint == BatchJobEndpoint.EMBEDDINGS
     assert batch_job.status.state == BatchJobState.CREATED
+    assert not batch_job.status.finished
+    assert batch_job.status.condition is None
 
     kopf_body = kopf.Body(_get_job_in_progress_obj())
     batch_job = k8s_job_to_batch_job(kopf_body)
@@ -380,6 +444,8 @@ def test_k8s_job_kopf_access():
     assert batch_job.metadata.name == "test-batch-job"
     assert batch_job.spec.endpoint == BatchJobEndpoint.EMBEDDINGS
     assert batch_job.status.state == BatchJobState.IN_PROGRESS
+    assert not batch_job.status.finished
+    assert batch_job.status.condition is None
 
     kopf_body = kopf.Body(_get_job_succees_obj())
     batch_job = k8s_job_to_batch_job(kopf_body)
@@ -389,10 +455,16 @@ def test_k8s_job_kopf_access():
     assert batch_job.metadata.name == "test-batch-job"
     assert batch_job.spec.endpoint == BatchJobEndpoint.EMBEDDINGS
     assert batch_job.status.state == BatchJobState.FINALIZING
+    assert not batch_job.status.finished
+    assert not batch_job.status.completed
+    assert batch_job.status.condition == ConditionType.COMPLETED
 
     kopf_body = kopf.Body(_get_job_expired_obj())
     batch_job = k8s_job_to_batch_job(kopf_body)
-    assert batch_job.status.state == BatchJobState.EXPIRED
+    batch_job.status.state == BatchJobState.FINALIZING
+    assert not batch_job.status.finished
+    assert not batch_job.status.expired
+    assert batch_job.status.condition == ConditionType.EXPIRED
 
 
 def test_k8s_job_s3_integration_case():
@@ -536,3 +608,124 @@ def test_k8s_job_s3_integration_case():
 
     assert batch_job.status.job_id == "b08af167-8d56-41e9-92b6-efebe4a859ab"
     assert batch_job.status.state == BatchJobState.CREATED
+
+
+def test_condition_mapping_completed():
+    """Test that K8s Complete condition maps to ConditionType.COMPLETED."""
+    batch_job = k8s_job_to_batch_job(_get_job_succees_obj())
+
+    # Should be FINALIZING since conditions exist
+    assert batch_job.status.state == BatchJobState.FINALIZING
+
+    # Should have conditions mapped
+    assert batch_job.status.conditions is not None
+    assert (
+        len(batch_job.status.conditions) == 1
+    )  # Only Complete maps, SuccessCriteriaMet doesn't
+
+    condition = batch_job.status.conditions[0]
+    assert condition.type == ConditionType.COMPLETED
+    assert condition.status == ConditionStatus.TRUE
+    assert condition.reason == "CompletionsReached"
+    assert condition.last_transition_time is not None
+
+
+def test_condition_mapping_expired():
+    """Test that K8s Failed condition with DeadlineExceeded maps to ConditionType.EXPIRED."""
+    batch_job = k8s_job_to_batch_job(_get_job_expired_obj())
+
+    # Should be FINALIZING since conditions exist
+    assert batch_job.status.state == BatchJobState.FINALIZING
+
+    # Should have conditions mapped
+    assert batch_job.status.conditions is not None
+    assert len(batch_job.status.conditions) == 1
+
+    condition = batch_job.status.conditions[0]
+    assert condition.type == ConditionType.EXPIRED
+    assert condition.status == ConditionStatus.TRUE
+    assert condition.reason == "DeadlineExceeded"
+    assert condition.last_transition_time is not None
+
+
+def test_condition_mapping_failed():
+    """Test that K8s Failed condition (non-deadline) maps to ConditionType.FAILED."""
+    batch_job = k8s_job_to_batch_job(_get_job_failed_obj())
+
+    # Should be FINALIZING since conditions exist
+    assert batch_job.status.state == BatchJobState.FINALIZING
+
+    # Should have conditions mapped
+    assert batch_job.status.conditions is not None
+    assert len(batch_job.status.conditions) == 1
+
+    condition = batch_job.status.conditions[0]
+    assert condition.type == ConditionType.FAILED
+    assert condition.status == ConditionStatus.TRUE
+    assert condition.reason == "BackoffLimitExceeded"
+    assert condition.last_transition_time is not None
+
+
+def test_no_conditions_legacy_behavior():
+    """Test that jobs without conditions use legacy state mapping."""
+    batch_job = k8s_job_to_batch_job(_get_job_in_progress_obj())
+
+    # Should be IN_PROGRESS (legacy mapping) since no conditions exist
+    assert batch_job.status.state == BatchJobState.IN_PROGRESS
+
+    # Should have no conditions
+    assert batch_job.status.conditions is None
+
+
+def test_unknown_conditions_ignored():
+    """Test that unknown K8s condition types are ignored."""
+    k8s_job = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": "test-batch-job",
+            "namespace": "default",
+            "uid": "test-uid-123",
+            "creationTimestamp": "2024-01-01T12:00:00Z",
+        },
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        "batch.job.aibrix.ai/input-file-id": "file-123",
+                        "batch.job.aibrix.ai/endpoint": "/v1/embeddings",
+                    },
+                },
+            },
+        },
+        "status": {
+            "conditions": [
+                {
+                    "type": "ProgressDeadlineExceeded",  # Unknown condition type
+                    "status": "True",
+                    "lastTransitionTime": "2025-08-05T05:26:25Z",
+                    "reason": "UnknownReason",
+                    "message": "Unknown condition message",
+                },
+                {
+                    "type": "Complete",  # Known condition type
+                    "status": "True",
+                    "lastTransitionTime": "2025-08-05T05:26:25Z",
+                    "reason": "CompletionsReached",
+                    "message": "Job completed successfully",
+                },
+            ],
+        },
+    }
+
+    batch_job = k8s_job_to_batch_job(k8s_job)
+
+    # Should be FINALIZING since valid conditions exist
+    assert batch_job.status.state == BatchJobState.FINALIZING
+
+    # Should have only the known condition mapped
+    assert batch_job.status.conditions is not None
+    assert len(batch_job.status.conditions) == 1
+
+    condition = batch_job.status.conditions[0]
+    assert condition.type == ConditionType.COMPLETED

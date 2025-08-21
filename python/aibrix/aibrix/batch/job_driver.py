@@ -26,6 +26,7 @@ from aibrix.batch.job_entity import (
     BatchJobError,
     BatchJobErrorCode,
     BatchJobState,
+    ConditionType,
 )
 from aibrix.batch.job_progress_manager import JobProgressManager
 from aibrix.logger import init_logger
@@ -111,7 +112,14 @@ class JobDriver:
         )
 
         # Step 2: Execute worker (core execution)
-        job = await self.execute_worker(job_id)
+        try:
+            job = await self.execute_worker(job_id)
+        except Exception as ex:
+            # Handle exception here, so we can execute finalizing if necessary.
+            job = await self._progress_manager.mark_job_failed(
+                job_id,
+                BatchJobError(code=BatchJobErrorCode.INFERENCE_FAILED, message=str(ex)),
+            )
 
         # Step 3: Aggregate outputs
         if job.status.state == BatchJobState.FINALIZING:
@@ -119,7 +127,10 @@ class JobDriver:
                 await storage.finalize_job_output_data(job)
 
             logger.debug("Completed job", job_id=job_id)
-            await self._sync_job_status(job_id)
+            job = await self._sync_job_status(job_id)
+
+        if job.status.failed:
+            raise RuntimeError(job.status.get_condition(ConditionType.FAILED).message)
 
     async def prepare_job(self, job: BatchJob) -> BatchJob:
         """
@@ -147,11 +158,33 @@ class JobDriver:
 
         # [TODO][NOW] find a quick way to decide where to start testing using metastore
         if line_no == 0:
-            logger.debug("Start processing job", job_id=job_id)  # type: ignore[call-arg]
+            logger.debug("Start processing job", job_id=job_id, opts=job.spec.opts)  # type: ignore[call-arg]
         else:
-            logger.debug("Resuming job", job_id=job_id, request_id=line_no)  # type: ignore[call-arg]
+            logger.debug(
+                "Resuming job", job_id=job_id, request_id=line_no, opts=job.spec.opts
+            )  # type: ignore[call-arg]
+
+        # Check for fail_after_n_requests option
+        fail_after_n_requests = None
+        if job.spec.opts and constant.BATCH_OPTS_FAIL_AFTER_N_REQUESTS in job.spec.opts:
+            try:
+                fail_after_n_requests = int(
+                    job.spec.opts[constant.BATCH_OPTS_FAIL_AFTER_N_REQUESTS]
+                )
+                logger.debug(
+                    "Detected fail_after_n_requests option",
+                    job_id=job_id,
+                    fail_after_n_requests=fail_after_n_requests,
+                )  # type: ignore[call-arg]
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Invalid fail_after_n_requests value, ignoring",
+                    job_id=job_id,
+                    value=job.spec.opts["fail_after_n_requests"],
+                )  # type: ignore[call-arg]
 
         # Step 2: Execute requests, resumable.
+        processed_requests = 0
         last_line_no = line_no
         while line_no >= 0:
             async for request_input in storage.read_job_next_request(job, line_no):
@@ -221,6 +254,21 @@ class JobDriver:
 
                 assert last_line_no == line_no
                 logger.debug("Job request executed", job_id=job_id, request_id=line_no)  # type: ignore[call-arg]
+
+                # Check for fail_after_n_requests condition
+                if fail_after_n_requests is not None:
+                    processed_requests += 1
+                    if processed_requests >= fail_after_n_requests:
+                        logger.info(
+                            "Triggering artificial failure due to fail_after_n_requests",
+                            job_id=job_id,
+                            processed_requests=processed_requests,
+                            fail_after_n_requests=fail_after_n_requests,
+                        )  # type: ignore[call-arg]
+                        raise RuntimeError(
+                            f"Artificial failure triggered after processing {processed_requests} requests "
+                            f"(fail_after_n_requests={fail_after_n_requests})"
+                        )
                 job, line_no = await self._sync_job_status_and_get_next_request(
                     job_id, last_line_no
                 )
@@ -267,7 +315,7 @@ class JobDriver:
 
         await storage.finalize_job_output_data(job)
 
-        logger.debug("Completed job", job_id=job.job_id)  # type: ignore[call-arg]
+        logger.debug("Finalized job", job_id=job.job_id)  # type: ignore[call-arg]
         return await self._sync_job_status(job.job_id)
 
     async def _retry_inference_request(

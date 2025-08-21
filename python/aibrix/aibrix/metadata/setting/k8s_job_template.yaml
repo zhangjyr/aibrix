@@ -17,7 +17,7 @@ spec:
       serviceAccountName: job-reader-sa
       automountServiceAccountToken: true
       shareProcessNamespace: true # Allow worker to kill llm-engine
-      restartPolicy: OnFailure
+      restartPolicy: Never
       containers:
       - name: batch-worker
         image: aibrix/runtime:nightly
@@ -63,6 +63,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.annotations['batch.job.aibrix.ai/temp-error-file-id']
+        - name: BATCH_OPTS_FAIL_AFTER_N_REQUESTS
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.job.aibrix.ai/opts.fail_after_n_requests']
       - name: llm-engine
         image: aibrix/vllm-mock:nightly
         ports:
@@ -81,5 +85,5 @@ spec:
           periodSeconds: 5
           successThreshold: 1
           timeoutSeconds: 1
-  backoffLimit: 3
+  backoffLimit: 2
   activeDeadlineSeconds: 86400  # 24 hours

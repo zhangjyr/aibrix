@@ -27,6 +27,10 @@ import aibrix.batch.storage.batch_storage as storage
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobSpec,
+    BatchJobState,
+    BatchJobStatus,
+    BatchJobTransformer,
+    ConditionType,
     JobAnnotationKey,
     JobEntityManager,
     k8s_job_to_batch_job,
@@ -47,6 +51,7 @@ logger = init_logger(__name__)
 
 # Global JobCache instance for kopf handlers
 _global_job_cache: Optional["JobCache"] = None
+
 
 def set_global_job_cache(job_cache: "JobCache") -> None:
     """Set the global job cache instance for kopf handlers."""
@@ -201,20 +206,21 @@ class JobCache(JobEntityManager):
 
             # Get namespace from k8s_job, use default if not specified
             namespace = k8s_job["metadata"].get("namespace") or "default"
-            created_job = await asyncio.to_thread(
-                self.batch_v1_api.create_namespaced_job,
-                namespace=namespace,
-                body=k8s_job,
-            )
 
             logger.info(  # type: ignore[call-arg]
                 "Job submitted to Kubernetes",
-                job_name=created_job.metadata.name,
                 namespace=namespace,
-                k8s_uid=created_job.metadata.uid,
                 input_file_id=job_spec.input_file_id,
                 endpoint=job_spec.endpoint,
+                opts=job_spec.opts,
             )  # type: ignore[call-arg]
+
+            await asyncio.to_thread(
+                self.batch_v1_api.create_namespaced_job,
+                namespace=namespace,
+                body=k8s_job,
+                async_req=True,
+            )
 
         except ApiException as e:
             logger.error(  # type: ignore[call-arg]
@@ -247,49 +253,142 @@ class JobCache(JobEntityManager):
             raise RuntimeError("Kubernetes client not available")
 
         try:
-            # Convert BatchJobSpec to Kubernetes Job manifest
-            patch_body = self._batch_job_to_k8s_job_patch(job)
-
             # Get namespace from k8s_job, use default if not specified
             namespace = job.metadata.namespace or "default"
+
+            # Convert BatchJobSpec to Kubernetes Job manifest
+            patch_body = self._ready_batch_job_to_k8s_job_patch(job)
+
+            logger.info(  # type: ignore[call-arg]
+                "Executing job setting to ready",
+                job_name=job.metadata.name,
+                namespace=namespace,
+                patch=patch_body,
+            )  # type: ignore[call-arg]
+
             await asyncio.to_thread(
                 self.batch_v1_api.patch_namespaced_job,
                 name=job.metadata.name,
                 namespace=namespace,
                 body=patch_body,
+                async_req=True,
             )
 
-            logger.info(  # type: ignore[call-arg]
-                "Job patched to Kubernetes",
-                job_name=job.metadata.name,
-                namespace=namespace,
-                patch_body=patch_body,
-            )  # type: ignore[call-arg]
-
         except ApiException as e:
-            logger.error(  # type: ignore[call-arg]
-                "Failed to patch job to Kubernetes",
-                job_name=job.metadata.name,
-                namespace=namespace,
-                patch_body=patch_body,
-                error=str(e),
-                status_code=e.status,
-                reason=e.reason,
-            )  # type: ignore[call-arg]
-            raise
+            if e.status == 409:
+                logger.warning(  # type: ignore[call-arg]
+                    "Job status changed",
+                    job=job.metadata.name,
+                    namespace=namespace,
+                    job_id=job.job_id,
+                )
+                raise
+            else:
+                logger.error(  # type: ignore[call-arg]
+                    "Failed to set job ready",
+                    job_name=job.metadata.name,
+                    namespace=namespace,
+                    patch=patch_body,
+                    error=str(e),
+                    status_code=e.status,
+                    reason=e.reason,
+                )  # type: ignore[call-arg]
+                raise
         except Exception as e:
             logger.error(  # type: ignore[call-arg]
-                "Unexpected error patch job",
+                "Unexpected error setting job ready",
                 job_name=job.metadata.name,
                 namespace=namespace,
-                patch_body=patch_body,
+                patch=patch_body,
                 error=str(e),
-                operation="submit_job",
+                operation="update_job_ready",
             )  # type: ignore[call-arg]
             raise
 
-    async def cancel_job(self, job_id: str) -> None:
-        """Cancel job by deleting the Kubernetes Job.
+    async def update_job_status(self, job: BatchJob):
+        """Update job status by persisting status information as annotations.
+
+        Args:
+            job (BatchJob): Job with updated status to persist.
+
+        This method persists critical job status information including:
+        - Finalized state
+        - Conditions (completed, failed, cancelled)
+        - Request counts
+        - Timestamps (in_progress_at, completed_at, failed_at, cancelled_at, etc.)
+        """
+        if not self.batch_v1_api:
+            raise RuntimeError("Kubernetes client not available")
+
+        patch_body: Any = None
+        try:
+            # Create status annotations from job status
+            status_annotations = BatchJobTransformer.create_status_annotations(
+                job.status
+            )
+
+            if not status_annotations:
+                logger.debug("No status annotations to persist", job_id=job.job_id)  # type: ignore[call-arg]
+                return
+
+            # Create patch body to update pod template annotations
+            patch_body = {"metadata": {
+                "resourceVersion": job.metadata.resource_version,
+                "annotations": status_annotations}
+            }
+
+            namespace = job.metadata.namespace or "default"
+
+            logger.info(  # type: ignore[call-arg]
+                "Executing job status update",
+                job_name=job.metadata.name,
+                namespace=namespace,
+                job_id=job.job_id,
+                patch=patch_body,
+            )
+
+            await asyncio.to_thread(
+                self.batch_v1_api.patch_namespaced_job,
+                name=job.metadata.name,
+                namespace=namespace,
+                body=patch_body,
+                async_req=True,
+            )
+
+        except ApiException as e:
+            if e.status == 409:
+                logger.warning(  # type: ignore[call-arg]
+                    "Job status changed",
+                    job=job.metadata.name,
+                    namespace=namespace,
+                    job_id=job.job_id,
+                )
+                raise
+            else:
+                logger.error(  # type: ignore[call-arg]
+                    "Failed to persist job status to Kubernetes",
+                    job_name=job.metadata.name,
+                    namespace=job.metadata.namespace or "default",
+                    job_id=job.job_id,
+                    error=str(e),
+                    status_code=e.status,
+                    reason=e.reason,
+                )
+                raise
+        except Exception as e:
+            logger.error(  # type: ignore[call-arg]
+                "Unexpected error persisting job status",
+                job_name=job.metadata.name,
+                namespace=job.metadata.namespace or "default",
+                job_id=job.job_id,
+                error=str(e),
+                patch=str(patch_body),
+                operation="update_job_status",
+            )
+            raise
+
+    async def cancel_job(self, job: BatchJob) -> None:
+        """Cancel job by suspending it and persisting cancellation status.
 
         Args:
             job_id: Job ID (batch ID) to cancel.
@@ -303,42 +402,77 @@ class JobCache(JobEntityManager):
             raise RuntimeError("Kubernetes client not available")
 
         # Get job from cache to find namespace and name
-        job = self.get_job(job_id)
-        if not job:
-            logger.error("Job not found for cancellation", job_id=job_id)  # type: ignore[call-arg]
-            raise KeyError(f"Job with ID '{job_id}' not found")
-
+        assert (
+            job.status.state == BatchJobState.FINALIZING
+            or job.status.state == BatchJobState.FINALIZED
+            or job.status.errors is not None
+        )
         namespace = job.metadata.namespace or "default"
         job_name = job.metadata.name
+
         try:
-            # Delete the Kubernetes Job
-            await asyncio.to_thread(
-                self.batch_v1_api.delete_namespaced_job,
-                name=job_name,
-                namespace=namespace,
-                propagation_policy="Foreground",  # Delete pods too
+            # Prepare base annotations
+            annotations_patch = BatchJobTransformer.create_status_annotations(
+                job.status
             )
+            # Set condition after update based on error or not.
+            if job.status.errors is None:
+                annotations_patch[JobAnnotationKey.CONDITION.value] = (
+                    ConditionType.CANCELLED.value
+                )
+            else:
+                annotations_patch[JobAnnotationKey.CONDITION.value] = (
+                    ConditionType.FAILED.value
+                )
+
+            # Persist conditions (failed, cancelled)
+            suspend_patch = {
+                "metadata": {
+                    "resourceVersion": job.metadata.resource_version,
+                    "annotations": annotations_patch},
+                "spec": {
+                    "suspend": True  # Suspend the Kubernetes Job (instead of deleting)
+                },
+            }
 
             logger.info(  # type: ignore[call-arg]
-                "Job deletion requested in Kubernetes",
+                "Executing job cancellation",
                 job=job_name,
                 namespace=namespace,
-                job_id=job_id,
+                job_id=job.job_id,
+                patch=suspend_patch,
             )
+
+            await asyncio.to_thread(
+                self.batch_v1_api.patch_namespaced_job,
+                name=job_name,
+                namespace=namespace,
+                body=suspend_patch,
+                async_req=True,
+            )
+
         except ApiException as e:
             if e.status == 404:
                 logger.warning(  # type: ignore[call-arg]
                     "Job not found in Kubernetes for cancellation",
                     job=job_name,
                     namespace=namespace,
-                    job_id=job_id,
+                    job_id=job.job_id,
                 )
+            elif e.status == 409:
+                logger.warning(  # type: ignore[call-arg]
+                    "Job status changed",
+                    job=job_name,
+                    namespace=namespace,
+                    job_id=job.job_id,
+                )
+                raise
             else:
                 logger.error(  # type: ignore[call-arg]
                     "Failed to cancel job in Kubernetes",
                     job=job_name,
                     namespace=namespace,
-                    job_id=job_id,
+                    job_id=job.job_id,
                     error=str(e),
                     status_code=e.status,
                     reason=e.reason,
@@ -346,11 +480,12 @@ class JobCache(JobEntityManager):
                 raise
         except Exception as e:
             logger.error(  # type: ignore[call-arg]
-                "Unexpected error canceling job",
+                "Unexpected error cancelling job",
                 job=job_name,
                 namespace=namespace,
-                job_id=job_id,
+                job_id=job.job_id,
                 error=str(e),
+                patch=str(suspend_patch),
                 operation="cancel_job",
             )
             raise
@@ -378,6 +513,7 @@ class JobCache(JobEntityManager):
                 name=job_name,
                 namespace=namespace,
                 propagation_policy="Foreground",  # Delete pods too
+                async_req=True,
             )
 
             logger.info(  # type: ignore[call-arg]
@@ -415,7 +551,7 @@ class JobCache(JobEntityManager):
             )
             raise
 
-    def _batch_job_to_k8s_job_patch(self, job: BatchJob) -> Dict[str, Any]:
+    def _ready_batch_job_to_k8s_job_patch(self, job: BatchJob) -> Dict[str, Any]:
         """Convert BatchJob to Kubernetes Job patch manifest. Only annotations will be patched.
 
         Args:
@@ -425,15 +561,23 @@ class JobCache(JobEntityManager):
             patch body object.
         """
         # Use pre-loaded template (deep copy to avoid modifying the original)
+        job_status: BatchJobStatus = job.status
+        assert job_status.in_progress_at is not None
+
+        patch_annotations = BatchJobTransformer.create_status_annotations(job_status)
         patch_body = {
+            "metadata": {
+                "resourceVersion": job.metadata.resource_version,
+                "annotations": patch_annotations,
+            },
             "spec": {
                 "template": {
                     "metadata": {
                         "annotations": {
-                            JobAnnotationKey.OUTPUT_FILE_ID: job.status.output_file_id,
-                            JobAnnotationKey.TEMP_OUTPUT_FILE_ID: job.status.temp_output_file_id,
-                            JobAnnotationKey.ERROR_FILE_ID: job.status.error_file_id,
-                            JobAnnotationKey.TEMP_ERROR_FILE_ID: job.status.temp_error_file_id,
+                            JobAnnotationKey.OUTPUT_FILE_ID: job_status.output_file_id,
+                            JobAnnotationKey.TEMP_OUTPUT_FILE_ID: job_status.temp_output_file_id,
+                            JobAnnotationKey.ERROR_FILE_ID: job_status.error_file_id,
+                            JobAnnotationKey.TEMP_ERROR_FILE_ID: job_status.temp_error_file_id,
                         },
                     },
                 },
@@ -477,6 +621,11 @@ class JobCache(JobEntityManager):
                 pod_annotations[f"{JobAnnotationKey.METADATA_PREFIX.value}{key}"] = (
                     value
                 )
+
+        # Add batch opts as pod annotations
+        if job_spec.opts:
+            for key, value in job_spec.opts.items():
+                pod_annotations[f"{JobAnnotationKey.OPTS_PREFIX.value}{key}"] = value
 
         # Add file IDs from prepared job if provided
         suspend = True
@@ -556,10 +705,33 @@ class JobCache(JobEntityManager):
 
         return job_template
 
+
 logger.info("kopf job handlers imported")
 
+
 # Standalone kopf handlers that work with the global JobCache instance
-@kopf.on.create("batch", "v1", "jobs")  # type: ignore[arg-type]
+# Use event handler only to avoid advanced kopf features such as state management,
+# which introduces customized annotation.
+@kopf.on.event("batch", "v1", "jobs")  # type: ignore[arg-type]
+async def job_event_handler(type: str, body: Any, **kwargs: Any) -> None:
+    """Handle Kubernetes Job creation events."""
+    job_cache = get_global_job_cache()
+    if not job_cache:
+        logger.warning("No global job cache available for job creation event")
+        return
+
+    if type == "ADDED":
+        await job_created_handler(body, **kwargs)
+    elif type == "MODIFIED":
+        job_id = body.get("metadata", {}).get("uid")
+        if job_cache.active_jobs.get(job_id) is None:
+            await job_created_handler(body, **kwargs)
+        else:
+            await job_updated_handler(body, **kwargs)
+    elif type == "DELETED":
+        await job_deleted_handler(body, **kwargs)
+
+# @kopf.on.create("batch", "v1", "jobs")  # type: ignore[arg-type]
 async def job_created_handler(body: Any, **kwargs: Any) -> None:
     """Handle Kubernetes Job creation events."""
     job_cache = get_global_job_cache()
@@ -578,6 +750,7 @@ async def job_created_handler(body: Any, **kwargs: Any) -> None:
             name=batch_job.metadata.name,
             namespace=batch_job.metadata.namespace,
             state=batch_job.status.state.value,
+            resource_version=batch_job.metadata.resource_version,
         )  # type: ignore[call-arg]
 
         # Invoke callback if registered
@@ -606,8 +779,7 @@ async def job_created_handler(body: Any, **kwargs: Any) -> None:
             "Failed to process job creation", error=str(e), operation="job_created"
         )  # type: ignore[call-arg]
 
-
-@kopf.on.update("batch", "v1", "jobs")  # type: ignore[arg-type]
+# @kopf.on.update("batch", "v1", "jobs")  # type: ignore[arg-type]
 async def job_updated_handler(body: Any, **kwargs: Any) -> None:
     """Handle Kubernetes Job update events."""
     job_cache = get_global_job_cache()
@@ -635,6 +807,7 @@ async def job_updated_handler(body: Any, **kwargs: Any) -> None:
             namespace=new_batch_job.metadata.namespace,
             old_state=old_batch_job.status.state.value if old_batch_job else "unknown",
             new_state=new_batch_job.status.state.value,
+            resource_version=new_batch_job.metadata.resource_version,
         )  # type: ignore[call-arg]
 
         # Invoke callback if registered and we have both old and new jobs
@@ -653,8 +826,7 @@ async def job_updated_handler(body: Any, **kwargs: Any) -> None:
             "Failed to process job update", error=str(e), operation="job_updated"
         )  # type: ignore[call-arg]
 
-
-@kopf.on.field("batch", "v1", "jobs", field="status.conditions")  # type: ignore[arg-type]
+# @kopf.on.field("batch", "v1", "jobs", field="status.conditions")  # type: ignore[arg-type]
 async def job_completion_handler(body: Any, **kwargs: Any) -> None:
     """
     This handler triggers ONLY when the 'status.conditions' field of a Job changes.
@@ -664,9 +836,8 @@ async def job_completion_handler(body: Any, **kwargs: Any) -> None:
 
     await job_updated_handler(body, **kwargs)  # type: ignore[call-arg, misc, arg-type]
 
-
 # Set optional = True to prevent kopf add the finalizer.
-@kopf.on.delete("batch", "v1", "jobs", optional=True)  # type: ignore[arg-type]
+# @kopf.on.delete("batch", "v1", "jobs", optional=True)  # type: ignore[arg-type]
 async def job_deleted_handler(body: Any, **kwargs: Any) -> None:
     """Handle Kubernetes Job deletion events."""
     job_cache = get_global_job_cache()

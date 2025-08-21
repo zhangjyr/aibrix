@@ -51,6 +51,7 @@ def k8s_config():
     except config.ConfigException:
         config.load_kube_config()
 
+
 @pytest.fixture
 def kopf_operator(scope="function"):
     """
@@ -58,6 +59,7 @@ def kopf_operator(scope="function"):
     This ensures JobCache handlers are properly triggered during tests.
     """
     from aibrix.metadata.core import KopfOperatorWrapper
+
     operator = KopfOperatorWrapper(
         namespace="default",
         startup_timeout=30,

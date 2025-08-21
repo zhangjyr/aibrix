@@ -116,7 +116,7 @@ class TestWorkerS3Integration:
 
         # Set up job monitoring with kopf-powered JobCache
         main_loop = asyncio.get_running_loop()
-        main_loop.name = "test"
+        main_loop.name = "test"  # type: ignore[attr-defined]
         job_committed = main_loop.create_future()
         job_done = main_loop.create_future()
 

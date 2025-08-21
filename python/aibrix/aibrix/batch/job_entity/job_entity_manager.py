@@ -126,6 +126,7 @@ class JobEntityManager(ABC):
         """Submit job by submiting job to the persist store.
 
         Args:
+            session_id (str): id identifiy the job submission sesstion
             job (BatchJob): Job to add.
         """
         pass
@@ -139,11 +140,25 @@ class JobEntityManager(ABC):
         """
 
     @abstractmethod
-    async def cancel_job(self, job_id: str):
-        """Cancel job by notifing the persist store.
+    async def update_job_status(self, job: BatchJob):
+        """Update job status by persisting status information as annotations.
 
         Args:
-            job_id (str): Job id.
+            job (BatchJob): Job with updated status to persist.
+
+        This method persists critical job status information including:
+        - Finalized state
+        - Conditions (completed, failed, cancelled)
+        - Request counts
+        - Timestamps (completed_at, cancelling_at, etc.)
+        """
+
+    @abstractmethod
+    async def cancel_job(self, job: BatchJob):
+        """Cancel job by notifing the persist store on job cancelling or failure.
+
+        Args:
+            job (BatchJob): Job to cancel or failed
         """
         pass
 
@@ -152,7 +167,7 @@ class JobEntityManager(ABC):
         """Delete job from the persist store.
 
         Args:
-            job_id (str): Job id.
+            job (BatchJob): Job to delete.
         """
         pass
 

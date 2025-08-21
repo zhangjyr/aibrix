@@ -251,10 +251,24 @@ class JobScheduler:
         logger.info("Starting scheduling...")
         job_driver = JobDriver(self._job_progress_manager, inference_client)
         while True:
-            one_job = await self.round_robin_get_job()
+            try:
+                one_job = await self.round_robin_get_job()
+            except Exception as e:
+                logger.error(
+                    "Failed to schedule job",
+                    error=str(e),
+                )  # type: ignore[call-arg]
+
             if one_job:
                 try:
                     await job_driver.execute_job(one_job)
+                except RuntimeError as re:
+                    logger.error(
+                        "Runtime err",
+                        job_id=one_job,
+                        error=str(re),
+                    )  # type: ignore[call-arg]
+                    raise
                 except Exception as e:
                     job = await self._job_progress_manager.mark_job_failed(
                         one_job,
@@ -269,6 +283,7 @@ class JobScheduler:
                         error=str(e),
                     )  # type: ignore[call-arg]
                     raise
+            # yield loop
             await asyncio.sleep(0)
 
     async def jobs_cleanup_loop(self):
@@ -290,10 +305,11 @@ class JobScheduler:
         # Cancel running loop
         if not self._jobs_running_task.done():
             self._jobs_running_task.cancel()
-            try:
-                await self._jobs_running_task
-            except asyncio.CancelledError:
-                pass
+        # wait _jobs_running_task for capturing any exception
+        try:
+            await self._jobs_running_task
+        except asyncio.CancelledError:
+            pass
         # Cancel cleanup loop
         if not self._jobs_cleanup_task.done():
             self._jobs_cleanup_task.cancel()

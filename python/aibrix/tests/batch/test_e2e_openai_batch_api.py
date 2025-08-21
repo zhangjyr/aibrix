@@ -77,9 +77,7 @@ def generate_batch_input_data(num_requests: int = 3) -> str:
     return "\n".join(lines)
 
 
-def verify_batch_output_content(
-    output_content: str, expected_requests: int
-) -> bool:
+def verify_batch_output_content(output_content: str, expected_requests: int) -> bool:
     """Verify that batch output content has the expected structure."""
     lines = output_content.strip().split("\n")
 
@@ -110,14 +108,18 @@ def verify_batch_output_content(
             required_fields = ["status_code", "request_id", "body"]
             for field in required_fields:
                 if field not in response:
-                    print(f"Missing required field 'response.{field}' in response {i+1}")
+                    print(
+                        f"Missing required field 'response.{field}' in response {i+1}"
+                    )
                     return False
 
             body = response["body"]
             required_fields = ["model"]  # For now, just check model
             for field in required_fields:
                 if field not in body:
-                    print(f"Missing required field 'response.body.{field}' in response {i+1}")
+                    print(
+                        f"Missing required field 'response.body.{field}' in response {i+1}"
+                    )
                     return False
 
         except json.JSONDecodeError as e:
@@ -333,6 +335,13 @@ async def test_openai_batch_api_metadata_server_workflow(
         ), f"Batch creation failed: {batch_response.text}"
 
         batch_result = batch_response.json()
+        assert "id" in batch_result
+        assert batch_result["object"] == "batch"
+        assert batch_result["input_file_id"] == input_file_id
+        assert batch_result["endpoint"] == "/v1/chat/completions"
+        assert batch_result["completion_window"] == "24h"
+        assert isinstance(batch_result["created_at"], int)
+
         batch_id = batch_result["id"]
         print(f"✅ Batch created successfully with ID: {batch_id}")
 
@@ -377,6 +386,10 @@ async def test_openai_batch_api_metadata_server_workflow(
 
             if current_status == "in_progress":
                 print("✅ Job reached IN_PROGRESS state - worker can start execution!")
+
+                # Verify status_result
+                assert isinstance(status_result["in_progress_at"], int)
+
                 break
             elif current_status in ["failed", "cancelled", "expired"]:
                 pytest.fail(f"Job failed before reaching IN_PROGRESS: {current_status}")
@@ -401,6 +414,8 @@ async def test_openai_batch_api_metadata_server_workflow(
                 print(
                     "✅ Batch job completed successfully with metadata server workflow!"
                 )
+
+                # Verify status_result
                 output_file_id = status_result["output_file_id"]
                 assert (
                     output_file_id is not None
@@ -411,6 +426,9 @@ async def test_openai_batch_api_metadata_server_workflow(
                 assert request_counts["total"] == 10
                 assert request_counts["completed"] == 10
                 assert request_counts["failed"] == 0
+
+                assert isinstance(status_result["finalizing_at"], int)
+                assert isinstance(status_result["completed_at"], int)
 
                 break
             elif current_status == "failed":
@@ -452,6 +470,7 @@ async def test_openai_batch_api_metadata_server_workflow(
         )
         await app.state.batch_driver.clear_job(batch_id)
 
+
 @pytest.mark.asyncio
 async def test_batch_api_error_handling():
     """Test error handling in batch API."""
@@ -484,6 +503,7 @@ async def test_batch_api_error_handling():
 
         response = client.post("/v1/files/", files=files, data=data)
         assert response.status_code == 400  # Should fail due to invalid file extension
+
 
 if __name__ == "__main__":
     # Allow running the test directly

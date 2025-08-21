@@ -214,16 +214,25 @@ class BatchStorageAdapter:
         )
 
     async def finalize_job_output_data(self, job: BatchJob) -> None:
-        assert (
-            job.status.output_file_id
-            and job.status.error_file_id
-            and job.status.temp_output_file_id
-            and job.status.temp_error_file_id
-        )
+        if (
+            job.status.output_file_id is None
+            or job.status.error_file_id is None
+            or job.status.temp_output_file_id is None
+            or job.status.temp_error_file_id is None
+        ):
+            # Do nothing
+            return
 
         # 1. List all keys from metastore with the job prefix
         prefix = self._get_request_meta_output_key(job, None)
         all_keys = await list_metastore_keys(prefix)
+
+        logger.debug(
+            "Metastore keys found during job finalizing",
+            job_id=job.job_id,
+            prefix=prefix,
+            keys=all_keys,
+        )  # type: ignore[call-arg]
 
         # 2. Extract indices from keys and determine maximum index for total count
         indices = []
@@ -271,9 +280,11 @@ class BatchStorageAdapter:
             if not exist:
                 continue
 
-            valid_keys.append(key)
-
             etag, is_error = self._parse_request_meta_output_val(meta_val)
+            if etag == "":
+                continue
+
+            valid_keys.append(key)
             val: Dict[str, str | int] = {"etag": etag, "part_number": idx}
 
             if is_error:
@@ -365,5 +376,14 @@ class BatchStorageAdapter:
         return f"{'error' if is_error else 'output'}:{etag}"
 
     def _parse_request_meta_output_val(self, meta_val: str) -> Tuple[str, bool]:
-        is_error, etag = meta_val.split(":", 1)
-        return etag, is_error == "error"
+        """valid output can be:
+        1. output:[etag]
+        2. error:[etag]
+        3. processing
+        """
+        status = meta_val.split(":", 1)
+        if len(status) == 2:
+            is_error, etag = status
+            return etag, is_error == "error"
+        else:
+            return "", False

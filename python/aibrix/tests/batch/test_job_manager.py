@@ -68,7 +68,7 @@ async def test_local_job_cancellation():
 
     cancelled_job = job_manager._done_jobs[job_id]
     assert cancelled_job.status.state == BatchJobState.FINALIZED
-    assert cancelled_job.status.canceled
+    assert cancelled_job.status.cancelled
 
 
 @pytest.mark.asyncio
@@ -288,9 +288,9 @@ class MockJobEntityManager(JobEntityManager):
         """Mock list_jobs implementation."""
         return []
 
-    async def cancel_job(self, job_id: str) -> bool:
+    async def cancel_job(self, job: BatchJob):
         """Mock cancel_job implementation."""
-        return True
+        pass
 
 
 @pytest.mark.asyncio

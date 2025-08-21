@@ -18,7 +18,6 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-import humanize
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -113,9 +112,7 @@ class BatchResponse(BaseModel):
     in_progress_at: Optional[int] = Field(
         default=None, description="Unix timestamp of when the batch started processing"
     )
-    expires_at: Optional[int] = Field(
-        default=None, description="Unix timestamp of when the batch expires"
-    )
+    expires_at: int = Field(description="Unix timestamp of when the batch expires")
     finalizing_at: Optional[int] = Field(
         default=None, description="Unix timestamp of when the batch started finalizing"
     )
@@ -165,7 +162,7 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
 
     # Convert request counts
     request_counts = None
-    if status.request_counts:
+    if status.request_counts and status.request_counts.total > 0:
         request_counts = BatchRequestCounts(
             total=status.request_counts.total,
             completed=status.request_counts.completed,
@@ -173,18 +170,22 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
         )
 
     created_at_unix = dt_to_unix(status.created_at)
-    if created_at_unix is None:
-        created_at_unix = int(datetime.now().timestamp())
+    assert created_at_unix is not None
 
     delta = timedelta(seconds=spec.completion_window)
-    completion_window = humanize.precisedelta(
-        delta, minimum_unit="seconds", format="%d"
-    )
+    total_hours = delta.total_seconds() / 3600
+    completion_window = f"{int(total_hours)}h"
 
     state = status.state.value
     if status.finished:
         condition = status.condition
         if condition is None:
+            logger.error(
+                "Unexpected job finalized without condition",
+                job_id=batch_job.job_id,
+                state=status.state.value,
+                conditions=status.conditions,
+            )  # type:ignore[call-arg]
             raise ValueError("job finalized without condition")
         state = condition.value
 

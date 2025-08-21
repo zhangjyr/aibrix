@@ -33,6 +33,7 @@ from .cache import JobCache
 logger = init_logger(__name__)
 router = APIRouter()
 
+
 @router.get("/healthz")
 async def liveness_check():
     # Simply return a 200 status for liveness check
@@ -79,7 +80,6 @@ async def lifespan(app: FastAPI):
         app.state.httpx_client_wrapper.start()
     if hasattr(app.state, "kopf_operator_wrapper"):
         app.state.kopf_operator_wrapper.start()
-    import aibrix.metadata.cache.job as job
     if hasattr(app.state, "batch_driver"):
         await app.state.batch_driver.start()
     yield

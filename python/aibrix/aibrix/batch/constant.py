@@ -19,3 +19,6 @@ EXPIRE_INTERVAL: float = 1
 # This is the job pool size in job scheduler.
 # It should be proportional to resource size in the backend.
 DEFAULT_JOB_POOL_SIZE = 1
+
+# Job opts are for testing purpose.
+BATCH_OPTS_FAIL_AFTER_N_REQUESTS = "fail_after_n_requests"

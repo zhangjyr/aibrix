@@ -14,7 +14,7 @@
 import asyncio
 import threading
 from concurrent.futures import Future
-from typing import Any, Coroutine, TypeVar
+from typing import Any, Coroutine, Optional, TypeVar
 
 # Define a TypeVar to represent the generic return type.
 T = TypeVar("T")
@@ -25,9 +25,9 @@ class AsyncLoopThread(threading.Thread):
     A class to run and manage an asyncio event loop in a dedicated thread.
     """
 
-    def __init__(self, name: str):
+    def __init__(self, name: str) -> None:
         super().__init__(daemon=True)
-        self.loop = None
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
         # Use an event to signal when the loop in the new thread is ready.
         self._loop_started = threading.Event()
         self._name = name
@@ -38,7 +38,7 @@ class AsyncLoopThread(threading.Thread):
         and runs the event loop forever.
         """
         self.loop = asyncio.new_event_loop()
-        self.loop.name = self._name
+        self.loop.name = self._name  # type: ignore[attr-defined]
         print(f"AsyncLoopThread using: {type(self.loop)}")
         asyncio.set_event_loop(self.loop)
 

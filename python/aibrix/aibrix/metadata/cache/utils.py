@@ -11,23 +11,28 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import collections.abc
 import copy
 
 
 def merge_yaml_object(base, overlay, copy_on_write=True):
     """
     Recursively merges two YAML objects, mimicking kustomize's strategic merge.
-
-    - Dictionaries are merged recursively.
-    - Lists of objects with a 'name' key are merged by item.
-    - Other lists and scalar values from the overlay replace those in the base.
+    Accepts both dictionaries and Kubernetes API objects as input.
     """
-    merged = base
-    if copy_on_write:
-        merged = copy.deepcopy(base)
+    base_dict = base.to_dict() if hasattr(base, "to_dict") else base
+    overlay_dict = overlay.to_dict() if hasattr(overlay, "to_dict") else overlay
 
-    for key, value in overlay.items():
-        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+    merged = base_dict
+    if copy_on_write:
+        merged = copy.deepcopy(base_dict)
+
+    for key, value in overlay_dict.items():
+        if (
+            key in merged
+            and isinstance(merged[key], collections.abc.Mapping)
+            and isinstance(value, collections.abc.Mapping)
+        ):
             merged[key] = merge_yaml_object(merged[key], value, False)
 
         elif (
@@ -42,12 +47,12 @@ def merge_yaml_object(base, overlay, copy_on_write=True):
             base_items_by_name = {
                 item.get("name"): item
                 for item in base_list
-                if isinstance(item, dict) and "name" in item
+                if isinstance(item, collections.abc.Mapping) and "name" in item
             }
             strategy_merge = len(base_items_by_name) > 0
 
             for item in overlay_list:
-                if isinstance(item, dict) and "name" in item:
+                if isinstance(item, collections.abc.Mapping) and "name" in item:
                     item_name = item.get("name")
                     if item_name in base_items_by_name:
                         # If an item with the same name exists, merge them

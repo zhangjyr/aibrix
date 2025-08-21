@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+import aibrix.batch.constant as constant
 from aibrix.batch.driver import BatchDriver
 from aibrix.batch.job_entity import (
     BatchJob,
@@ -103,6 +104,15 @@ class BatchWorker:
         # Get batch job metadata from environment variables
         input_file_id = os.getenv("BATCH_INPUT_FILE_ID")
         endpoint = os.getenv("BATCH_ENDPOINT")
+        opts: dict[str, str] = {}
+        if (
+            failed_after_after_n_requests := os.getenv(
+                "BATCH_OPTS_FAIL_AFTER_N_REQUESTS"
+            )
+        ) is not None:
+            opts[constant.BATCH_OPTS_FAIL_AFTER_N_REQUESTS] = (
+                failed_after_after_n_requests
+            )
         # Expiration window is set on Job spec: activeDeadlineSeconds
 
         # Get file IDs
@@ -123,6 +133,7 @@ class BatchWorker:
             job_id=job_id,
             input_file_id=input_file_id,
             endpoint=endpoint,
+            opts=opts,
         )  # type: ignore[call-arg]
 
         try:
@@ -143,6 +154,7 @@ class BatchWorker:
                 input_file_id=input_file_id,
                 endpoint=endpoint,
                 metadata=None,
+                opts=opts,
             )
 
             # Determine state based on file IDs (as in current transformer logic)

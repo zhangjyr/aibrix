@@ -68,6 +68,9 @@ class BatchDriver:
         if llm_engine_endpoint is not None:
             self._inference_client = ProxyInferenceEngineClient(llm_engine_endpoint)
 
+        # Track jobs with fail_after_n_requests for stop() validation
+        self._jobs_with_fail_after: set[str] = set()
+
         logger.info(
             "Batch driver initialized",
             job_entity_manager=True if job_entity_manager else False,
@@ -118,7 +121,10 @@ class BatchDriver:
 
     async def clear_job(self, job_id):
         """Clear job related data for testing"""
-        if self._async_thread_loop is not None and self._async_thread_loop.loop != asyncio.get_running_loop():
+        if (
+            self._async_thread_loop is not None
+            and self._async_thread_loop.loop != asyncio.get_running_loop()
+        ):
             return await self._async_thread_loop.run_coroutine(self.clear_job(job_id))
 
         job = await self._job_manager.get_job(job_id)

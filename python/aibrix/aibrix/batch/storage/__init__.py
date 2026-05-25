@@ -24,6 +24,7 @@ from aibrix.batch.storage.batch_storage import (
     read_job_next_request,
     remove_job_data,
     upload_input_data,
+    validate_job_input_file,
     write_job_output_data,
 )
 
@@ -33,6 +34,7 @@ __all__ = [
     "get_storage_type",
     "upload_input_data",
     "read_job_input_info",
+    "validate_job_input_file",
     "read_job_next_request",
     "is_request_done",
     "prepare_job_ouput_files",

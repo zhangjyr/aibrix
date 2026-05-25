@@ -27,9 +27,14 @@ from aibrix.batch.job_driver.driver_factory import create_job_driver
 from aibrix.batch.job_entity import (
     BatchJob,
     BatchJobEndpoint,
+    BatchJobError,
+    BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    Condition,
+    ConditionStatus,
+    ConditionType,
     JobEntityManager,
     ObjectMeta,
     TypeMeta,
@@ -70,6 +75,7 @@ class FakeProgressManager:
     def __init__(self, job: BatchJob):
         self.job = job
         self.failed_messages: list[str] = []
+        self.failed_error = None
         self.validated_job_ids: list[str] = []
         self.created_driver = None
 
@@ -83,7 +89,29 @@ class FakeProgressManager:
         return True
 
     async def mark_job_failed(self, job_id: str, error):
+        self.failed_error = error
         self.failed_messages.append(str(error))
+        self.job.status.errors = [error]
+        self.job.status.add_condition(
+            Condition(
+                type=ConditionType.FAILED,
+                status=ConditionStatus.TRUE,
+                lastTransitionTime=datetime.now(timezone.utc),
+                reason=error.code,
+                message=error.message,
+            )
+        )
+        return self.job
+
+    async def update_job_local_status(self, job_id: str, worker_id: str, status):
+        self.job.status = status
+        return self.job
+
+    async def mark_job_finalizing(self, job_id: str):
+        self.job.status.state = BatchJobState.FINALIZING
+        return self.job
+
+    async def mark_job_done(self, job_id: str):
         self.job.status.state = BatchJobState.FINALIZED
         return self.job
 
@@ -399,10 +427,16 @@ async def test_deployment_driver_creates_runtime_and_finalizes_with_temp_files()
         called["prepare"] += 1
         return _job
 
-    async def _execute_worker(job_id):
+    async def _execute_worker(_job_id):
         called["base_url"] = driver._inference_client.base_url
         called["model_name"] = driver._inference_client._model_name
-        progress_manager.job.status.state = BatchJobState.FINALIZING
+        progress_manager.job.status.add_condition(
+            Condition(
+                type=ConditionType.COMPLETED,
+                status=ConditionStatus.TRUE,
+                lastTransitionTime=datetime.now(timezone.utc),
+            )
+        )
         return progress_manager.job
 
     async def _finalize_job(_job):
@@ -483,6 +517,40 @@ async def test_deployment_driver_job_deleted_interrupts_execution_and_tears_down
 
     assert core_api.deleted == [("default", "rendered-service")]
     assert apps_api.deleted == [("default", "rendered-deployment")]
+
+
+@pytest.mark.asyncio
+async def test_deployment_driver_marks_batch_job_error_on_execute_failure():
+    job = _make_job("job-fail-1234")
+    job.status.temp_output_file_id = "temp-out"
+    job.status.temp_error_file_id = "temp-err"
+    progress_manager = FakeProgressManager(job)
+    entity_manager = FakeEntityManager()
+    apps_api = FakeAppsV1Api()
+    core_api = FakeCoreV1Api()
+    driver = DeploymentJobDriver(
+        _make_infrastructure_context(apps_v1_api=apps_api, core_v1_api=core_api),
+        progress_manager=progress_manager,
+        entity_manager=entity_manager,
+        renderer=FakeRenderer(),
+    )
+
+    async def _execute_worker(_job_id):
+        raise Exception("worker boom")
+
+    async def _finalize_job(_job):
+        _job.status.state = BatchJobState.FINALIZED
+        return _job
+
+    driver.execute_worker = _execute_worker
+    driver.finalize_job = _finalize_job
+
+    result = await driver.execute_job(job.job_id)
+
+    assert result.status.state == BatchJobState.FINALIZED
+    assert isinstance(progress_manager.failed_error, BatchJobError)
+    assert progress_manager.failed_error.code == BatchJobErrorCode.INTERNAL_ERROR.value
+    assert progress_manager.failed_error.message == "worker boom"
 
 
 def test_create_job_driver_uses_deployment_driver_for_scheduler_jobs(monkeypatch):

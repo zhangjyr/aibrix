@@ -23,7 +23,6 @@ These tests cover various failure modes and edge cases in the batch job lifecycl
 """
 
 import asyncio
-import json
 from typing import Any, Dict, List, Optional, Tuple, TypeVar, Union
 from unittest.mock import patch
 
@@ -40,33 +39,41 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.batch.job_manager import JobManager
 from aibrix.context import InfrastructureContext
+from tests.batch.conftest import (
+    create_batch_job,
+    create_test_client,
+    select_e2e_backends,
+    upload_batch_input_file,
+)
 
 T = TypeVar("T")
 
 
-def generate_batch_input_data(num_requests: int = 3) -> str:
-    """Generate test batch input data and return the content as string."""
-    base_request = {
-        "custom_id": "request-1",
-        "method": "POST",
-        "url": "/v1/chat/completions",
-        "body": {
-            "model": "gpt-3.5-turbo-0125",
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": "Hello world!"},
-            ],
-            "max_tokens": 1000,
-        },
-    }
+def pytest_generate_tests(metafunc):
+    select_e2e_backends(
+        metafunc,
+        ["redis_job_using_deployment", "k8s_job", "redis_job"],
+    )
 
-    lines = []
-    for i in range(num_requests):
-        request = base_request.copy()
-        request["custom_id"] = f"request-{i + 1}"
-        lines.append(json.dumps(request))
 
-    return "\n".join(lines)
+async def swap_job_manager(app, new_manager: JobManager) -> JobManager:
+    original_manager = app.state.batch_driver.job_manager
+    await app.state.batch_driver.run_coroutine(
+        new_manager.set_job_entity_manager(original_manager._job_entity_manager)
+    )
+    scheduler = original_manager._job_scheduler
+    if scheduler is not None:
+        new_manager.set_scheduler(scheduler)
+        scheduler._job_progress_manager = new_manager
+    app.state.batch_driver._job_manager = new_manager
+    return original_manager
+
+
+def restore_job_manager(app, original_manager: JobManager) -> None:
+    scheduler = original_manager._job_scheduler
+    if scheduler is not None:
+        scheduler._job_progress_manager = original_manager
+    app.state.batch_driver._job_manager = original_manager
 
 
 async def wait_for_status(
@@ -123,7 +130,7 @@ def validate_batch_response(
     expected_completion_window: str = "24h",
     expected_status: Optional[str] = None,
     # Optional fields (default checked for None)
-    expected_errors: Optional[Union[str, List[str]]] = None,  # List of error codes
+    expected_errors: Optional[Union[bool, str, List[str]]] = None,
     expected_output_file_id: Optional[bool] = None,
     expected_error_file_id: Optional[bool] = None,
     expected_in_progress_at: Optional[bool] = None,
@@ -263,9 +270,13 @@ def validate_batch_response(
         check_optional_field(field_name, expected_value, expected_type)
 
     # Check non-timestamp optional fields
-    if expected_errors is not None:
+    if expected_errors not in (None, False):
+        normalized_expected_errors: List[str]
         if isinstance(expected_errors, str):
-            expected_errors = [expected_errors]
+            normalized_expected_errors = [expected_errors]
+        else:
+            assert isinstance(expected_errors, list)
+            normalized_expected_errors = expected_errors
         assert isinstance(response["errors"], dict), "Expected 'errors' to be dict"
         assert "data" in response["errors"], "Expected 'errors.data' field"
         assert isinstance(
@@ -277,8 +288,50 @@ def validate_batch_response(
             assert "code" in error, f"No 'code' in error:{error}"
             assert "message" in error, f"No 'message' in error:{error}"
             errors[error["code"]] = error["message"]
-        for err_code in expected_errors:
+        for err_code in normalized_expected_errors:
             assert err_code in errors
+
+
+async def run_follow_up_success_with_same_input(
+    client: TestClient,
+    e2e_test_app,
+    test_backend: str,
+    input_file_id: str,
+    expected_total_requests: int,
+) -> None:
+    batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
+
+    try:
+        await wait_for_status(
+            client, batch_id, "in_progress", max_polls=30, poll_interval=0.5
+        )
+        final_status = await wait_for_status(
+            client, batch_id, "completed", max_polls=60, poll_interval=0.5
+        )
+
+        validate_batch_response(
+            final_status,
+            expected_status="completed",
+            expected_endpoint="/v1/chat/completions",
+            expected_input_file_id=input_file_id,
+            expected_in_progress_at=True,
+            expected_finalizing_at=True,
+            expected_completed_at=True,
+            expected_failed_at=False,
+            expected_expired_at=False,
+            expected_cancelling_at=False,
+            expected_cancelled_at=False,
+            expected_errors=False,
+            expected_output_file_id=True,
+            expected_error_file_id=True,
+            expected_request_counts={
+                "total": expected_total_requests,
+                "completed": expected_total_requests,
+                "failed": 0,
+            },
+        )
+    finally:
+        await e2e_test_app.state.batch_driver.clear_job(batch_id)
 
 
 class FailingJobManager(JobManager):
@@ -289,6 +342,7 @@ class FailingJobManager(JobManager):
         fail_validation: bool = False,
         fail_during_processing: bool = False,
         fail_during_finalizing: bool = False,
+        prevent_validation: bool = False,
         stall_validation: Optional[float] = None,
         stall_cancelling: Optional[float] = None,
         fail_after_n_requests: Optional[int] = None,
@@ -298,6 +352,7 @@ class FailingJobManager(JobManager):
         self.fail_validation = fail_validation
         self.fail_during_processing = fail_during_processing
         self.fail_during_finalizing = fail_during_finalizing
+        self.prevent_validation = prevent_validation
         self.stall_validation = stall_validation
         self.stall_cancelling = stall_cancelling
         self.fail_after_n_requests = fail_after_n_requests
@@ -310,6 +365,9 @@ class FailingJobManager(JobManager):
         inference_client: Optional[InferenceEngineClient] = None,
     ) -> bool:
         """Override to simulate validation failures during job execution start."""
+        if self.prevent_validation:
+            await asyncio.sleep(30.0)
+
         if self.stall_validation is not None:
             # Prolong validation duration to allow cancellation during validation
             await asyncio.sleep(self.stall_validation)
@@ -355,90 +413,109 @@ class FailingJobManager(JobManager):
 
 
 @pytest.mark.asyncio
-async def test_job_validation_failure(test_app):
-    """Test case 1: Create job, failure during validation."""
-    print("Test 1: Job validation failure scenario")
+async def test_job_success_baseline(e2e_test_app, test_backend):
+    """Baseline case: Create job, process successfully, verify completed payload."""
+    print("Test 0: Job success baseline scenario")
 
-    with TestClient(test_app) as client:
-        # Step 1: Skip uploading file
-
-        # Step 2: Inject the FailingJobManager to fail during validation
-        original_manager = test_app.state.batch_driver.job_manager
-        failing_manager = FailingJobManager(fail_validation=True)
-        await test_app.state.batch_driver.run_coroutine(
-            failing_manager.set_job_entity_manager(original_manager._job_entity_manager)
-        )
-        test_app.state.batch_driver._job_manager = failing_manager
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 2)
+        batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
 
         try:
-            # Step 3: Create batch job
-            batch_request = {
-                "input_file_id": "invalid_input_file_id",
-                "endpoint": "/v1/chat/completions",
-                "completion_window": "24h",
-            }
+            await wait_for_status(client, batch_id, "in_progress")
+            final_status = await wait_for_status(client, batch_id, "completed")
 
-            batch_response = client.post("/v1/batches", json=batch_request)
-            assert batch_response.status_code == 200
-            batch_id = batch_response.json()["id"]
-
-            # Step 4: Wait for validation to fail
-            final_status = await wait_for_status(client, batch_id, "failed")
-
-            # Step 5: Verify failed status using comprehensive validation
             validate_batch_response(
                 final_status,
-                expected_status="failed",
-                expected_failed_at=True,
-                expected_errors="authentication_error",
+                expected_status="completed",
+                expected_endpoint="/v1/chat/completions",
+                expected_input_file_id=input_file_id,
+                expected_in_progress_at=True,
+                expected_finalizing_at=True,
+                expected_completed_at=True,
+                expected_failed_at=False,
+                expected_expired_at=False,
+                expected_cancelling_at=False,
+                expected_cancelled_at=False,
+                expected_errors=False,
+                expected_output_file_id=True,
+                expected_error_file_id=True,
+                expected_request_counts={
+                    "total": 2,
+                    "completed": 2,
+                    "failed": 0,
+                },
             )
 
-            print("✅ Validation failure test completed successfully")
+            print("✅ Success baseline test completed successfully")
 
-            await test_app.state.batch_driver.clear_job(batch_id)
+            await run_follow_up_success_with_same_input(
+                client, e2e_test_app, test_backend, input_file_id, 2
+            )
+            await e2e_test_app.state.batch_driver.clear_job(batch_id)
         finally:
-            # Restore original manager
-            test_app.state.batch_driver._job_manager = original_manager
+            pass
 
 
 @pytest.mark.asyncio
-async def test_job_processing_failure(test_app):
+async def test_job_validation_failure(e2e_test_app, test_backend):
+    """Test case 1: Create job, failure during validation."""
+    print("Test 1: Job validation failure scenario")
+
+    with create_test_client(e2e_test_app) as client:
+        # Step 1: Skip uploading file
+
+        # Step 2: Create batch job
+        batch_request = {
+            "input_file_id": "invalid_input_file_id",
+            "endpoint": "/v1/chat/completions",
+            "completion_window": "24h",
+        }
+
+        batch_response = client.post("/v1/batches", json=batch_request)
+        assert batch_response.status_code == 200
+        batch_id = batch_response.json()["id"]
+
+        # Step 3: Wait for validation to fail
+        final_status = await wait_for_status(client, batch_id, "failed")
+
+        # Step 4: Verify failed status using comprehensive validation
+        validate_batch_response(
+            final_status,
+            expected_status="failed",
+            expected_failed_at=True,
+            expected_errors=BatchJobErrorCode.INVALID_INPUT_FILE,
+        )
+
+        print("✅ Validation failure test completed successfully")
+
+        follow_up_input_file_id = upload_batch_input_file(client, 2)
+
+        await run_follow_up_success_with_same_input(
+            client, e2e_test_app, test_backend, follow_up_input_file_id, 2
+        )
+        await e2e_test_app.state.batch_driver.clear_job(batch_id)
+
+
+@pytest.mark.asyncio
+async def test_job_processing_failure(e2e_test_app, test_backend):
     """Test case 2: Create job, failure during in progress using k8s job worker with fail_after metadata."""
     print("Test 2: Job processing failure scenario using worker fail_after metadata")
 
-    with TestClient(test_app) as client:
-        # Step 1: Upload input file
-        input_data = generate_batch_input_data(
-            10
-        )  # Generate more tasks for failure after 3 backoffs.
-        files = {"file": ("test_input.jsonl", input_data, "application/jsonl")}
-        data = {"purpose": "batch"}
-
-        upload_response = client.post("/v1/files", files=files, data=data)
-        assert upload_response.status_code == 200
-        input_file_id = upload_response.json()["id"]
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 10)
 
         # Step 2: Inject FailingJobManager to add fail_after metadata during job creation
-        original_manager = test_app.state.batch_driver.job_manager
         failing_manager = FailingJobManager(
             fail_after_n_requests=1
         )  # Fail after processing 1 request
-        await test_app.state.batch_driver.run_coroutine(
-            failing_manager.set_job_entity_manager(original_manager._job_entity_manager)
-        )
-        test_app.state.batch_driver._job_manager = failing_manager
+        original_manager = await swap_job_manager(e2e_test_app, failing_manager)
 
         try:
             # Step 3: Create batch job with failing manager that injects fail_after metadata
-            batch_request = {
-                "input_file_id": input_file_id,
-                "endpoint": "/v1/chat/completions",
-                "completion_window": "24h",
-            }
-
-            batch_response = client.post("/v1/batches", json=batch_request)
-            assert batch_response.status_code == 200
-            batch_id = batch_response.json()["id"]
+            batch_id = create_batch_job(
+                client, input_file_id, test_backend=test_backend
+            )
 
             # Step 4: Wait for job to start processing
             await wait_for_status(client, batch_id, "in_progress", max_polls=10)
@@ -455,11 +532,13 @@ async def test_job_processing_failure(test_app):
                 expected_in_progress_at=True,  # Should have started processing
                 expected_failed_at=True,  # Should have failure timestamp
                 expected_finalizing_at=True,  # Should have reached finalizing stage
+                expected_completed_at=False,
+                expected_errors=BatchJobErrorCode.INFERENCE_FAILED,
                 expected_output_file_id=True,
                 expected_error_file_id=True,
                 expected_request_counts={
-                    "total": 3,
-                    "completed": 3,
+                    "total": 10,
+                    "completed": 1,
                     "failed": 0,
                 },
             )
@@ -467,27 +546,22 @@ async def test_job_processing_failure(test_app):
             print(
                 "✅ Processing failure test with worker fail_after completed successfully"
             )
-
-            await test_app.state.batch_driver.clear_job(batch_id)
+            failing_manager.fail_after_n_requests = None
+            await run_follow_up_success_with_same_input(
+                client, e2e_test_app, test_backend, input_file_id, 10
+            )
         finally:
-            # Restore original manager
-            test_app.state.batch_driver._job_manager = original_manager
+            await e2e_test_app.state.batch_driver.clear_job(batch_id)
+            restore_job_manager(e2e_test_app, original_manager)
 
 
 @pytest.mark.asyncio
-async def test_job_finalizing_failure(test_app):
+async def test_job_finalizing_failure(e2e_test_app, test_backend):
     """Test case 3: Create job, failure during finalizing."""
     print("Test 3: Job finalizing failure scenario")
 
-    with TestClient(test_app) as client:
-        # Step 1: Upload input file
-        input_data = generate_batch_input_data(2)
-        files = {"file": ("test_input.jsonl", input_data, "application/jsonl")}
-        data = {"purpose": "batch"}
-
-        upload_response = client.post("/v1/files", files=files, data=data)
-        assert upload_response.status_code == 200
-        input_file_id = upload_response.json()["id"]
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 2)
 
         # Step 2: Inject the exception to the finalize_job_output_data to fail during finalizing
         finalizing_patcher = patch(
@@ -495,18 +569,13 @@ async def test_job_finalizing_failure(test_app):
         )
         mock_finalize = finalizing_patcher.start()
         mock_finalize.side_effect = Exception("Simulated finalization failure")
+        patcher_stopped = False
 
         try:
             # Step 3: Create batch job
-            batch_request = {
-                "input_file_id": input_file_id,
-                "endpoint": "/v1/chat/completions",
-                "completion_window": "24h",
-            }
-
-            batch_response = client.post("/v1/batches", json=batch_request)
-            assert batch_response.status_code == 200
-            batch_id = batch_response.json()["id"]
+            batch_id = create_batch_job(
+                client, input_file_id, test_backend=test_backend
+            )
 
             await wait_for_status(client, batch_id, "in_progress")
 
@@ -525,43 +594,45 @@ async def test_job_finalizing_failure(test_app):
                 expected_errors=BatchJobErrorCode.FINALIZING_ERROR,
                 expected_output_file_id=True,  # May or may not have output file
                 expected_error_file_id=True,  # May or may not have error file
-                expected_request_counts=False,  # May or may not have counts
+                expected_request_counts={  # Should reflect what's done before finalizing
+                    "total": 2,
+                    "completed": 2,
+                    "failed": 0,
+                },
             )
 
             print("✅ Finalizing failure test completed successfully")
-
-            await test_app.state.batch_driver.clear_job(batch_id)
-        finally:
             finalizing_patcher.stop()
+            patcher_stopped = True
+            await run_follow_up_success_with_same_input(
+                client, e2e_test_app, test_backend, input_file_id, 2
+            )
+        finally:
+            await e2e_test_app.state.batch_driver.clear_job(batch_id)
+            if not patcher_stopped:
+                try:
+                    finalizing_patcher.stop()
+                except RuntimeError:
+                    pass
 
 
 @pytest.mark.asyncio
-async def test_job_cancellation_in_validation(test_app):
+async def test_job_cancellation_in_validation(e2e_test_app, test_backend):
     """Test case 4: Create job, cancel during validation."""
     print("Test 4: Job cancellation during validation scenario")
 
-    with TestClient(test_app) as client:
-        # Step 1: Skip uploading file
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 1)
 
         # Step 2: Inject the FailingJobManager to fail during validation
-        original_manager = test_app.state.batch_driver.job_manager
         failing_manager = FailingJobManager(stall_validation=3.0)
-        await test_app.state.batch_driver.run_coroutine(
-            failing_manager.set_job_entity_manager(original_manager._job_entity_manager)
-        )
-        test_app.state.batch_driver._job_manager = failing_manager
+        original_manager = await swap_job_manager(e2e_test_app, failing_manager)
 
         try:
             # Step 3: Create batch job
-            batch_request = {
-                "input_file_id": "invalid_input_file_id",
-                "endpoint": "/v1/chat/completions",
-                "completion_window": "24h",
-            }
-
-            batch_response = client.post("/v1/batches", json=batch_request)
-            assert batch_response.status_code == 200
-            batch_id = batch_response.json()["id"]
+            batch_id = create_batch_job(
+                client, input_file_id, test_backend=test_backend
+            )
 
             # Step 4: Cancel job during processing
             cancel_response = client.post(f"/v1/batches/{batch_id}/cancel")
@@ -579,40 +650,26 @@ async def test_job_cancellation_in_validation(test_app):
             )
 
             print("✅ Validation failure test completed successfully")
-
-            await test_app.state.batch_driver.clear_job(batch_id)
+            await run_follow_up_success_with_same_input(
+                client, e2e_test_app, test_backend, input_file_id, 1
+            )
         finally:
-            # Restore original manager
-            test_app.state.batch_driver._job_manager = original_manager
+            await e2e_test_app.state.batch_driver.clear_job(batch_id)
+            restore_job_manager(e2e_test_app, original_manager)
 
 
 @pytest.mark.asyncio
-async def test_job_cancellation_in_progress_before_preparation(test_app):
+async def test_job_cancellation_in_progress_before_preparation(
+    e2e_test_app, test_backend
+):
     """Test case 5: Create job, cancel during in progress, finalizing, validate finalized result."""
     print("Test 5: Job cancellation during processing scenario")
 
-    with TestClient(test_app) as client:
-        # Step 1: Upload input file
-        input_data = generate_batch_input_data(
-            10
-        )  # More requests for longer processing
-        files = {"file": ("test_input.jsonl", input_data, "application/jsonl")}
-        data = {"purpose": "batch"}
-
-        upload_response = client.post("/v1/files", files=files, data=data)
-        assert upload_response.status_code == 200
-        input_file_id = upload_response.json()["id"]
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 10)
 
         # Step 2: Create batch job
-        batch_request = {
-            "input_file_id": input_file_id,
-            "endpoint": "/v1/chat/completions",
-            "completion_window": "24h",
-        }
-
-        batch_response = client.post("/v1/batches", json=batch_request)
-        assert batch_response.status_code == 200
-        batch_id = batch_response.json()["id"]
+        batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
 
         try:
             # Step 3: Wait for job to start processing, ASAP
@@ -626,7 +683,7 @@ async def test_job_cancellation_in_progress_before_preparation(test_app):
 
             # Step 5: Wait for cancellation and finalization
             final_status = await wait_for_status(
-                client, batch_id, "cancelled", max_polls=20
+                client, batch_id, "cancelled", max_polls=40, poll_interval=0.5
             )
 
             # Step 6: Verify cancelled status using comprehensive validation
@@ -635,45 +692,35 @@ async def test_job_cancellation_in_progress_before_preparation(test_app):
                 expected_status="cancelled",
                 expected_endpoint="/v1/chat/completions",
                 expected_in_progress_at=True,  # Should have started processing
-                expected_cancelled_at=True,  # Should have cancellation timestamp
+                expected_cancelled_at=True,
                 expected_cancelling_at=True,  # Should have cancelling start timestamp
-                expected_finalizing_at=True,  # Should have finalizing timestamp
+                expected_finalizing_at=True,
+                expected_completed_at=False,
+                expected_output_file_id=True,
+                expected_error_file_id=True,
+                expected_request_counts=True,
             )
 
             print("✅ Processing cancellation test completed successfully")
 
-            await test_app.state.batch_driver.clear_job(batch_id)
+            await run_follow_up_success_with_same_input(
+                client, e2e_test_app, test_backend, input_file_id, 10
+            )
+            await e2e_test_app.state.batch_driver.clear_job(batch_id)
         finally:
             pass
 
 
 @pytest.mark.asyncio
-async def test_job_cancellation_in_progress(test_app):
+async def test_job_cancellation_in_progress(e2e_test_app, test_backend):
     """Test case 5: Create job, cancel during in progress, finalizing, validate finalized result."""
     print("Test 5: Job cancellation during processing scenario")
 
-    with TestClient(test_app) as client:
-        # Step 1: Upload input file
-        input_data = generate_batch_input_data(
-            10
-        )  # More requests for longer processing
-        files = {"file": ("test_input.jsonl", input_data, "application/jsonl")}
-        data = {"purpose": "batch"}
-
-        upload_response = client.post("/v1/files", files=files, data=data)
-        assert upload_response.status_code == 200
-        input_file_id = upload_response.json()["id"]
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 10)
 
         # Step 2: Create batch job
-        batch_request = {
-            "input_file_id": input_file_id,
-            "endpoint": "/v1/chat/completions",
-            "completion_window": "24h",
-        }
-
-        batch_response = client.post("/v1/batches", json=batch_request)
-        assert batch_response.status_code == 200
-        batch_id = batch_response.json()["id"]
+        batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
 
         try:
             # Step 3: Wait for job to start processing, ASAP
@@ -694,7 +741,7 @@ async def test_job_cancellation_in_progress(test_app):
 
             # Step 5: Wait for cancellation and finalization
             final_status = await wait_for_status(
-                client, batch_id, "cancelled", max_polls=20
+                client, batch_id, "cancelled", max_polls=40, poll_interval=0.5
             )
 
             # Step 6: Verify cancelled status using comprehensive validation
@@ -703,127 +750,112 @@ async def test_job_cancellation_in_progress(test_app):
                 expected_status="cancelled",
                 expected_endpoint="/v1/chat/completions",
                 expected_in_progress_at=True,  # Should have started processing
-                expected_cancelled_at=True,  # Should have cancellation timestamp
+                expected_cancelled_at=True,
                 expected_cancelling_at=True,  # Should have cancelling start timestamp
                 expected_finalizing_at=True,  # Should have finalizing timestamp
+                expected_completed_at=False,
                 expected_output_file_id=True,
                 expected_error_file_id=True,
                 expected_request_counts=True,  # May or may not have counts
             )
 
             print("✅ Processing cancellation test completed successfully")
+            await run_follow_up_success_with_same_input(
+                client, e2e_test_app, test_backend, input_file_id, 10
+            )
         finally:
-            await test_app.state.batch_driver.clear_job(batch_id)
+            await e2e_test_app.state.batch_driver.clear_job(batch_id)
 
 
 @pytest.mark.asyncio
-async def test_job_cancellation_in_finalizing(test_app):
+async def test_job_cancellation_in_finalizing(e2e_test_app, test_backend):
     """Test case 6: Create job, cancel during finalizing, report completed."""
     print("Test 6: Job cancellation during finalizing (reports completed) scenario")
 
-    with TestClient(test_app) as client:
-        # Step 1: Upload input file
-        input_data = generate_batch_input_data(
-            10
-        )  # Larger file for taking some time to finalizing
-        files = {"file": ("test_input.jsonl", input_data, "application/jsonl")}
-        data = {"purpose": "batch"}
-
-        upload_response = client.post("/v1/files", files=files, data=data)
-        assert upload_response.status_code == 200
-        input_file_id = upload_response.json()["id"]
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 10)
 
         # Step 2: Inject the FailingJobManager to stall cancellation execution
-        original_manager = test_app.state.batch_driver.job_manager
+        # and hold finalization long enough to send the cancel while finalizing.
+        from aibrix.batch import storage as batch_storage
+
+        original_finalize = batch_storage.finalize_job_output_data
+
+        async def delayed_finalize(job):
+            await asyncio.sleep(2.0)
+            return await original_finalize(job)
+
         failing_manager = FailingJobManager(stall_cancelling=2.0)
-        await test_app.state.batch_driver.run_coroutine(
-            failing_manager.set_job_entity_manager(original_manager._job_entity_manager)
-        )
-        test_app.state.batch_driver._job_manager = failing_manager
+        original_manager = await swap_job_manager(e2e_test_app, failing_manager)
 
         # Step 3: Create batch job
-        batch_request = {
-            "input_file_id": input_file_id,
-            "endpoint": "/v1/chat/completions",
-            "completion_window": "24h",
-        }
-
-        batch_response = client.post("/v1/batches", json=batch_request)
-        assert batch_response.status_code == 200
-        batch_id = batch_response.json()["id"]
+        batch_id = create_batch_job(client, input_file_id, test_backend=test_backend)
 
         try:
-            # Step 4: Wait for processing to reach finalizing
-            await wait_for_status(client, batch_id, "finalizing", max_polls=20)
+            with patch(
+                "aibrix.batch.job_driver.local_driver.storage.finalize_job_output_data",
+                side_effect=delayed_finalize,
+            ):
+                # Step 4: Wait until the job is already finalizing
+                status_during_finalizing = await wait_for_status(
+                    client, batch_id, "finalizing", max_polls=40, poll_interval=0.5
+                )
+                assert status_during_finalizing["status"] == "finalizing"
 
-            # Step 5: Try to cancel during or after processing
-            client.post(f"/v1/batches/{batch_id}/cancel")
-            # Note: Cancel may succeed or be ignored if already finalizing
+                # Step 5: Cancellation should not interrupt finalization once it has started
+                cancel_response = client.post(f"/v1/batches/{batch_id}/cancel")
+                assert cancel_response.status_code == 400
 
-            # Step 6: Wait for final status
-            final_status = await wait_for_status(
-                client, batch_id, ["completed", "cancelled"], max_polls=10
-            )
+                # Step 6: Wait for final status and verify the job still completes
+                final_status = await wait_for_status(
+                    client, batch_id, "completed", max_polls=20, poll_interval=0.5
+                )
 
-            # Step 6: Verify final status using comprehensive validation
-            validate_batch_response(
-                final_status,
-                expected_status="completed",
-                expected_endpoint="/v1/chat/completions",
-                expected_in_progress_at=True,  # Should have started processing
-                expected_completed_at=True,  # Should have completion timestamp
-                expected_finalizing_at=True,  # Should have reached finalizing
-                expected_output_file_id=True,  # Should have output file
-                expected_error_file_id=True,  # Should have error file
-                expected_request_counts=True,  # Should have request counts
-            )
-            print("  Job completed by ignoring cancellation")
+                # Step 7: Verify final status using comprehensive validation
+                validate_batch_response(
+                    final_status,
+                    expected_status="completed",
+                    expected_endpoint="/v1/chat/completions",
+                    expected_in_progress_at=True,  # Should have started processing
+                    expected_completed_at=True,  # Should have completion timestamp
+                    expected_finalizing_at=True,  # Should have reached finalizing
+                    expected_cancelling_at=False,
+                    expected_cancelled_at=False,
+                    expected_output_file_id=True,  # Should have output file
+                    expected_error_file_id=True,  # Should have error file
+                    expected_request_counts=True,  # Should have request counts
+                )
+                print("  Job completed without cancelling finalization")
+                await run_follow_up_success_with_same_input(
+                    client, e2e_test_app, test_backend, input_file_id, 10
+                )
         finally:
-            # Restore original manager
-            test_app.state.batch_driver._job_manager = original_manager
-            await test_app.state.batch_driver.clear_job(batch_id)
+            await e2e_test_app.state.batch_driver.clear_job(batch_id)
+            restore_job_manager(e2e_test_app, original_manager)
 
 
 @pytest.mark.asyncio
-async def test_job_expiration_during_validation(test_app):
+async def test_job_expiration_during_validation(e2e_test_app, test_backend):
     """Test case 7: Create job, set expire to 1min and prevent validation, expired and report."""
     print("Test 7: Job expiration during validation scenario")
 
-    pytest.skip("No batch scheduling enabled for k8s job")
-
-    with TestClient(test_app) as client:
-        # Step 1: Upload input file
-        input_data = generate_batch_input_data(2)
-        files = {"file": ("test_input.jsonl", input_data, "application/jsonl")}
-        data = {"purpose": "batch"}
-
-        upload_response = client.post("/v1/files", files=files, data=data)
-        assert upload_response.status_code == 200
-        input_file_id = upload_response.json()["id"]
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 2)
 
         # Step 2: Mock job manager to prevent validation
-        original_manager = test_app.state.batch_driver.job_manager
-        failing_manager = FailingJobManager(prevent_validation=True)
-        await test_app.state.batch_driver.run_coroutine(
-            failing_manager.set_job_entity_manager(original_manager._job_entity_manager)
-        )
-        test_app.state.batch_driver.job_manager = failing_manager
+        failing_manager = FailingJobManager(prevent_validation=True, expiration=1)
+        original_manager = await swap_job_manager(e2e_test_app, failing_manager)
+        batch_id = None
 
         try:
             # Step 3: Create batch job with very short completion window
-            batch_request = {
-                "input_file_id": input_file_id,
-                "endpoint": "/v1/chat/completions",
-                "completion_window": "60",  # 60 seconds for test
-            }
-
             # Patch the completion window to be very short for testing
             with patch(
                 "aibrix.batch.constant.EXPIRE_INTERVAL", 0.1
             ):  # Check every 100ms
-                batch_response = client.post("/v1/batches", json=batch_request)
-                assert batch_response.status_code == 200
-                batch_id = batch_response.json()["id"]
+                batch_id = create_batch_job(
+                    client, input_file_id, test_backend=test_backend
+                )
 
                 # Step 4: Wait longer than completion window for expiration
                 await asyncio.sleep(2)  # Wait for expiration to trigger
@@ -837,6 +869,7 @@ async def test_job_expiration_during_validation(test_app):
                 validate_batch_response(
                     final_status,
                     expected_status="expired",
+                    expected_completion_window="0h",
                     expected_endpoint="/v1/chat/completions",
                     expected_in_progress_at=False,  # Should be None (expired before processing)
                     expected_expired_at=True,  # Should have expiration timestamp
@@ -852,76 +885,68 @@ async def test_job_expiration_during_validation(test_app):
                 )
 
                 print("✅ Validation expiration test completed successfully")
+                failing_manager.prevent_validation = False
+                failing_manager.expiration = None
+                await run_follow_up_success_with_same_input(
+                    client, e2e_test_app, test_backend, input_file_id, 2
+                )
 
         finally:
-            # Restore original manager
-            test_app.state.batch_driver.job_manager = original_manager
-            await test_app.state.batch_driver.clear_job(batch_id)
+            if batch_id is not None:
+                await e2e_test_app.state.batch_driver.clear_job(batch_id)
+            restore_job_manager(e2e_test_app, original_manager)
 
 
 @pytest.mark.asyncio
-async def test_job_expiration_during_processing(test_app):
+async def test_job_expiration_during_processing(e2e_test_app, test_backend):
     """Test case 8: Create job, set expire to 1min, expired during in progress, finalizing, validate result."""
     print("Test 8: Job expiration during processing scenario")
 
-    with TestClient(test_app) as client:
-        # Step 1: Upload input file
-        input_data = generate_batch_input_data(3)
-        files = {"file": ("test_input.jsonl", input_data, "application/jsonl")}
-        data = {"purpose": "batch"}
-
-        upload_response = client.post("/v1/files", files=files, data=data)
-        assert upload_response.status_code == 200
-        input_file_id = upload_response.json()["id"]
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 3)
 
         # Step 2: Inject FailingJobManager to add fail_after metadata during job creation
-        original_manager = test_app.state.batch_driver.job_manager
         failing_manager = FailingJobManager(expiration=2)  # Expired after 2 seconds
-        await test_app.state.batch_driver.run_coroutine(
-            failing_manager.set_job_entity_manager(original_manager._job_entity_manager)
-        )
-        test_app.state.batch_driver._job_manager = failing_manager
+        original_manager = await swap_job_manager(e2e_test_app, failing_manager)
 
         try:
             # Step 3: Create batch job with failing manager that injects fail_after metadata
-            batch_request = {
-                "input_file_id": input_file_id,
-                "endpoint": "/v1/chat/completions",
-                "completion_window": "24h",
-            }
-
-            batch_response = client.post("/v1/batches", json=batch_request)
-            assert batch_response.status_code == 200
-            batch_id = batch_response.json()["id"]
+            batch_id = create_batch_job(
+                client, input_file_id, test_backend=test_backend
+            )
 
             # Step 4: Wait for job to start processing
             await wait_for_status(client, batch_id, "in_progress", max_polls=10)
-            # Step 5: Wait for finalization to complete
+            # Step 5: Wait for expiration to complete
             final_status = await wait_for_status(
-                client, batch_id, "failed", max_polls=60, poll_interval=1.0
-            )  # Wait longer for job retries
+                client, batch_id, "expired", max_polls=60, poll_interval=1.0
+            )
 
-            # Step 7: Verify failed status using comprehensive validation
+            # Step 7: Verify expired status using comprehensive validation
             validate_batch_response(
                 final_status,
                 expected_status="expired",
                 expected_endpoint="/v1/chat/completions",
                 expected_completion_window="0h",  # overrided to 2s
                 expected_in_progress_at=True,  # Should have started processing
-                expected_expired_at=True,  # Should have failure timestamp
+                expected_completed_at=False,
+                expected_expired_at=True,
                 expected_finalizing_at=True,  # Should have reached finalizing stage
-                expected_output_file_id=True,  # May or may not have output file
-                expected_error_file_id=True,  # May or may not have error file
+                expected_output_file_id=True,
+                expected_error_file_id=True,
+                expected_request_counts=True,
             )
 
             print(
                 "✅ Processing failure test with worker fail_after completed successfully"
             )
-
-            await test_app.state.batch_driver.clear_job(batch_id)
+            failing_manager.expiration = None
+            await run_follow_up_success_with_same_input(
+                client, e2e_test_app, test_backend, input_file_id, 3
+            )
         finally:
-            # Restore original manager
-            test_app.state.batch_driver._job_manager = original_manager
+            await e2e_test_app.state.batch_driver.clear_job(batch_id)
+            restore_job_manager(e2e_test_app, original_manager)
 
 
 if __name__ == "__main__":

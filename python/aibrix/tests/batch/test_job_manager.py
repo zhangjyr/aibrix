@@ -198,6 +198,114 @@ async def test_validate_job_finalizes_worker_style_validation_failure(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_validate_job_persists_validated_request_count(monkeypatch):
+    mock_entity_manager = MockJobEntityManager(delay=0.0)
+
+    asyncio.get_running_loop().name = (
+        "test_validate_job_persists_validated_request_count"
+    )
+    job_manager = _job_manager()
+    await job_manager.set_job_entity_manager(mock_entity_manager)
+
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
+        metadata=ObjectMeta(
+            name="validated-job",
+            namespace="default",
+            uid="validated-uid",
+            creationTimestamp=datetime.now(),
+            resourceVersion="1",
+            deletionTimestamp=None,
+        ),
+        spec=BatchJobSpec(
+            input_file_id="test-input-validated",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        ),
+        status=BatchJobStatus(
+            jobID="validated-job-id",
+            state=BatchJobState.CREATED,
+            createdAt=datetime.now(),
+        ),
+    )
+    job_id = batch_job.job_id
+    job_manager._pending_jobs[job_id] = batch_job
+    mock_entity_manager.jobs[job_id] = batch_job
+
+    class _ValidatedDriver:
+        def __init__(self, progress_manager):
+            self._progress_manager = progress_manager
+
+        async def validate_job(self, job):
+            validated_status = job.status.model_copy(deep=True)
+            validated_status.request_counts.total = 3
+            await self._progress_manager.mark_job_validated(
+                job.job_id, validated_status
+            )
+
+    monkeypatch.setattr(
+        "aibrix.batch.job_manager.create_job_driver",
+        lambda context,
+        progress_manager,
+        entity_manager,
+        job,
+        inference_client: _ValidatedDriver(progress_manager),
+    )
+
+    result = await job_manager.validate_job(job_id)
+
+    assert result is True
+    validated_job = await mock_entity_manager.get_job(job_id)
+    assert validated_job is not None
+    assert validated_job.status.request_counts.total == 3
+    in_progress_job = job_manager._in_progress_jobs[job_id]
+    assert in_progress_job.status.request_counts.total == 3
+    assert in_progress_job.status.state == BatchJobState.IN_PROGRESS
+
+
+@pytest.mark.asyncio
+async def test_mark_job_failed_is_idempotent_for_done_job():
+    job_manager = _job_manager()
+
+    batch_job = BatchJob(
+        typeMeta=TypeMeta(apiVersion="batch/v1", kind="Job"),
+        metadata=ObjectMeta(
+            name="failed-job",
+            namespace="default",
+            uid="failed-uid",
+            creationTimestamp=datetime.now(),
+            resourceVersion=None,
+            deletionTimestamp=None,
+        ),
+        spec=BatchJobSpec(
+            input_file_id="test-file-failed",
+            endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+            completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+        ),
+        status=BatchJobStatus(
+            jobID="done-job-id",
+            state=BatchJobState.FINALIZED,
+            createdAt=datetime.now(),
+            failedAt=datetime.now(),
+        ),
+    )
+    job_manager._done_jobs["done-job-id"] = batch_job
+
+    result = await job_manager.mark_job_failed(
+        "done-job-id",
+        BatchJobError(
+            code=BatchJobErrorCode.INFERENCE_FAILED,
+            message="duplicate failure",
+        ),
+    )
+
+    assert result is batch_job
+    assert job_manager._done_jobs["done-job-id"] is batch_job
+    assert batch_job.status.state == BatchJobState.FINALIZED
+    assert batch_job.status.failed_at is not None
+
+
+@pytest.mark.asyncio
 async def test_job_deleted_handler():
     """Test that job_deleted_handler correctly moves jobs to done state."""
     job_manager = _job_manager()
@@ -245,6 +353,7 @@ class MockJobEntityManager(JobEntityManager):
         self.delay = delay  # Delay before calling committed handler
         self.submitted_jobs: List[tuple] = []  # Track submitted jobs
         self.should_fail = False  # Flag to simulate failures
+        self.jobs: dict[str, BatchJob] = {}
 
     async def submit_job(self, session_id: str, job: BatchJobSpec):
         """Mock job submission with async callback."""
@@ -279,33 +388,52 @@ class MockJobEntityManager(JobEntityManager):
                 createdAt=datetime.now(),
             ),
         )
+        job_id = batch_job.job_id
+        assert job_id is not None
+        self.jobs[job_id] = batch_job
 
         # Call the committed handler
         await self.job_committed(batch_job)
 
     async def get_job(self, job_id: str) -> Optional[BatchJob]:
         """Mock get_job implementation."""
-        return None
+        return self.jobs.get(job_id)
 
     async def update_job_ready(self, job: BatchJob) -> None:
         """Mock update_job_ready implementation."""
-        pass
+        job_id = job.job_id
+        assert job_id is not None
+        self.jobs[job_id] = job
 
     async def update_job_status(self, job: BatchJob) -> None:
         """Mock update_job_status implementation."""
-        pass
+        job_id = job.job_id
+        assert job_id is not None
+        old_job = self.jobs.get(job_id)
+        self.jobs[job_id] = job
+        if old_job is not None:
+            await self.job_updated(old_job, job)
 
     async def list_jobs(self) -> List[BatchJob]:
         """Mock list_jobs implementation."""
-        return []
+        return list(self.jobs.values())
 
     async def cancel_job(self, job: BatchJob):
         """Mock cancel_job implementation."""
-        pass
+        job_id = job.job_id
+        assert job_id is not None
+        old_job = self.jobs.get(job_id)
+        self.jobs[job_id] = job
+        if old_job is not None:
+            await self.job_updated(old_job, job)
 
     async def delete_job(self, job: BatchJob):
         """Mock cancel_job implementation."""
-        pass
+        job_id = job.job_id
+        assert job_id is not None
+        old_job = self.jobs.pop(job_id, None)
+        if old_job is not None:
+            await self.job_deleted(old_job)
 
 
 @pytest.mark.asyncio

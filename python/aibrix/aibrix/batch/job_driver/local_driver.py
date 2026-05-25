@@ -20,9 +20,9 @@ import aibrix.batch.constant as constant
 import aibrix.batch.storage as storage
 from aibrix.batch.job_entity import (
     BatchJob,
+    BatchJobEndpoint,
     BatchJobError,
     BatchJobErrorCode,
-    BatchJobState,
     BatchUsage,
     ConditionType,
 )
@@ -61,6 +61,7 @@ class LocalJobDriver(JobDriver):
         # with a clear message instead of silently falling back to a
         # default client.
         self._inference_client = inference_client
+        self._worker_id = uuid.uuid4().hex
 
         # Per-job token usage accumulators. Populated by inference responses
         # in execute_worker. Idempotent on retry: each (job_id, custom_id)
@@ -68,6 +69,15 @@ class LocalJobDriver(JobDriver):
         # via get_accumulated_usage() so persistence layers can flush it.
         self._usage_by_job: Dict[str, BatchUsage] = {}
         self._usage_counted_ids: Dict[str, Set[str]] = {}
+
+    @staticmethod
+    def _ensure_batch_job_error(
+        error: Exception,
+        default_code: BatchJobErrorCode = BatchJobErrorCode.INTERNAL_ERROR,
+    ) -> BatchJobError:
+        if isinstance(error, BatchJobError):
+            return error
+        return BatchJobError(code=default_code, message=str(error))
 
     def _accumulate_usage(
         self, job_id: str, custom_id: Optional[str], raw_usage: Optional[dict]
@@ -125,26 +135,12 @@ class LocalJobDriver(JobDriver):
         self._usage_by_job.pop(job_id, None)
         self._usage_counted_ids.pop(job_id, None)
 
-    # BUG: This function is not thread-safe. Usage from multiple workers can overwrite each other.
-    async def _snapshot_usage_to_status(self, job_id: str) -> None:
-        """Push the current accumulator into the live BatchJob's status.
-
-        The progress_manager hands back a live reference, so mutating
-        ``status.usage`` here is observable to subsequent reads and to
-        any downstream serializer that snapshots the BatchJob (e.g.
-        the K8s annotation writer).
-
-        Called after every progress sync so usage is reflected in the
-        canonical state on each persistence flush, not only at
-        finalize_job. This also bounds the worst-case data loss to a
-        single in-flight progress window.
-        """
-        accumulated = self.get_accumulated_usage(job_id)
-        if accumulated is None:
-            return
-        current = await self._progress_manager.get_job(job_id)
-        if current is not None:
-            current.status.usage = accumulated
+    async def _persist_worker_status(self, job: BatchJob) -> BatchJob:
+        status = job.status.model_copy(deep=True)
+        status.usage = self.get_accumulated_usage(job.job_id)
+        return await self._progress_manager.update_job_local_status(
+            job.job_id, self._worker_id, status
+        )
 
     async def execute_job(self, job_id):
         """
@@ -180,27 +176,26 @@ class LocalJobDriver(JobDriver):
         try:
             job = await self.execute_worker(job_id)
         except Exception as ex:
+            logger.error(
+                "Execute_worker failure",
+                job_id=job_id,
+                error=str(ex),
+                exc_info=True,
+            )  # type: ignore[call-arg]
             # Handle exception here, so we can execute finalizing if necessary.
             job = await self._progress_manager.mark_job_failed(
                 job_id,
                 BatchJobError(code=BatchJobErrorCode.INFERENCE_FAILED, message=str(ex)),
             )
-            # Push whatever usage we did manage to count before failing,
-            # so the persisted status reflects the partial work.
-            await self._snapshot_usage_to_status(job_id)
-            # Bound memory: drop accumulator on failure paths too, not
-            # just on the happy-path finalize_job.
+            job = await self._persist_worker_status(job)
             self._drop_usage_state(job_id)
 
         # Step 3: Aggregate outputs
-        if job.status.state == BatchJobState.FINALIZING:
+        if job.status.is_finalizing_required():
             # When run as a paraller worker, temp files are not created by the worker,
             # skip finalization and leave the coordination job driver to handle it.
             if not has_temp_files:
-                await storage.finalize_job_output_data(job)
-
-            logger.debug("Completed job", job_id=job_id)
-            job = await self._sync_job_status(job_id)
+                return await self.finalize_job(job)
 
         if job.status.failed:
             failed_condition = job.status.get_condition(ConditionType.FAILED)
@@ -210,18 +205,55 @@ class LocalJobDriver(JobDriver):
                 failed_condition.message or "Job failed with an unspecified error"
             )
 
+        logger.debug("Completed job", job_id=job_id)
+        job = await self._sync_job_status(job_id)
+        return job
+
     async def validate_job(self, job: BatchJob):
-        total, exists = await storage.read_job_input_info(job)
-        if not exists:
-            raise BatchJobError(
-                code=BatchJobErrorCode.INVALID_INPUT_FILE,
-                message="input file not found",
-            )
+        logger.debug(
+            "Validate local driver",
+            job_id=job.job_id,
+            input_file_id=job.spec.input_file_id,
+        )  # type: ignore[call-arg]
         if not self._job_authentication(job):
             raise BatchJobError(
                 code=BatchJobErrorCode.AUTHENTICATION_ERROR,
                 message="authentication error",
             )
+
+        _, exists = await storage.read_job_input_info(job)
+        if not exists:
+            raise BatchJobError(
+                code=BatchJobErrorCode.INVALID_INPUT_FILE,
+                message="input file not found",
+            )
+        total, validation_error = await storage.validate_job_input_file(
+            job.spec.input_file_id,
+            (
+                job.spec.endpoint.value
+                if isinstance(job.spec.endpoint, BatchJobEndpoint)
+                else str(job.spec.endpoint)
+            ),
+        )
+        if validation_error:
+            raise BatchJobError(
+                code=BatchJobErrorCode.VALIDATION_ERROR,
+                message=validation_error,
+            )
+        if total == 0:
+            raise BatchJobError(
+                code=BatchJobErrorCode.EMPTY_INPUT_FILE,
+                message="input file is empty",
+            )
+        job_id = job.job_id
+        if job_id is None:
+            raise BatchJobError(
+                code=BatchJobErrorCode.VALIDATION_ERROR,
+                message="job_id is required",
+            )
+        validated_status = job.status.model_copy(deep=True)
+        validated_status.request_counts.total = total
+        await self._progress_manager.mark_job_validated(job_id, validated_status)
 
     def _job_authentication(self, job: BatchJob) -> bool:
         return True
@@ -370,6 +402,14 @@ class LocalJobDriver(JobDriver):
                 assert last_line_no == line_no
                 logger.debug("Job request executed", job_id=job_id, request_id=line_no)  # type: ignore[call-arg]
 
+                # Persist any usage counted during this request immediately,
+                # so other observers (like disaggregated list API) sees
+                # the latest tally instead of waiting for finalize_job.
+                job, line_no = await self._sync_job_status_and_get_next_request(
+                    job_id, last_line_no
+                )
+                job = await self._persist_worker_status(job)
+
                 # Check for fail_after_n_requests condition
                 if fail_after_n_requests is not None:
                     processed_requests += 1
@@ -384,14 +424,6 @@ class LocalJobDriver(JobDriver):
                             f"Artificial failure triggered after processing {processed_requests} requests "
                             f"(fail_after_n_requests={fail_after_n_requests})"
                         )
-                job, line_no = await self._sync_job_status_and_get_next_request(
-                    job_id, last_line_no
-                )
-                # Reflect any usage counted during this request onto the
-                # live BatchJob immediately, so downstream persistence
-                # (annotation writes triggered by progress changes) sees
-                # the latest tally instead of waiting for finalize_job.
-                await self._snapshot_usage_to_status(job_id)
                 logger.debug(
                     "Confirmed next request",
                     job_id=job_id,
@@ -407,6 +439,7 @@ class LocalJobDriver(JobDriver):
                 job = await self._sync_job_status(
                     job_id, total=line_no
                 )  # Now that total == request_id
+                job = await self._persist_worker_status(job)
                 # We need to confirm that all is execute by try starting next round
                 job, line_no = await self._get_next_request(job_id)
                 logger.debug(
@@ -431,23 +464,27 @@ class LocalJobDriver(JobDriver):
         """
         Finalize the job by removing all data.
         """
-        assert job.status.state == BatchJobState.FINALIZING
+        job = await self._progress_manager.mark_job_finalizing(job.job_id)
 
-        await storage.finalize_job_output_data(job)
+        try:
+            await storage.finalize_job_output_data(job)
 
-        # status.job_id is Required[str], so prefer it over BatchJob.job_id
-        # which is Optional[str] (None until the K8s UID is assigned).
-        job_id = job.status.job_id
+            # Final snapshot: catch anything counted between the last
+            # per-request sync and now.
+            await self._persist_worker_status(job)
 
-        # Final snapshot: catch anything counted between the last
-        # per-request sync and now.
-        await self._snapshot_usage_to_status(job_id)
+            logger.debug("Finalized job", job_id=job.job_id)  # type: ignore[call-arg]
+            synced = await self._sync_job_status(job.job_id)
+        except Exception as e:
+            logger.error("Error finalizing job output data: %s", e)  # type: ignore[call-arg]
+            raise BatchJobError(
+                BatchJobErrorCode.FINALIZING_ERROR,
+                message=str(e),
+            )
 
-        logger.debug("Finalized job", job_id=job_id)  # type: ignore[call-arg]
-        synced = await self._sync_job_status(job_id)
         # Memory hygiene: drop the per-job accumulator now that the
         # final usage is on the status object.
-        self._drop_usage_state(job_id)
+        self._drop_usage_state(job.job_id)
         return synced
 
     async def _retry_inference_request(

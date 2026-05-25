@@ -41,6 +41,7 @@ from aibrix.batch.job_entity.batch_job import (
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    BatchJobStatusCopy,
     CompletionWindow,
     ObjectMeta,
     RequestCountStats,
@@ -137,39 +138,64 @@ async def test_submit_job_creates_suspended_k8s_job():
 class _FakeMetastore:
     """In-memory stand-in for the batch metastore.
 
-    Used by the fixture below to monkeypatch the typed
+    Used by the fixture below to replace ``batch_metastore.p_metastore``
+    with an in-memory storage adapter so the tests exercise the real
     ``put_batch_job`` / ``get_batch_job`` / ``delete_batch_job``
-    helpers so JobCache writes go through this dict instead of the
-    real ``p_metastore``. Mirrors the deep-copy semantics the
-    production helpers get for free via JSON serialization.
+    helpers instead of bypassing them. Mirrors the deep-copy semantics
+    the production helpers get for free via JSON serialization.
     """
 
     def __init__(self) -> None:
-        self._jobs: dict[str, BatchJob] = {}
+        self._objects: dict[str, bytes] = {}
 
-    async def put(self, batch_id: str, job: BatchJob) -> None:
-        self._jobs[batch_id] = job.model_copy(deep=True)
+    async def put_object(self, key: str, data, **kwargs) -> bool:
+        if isinstance(data, bytes):
+            payload = data
+        else:
+            payload = str(data).encode("utf-8")
+        self._objects[key] = payload
+        return True
+
+    async def get_object(self, key: str) -> bytes:
+        try:
+            return self._objects[key]
+        except KeyError as exc:
+            raise FileNotFoundError(key) from exc
+
+    async def list_objects(
+        self,
+        prefix: str = "",
+        delimiter=None,
+        limit: Optional[int] = None,
+        continuation_token: Optional[str] = None,
+    ) -> tuple[list[str], Optional[str]]:
+        keys = sorted(key for key in self._objects if key.startswith(prefix))
+        offset = int(continuation_token or 0)
+        remaining = keys[offset:]
+        page = remaining[:limit] if limit is not None else remaining
+        next_token = (
+            str(offset + len(page))
+            if limit is not None and len(remaining) > len(page)
+            else None
+        )
+        return page, next_token
+
+    async def delete_object(self, key: str) -> None:
+        self._objects.pop(key, None)
 
     async def get(self, batch_id: str) -> Optional[BatchJob]:
-        job = self._jobs.get(batch_id)
-        return job.model_copy(deep=True) if job is not None else None
+        from aibrix.batch.storage import batch_metastore
 
-    async def delete(self, batch_id: str) -> None:
-        self._jobs.pop(batch_id, None)
+        return await batch_metastore.get_batch_job(batch_id)
 
 
 @pytest.fixture
 def fake_metastore(monkeypatch) -> _FakeMetastore:
-    """Replaces the typed metastore helpers with an in-memory stub.
-
-    Patch target is ``aibrix.metadata.cache.job`` because cache/job.py
-    imports the helpers at module load time via ``from ... import``.
-    """
+    """Replaces ``batch_metastore.p_metastore`` with an in-memory stub."""
     store = _FakeMetastore()
-    from aibrix.metadata.cache import job as job_module
+    from aibrix.batch.storage import batch_metastore
 
-    monkeypatch.setattr(job_module, "put_batch_job", store.put)
-    monkeypatch.setattr(job_module, "delete_batch_job", store.delete)
+    monkeypatch.setattr(batch_metastore, "p_metastore", store)
     return store
 
 
@@ -312,6 +338,41 @@ async def test_update_job_status_fires_job_updated_callback(fake_metastore):
     await cache.update_job_status(advanced)
 
     assert received == [(BatchJobState.IN_PROGRESS, BatchJobState.FINALIZED)]
+
+
+@pytest.mark.asyncio
+async def test_update_job_status_aggregates_worker_status_copies(fake_metastore):
+    cache = _make_cache()
+
+    first = _make_job("batch-workers")
+    first.status.request_counts.completed = 0
+    first.status.request_counts.launched = 0
+    first.status.status_copies = {}
+    first.status.status_copies["worker-1"] = BatchJobStatusCopy(
+        state=BatchJobState.IN_PROGRESS,
+        requestCounts=RequestCountStats(total=10, launched=1, completed=1, failed=0),
+        updated=True,
+    )
+    await cache.update_job_status(first)
+
+    second = _make_job("batch-workers")
+    second.status.request_counts.completed = 0
+    second.status.request_counts.launched = 0
+    second.status.status_copies = {}
+    second.status.status_copies["worker-2"] = BatchJobStatusCopy(
+        state=BatchJobState.IN_PROGRESS,
+        requestCounts=RequestCountStats(total=10, launched=1, completed=2, failed=0),
+        updated=True,
+    )
+    await cache.update_job_status(second)
+
+    fetched = await fake_metastore.get("batch-workers")
+    assert fetched is not None
+    assert fetched.status.request_counts.total == 10
+    assert fetched.status.request_counts.launched == 2
+    assert fetched.status.request_counts.completed == 3
+    assert fetched.status.request_counts.failed == 0
+    assert set(fetched.status.status_copies) == {"worker-1", "worker-2"}
 
 
 @pytest.mark.asyncio

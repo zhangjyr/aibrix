@@ -1,9 +1,17 @@
+import asyncio
+import contextlib
 import time
 from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
-from aibrix.batch.job_entity import BatchJobState, BatchJobStatus
+from aibrix.batch.job_entity import (
+    BatchJobErrorCode,
+    BatchJobState,
+    BatchJobStatus,
+)
 from aibrix.batch.scheduler import BasicCongestionControl, JobScheduler
 from aibrix.context import InfrastructureContext
 
@@ -12,6 +20,8 @@ class FakeProgressManager:
     def __init__(self, job_id_status=None):
         self.job_id_status = job_id_status or {}
         self.validated_job_ids = []
+        self.jobs = {}
+        self.failed_error = None
 
     async def get_job_status(self, job_id):
         if job_id not in self.job_id_status:
@@ -26,6 +36,15 @@ class FakeProgressManager:
             raise ValueError(f"job_id {job_id} not found in job_id_status")
         self.job_id_status[job_id] = BatchJobState.IN_PROGRESS
         return True
+
+    async def get_job(self, job_id):
+        return self.jobs.get(job_id)
+
+    async def mark_job_failed(self, job_id, error):
+        self.failed_error = error
+        job = self.jobs[job_id]
+        job.status.state = BatchJobState.FINALIZED
+        return job
 
 
 def _make_scheduler(pool_size, progress_manager):
@@ -110,3 +129,40 @@ async def test_round_robin_get_job_fills_only_empty_slots():
         "running-job-b",
         "new-job-2",
     ]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_marks_runtime_error_as_failed(monkeypatch):
+    progress_manager = FakeProgressManager(
+        {"job-runtime-failure": BatchJobState.IN_PROGRESS}
+    )
+    job_driver = SimpleNamespace(
+        execute_job=AsyncMock(side_effect=RuntimeError("runtime boom"))
+    )
+    job = SimpleNamespace(
+        job_id="job-runtime-failure",
+        job_driver=job_driver,
+        status=SimpleNamespace(state=BatchJobState.IN_PROGRESS),
+    )
+    progress_manager.jobs[job.job_id] = job
+    scheduler = _make_scheduler(1, progress_manager)
+
+    async def _one_job():
+        return job.job_id
+
+    monkeypatch.setattr(scheduler, "round_robin_get_job", _one_job)
+
+    task = asyncio.create_task(scheduler.jobs_running_loop())
+    try:
+        for _ in range(20):
+            if progress_manager.failed_error is not None:
+                break
+            await asyncio.sleep(0)
+        assert progress_manager.failed_error is not None
+        job_driver.execute_job.assert_awaited_once_with(job.job_id)
+        assert progress_manager.failed_error.code == BatchJobErrorCode.INFERENCE_FAILED
+        assert progress_manager.failed_error.message == "runtime boom"
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task

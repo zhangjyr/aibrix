@@ -59,6 +59,7 @@ class BatchJobErrorCode(str, Enum):
     """Error codes for batch job."""
 
     INVALID_INPUT_FILE = "invalid_input_file"
+    EMPTY_INPUT_FILE = "empty_input_file"
     INVALID_ENDPOINT = "invalid_endpoint"
     INVALID_COMPLETION_WINDOW = "invalid_completion_window"
     INVALID_METADATA = "invalid_metadata"
@@ -67,6 +68,12 @@ class BatchJobErrorCode(str, Enum):
     INFERENCE_FAILED = "inference_failed"
     PREPARE_OUTPUT_ERROR = "prepare_output_failed"
     FINALIZING_ERROR = "finalizing_failed"
+    INTERNAL_ERROR = "internal_error"
+    METASTORE_ERROR = "metastore_error"
+    DRIVER_CONFIGURATION_ERROR = "driver_configuration_error"
+    CONNECTION_ERROR = "connection_error"
+    RESOURCE_CREATION_ERROR = "resource_creation_failed"
+    RESOURCE_DELETION_ERROR = "resource_deletion_failed"
     INVALID_DRIVER = "invalid_driver"
     UNKNOWN_ERROR = "unknown_error"
 
@@ -323,6 +330,28 @@ class BatchUsage(_Strict):
     )
 
 
+class BatchJobStatusCopy(_Strict):
+    state: BatchJobState = Field(description="The copied worker-local state")
+    errors: Optional[List["BatchJobError"]] = Field(default=None)
+    request_counts: RequestCountStats = Field(
+        default_factory=RequestCountStats,
+        alias="requestCounts",
+    )
+    usage: Optional[BatchUsage] = Field(default=None)
+    updated: bool = False  # Local flag to track if the status has been updated
+
+    @classmethod
+    def from_status(cls, status: "BatchJobStatus") -> "BatchJobStatusCopy":
+        return cls(
+            state=status.state,
+            errors=copy.deepcopy(status.errors),
+            requestCounts=status.request_counts.model_copy(deep=True),
+            usage=(
+                status.usage.model_copy(deep=True) if status.usage is not None else None
+            ),
+        )
+
+
 class BatchJobError(Exception):
     """Represents an error that occurred during batch job processing."""
 
@@ -420,6 +449,16 @@ class BatchJobError(Exception):
         return new_copy
 
 
+def ensure_batch_job_error(
+    e: Exception, default_code: BatchJobErrorCode, **kwargs
+) -> BatchJobError:
+    """Ensures that the exception is a BatchJobError."""
+    if isinstance(e, BatchJobError):
+        return e
+    else:
+        return BatchJobError(code=default_code, message=str(e), **kwargs)
+
+
 class BatchJobStatus(_Strict):
     """Defines the observed state of BatchJobSpec."""
 
@@ -467,6 +506,11 @@ class BatchJobStatus(_Strict):
             "Aggregated token usage. Populated by the worker as it processes "
             "requests; absent until the first progress flush."
         ),
+    )
+    status_copies: Optional[Dict[str, BatchJobStatusCopy]] = Field(
+        default=None,
+        alias="statusCopies",
+        description="Worker-local status snapshots keyed by execution id",
     )
 
     # Timestamps
@@ -584,6 +628,14 @@ class BatchJobStatus(_Strict):
             self.conditions = []
         self.conditions.append(condition)
 
+    def is_finalizing_required(self) -> bool:
+        return not self.finished and self.condition in [
+            ConditionType.COMPLETED,
+            ConditionType.EXPIRED,
+            ConditionType.FAILED,
+            ConditionType.CANCELLED,
+        ]
+
 
 class BatchJob(_Strict):
     """Schema for the BatchJob API - Kubernetes Custom Resource equivalent."""
@@ -598,13 +650,14 @@ class BatchJob(_Strict):
     spec: BatchJobSpec = Field(description="Desired state of the batch job")
     status: BatchJobStatus = Field(description="Observed state of the batch job")
 
-    def copy(self):
+    def copy(self, status: Optional[BatchJobStatus] = None):  # type: ignore[override]
+        """Get a new BatchJob with original fields and copied status"""
         return BatchJob(
             sessionID=self.session_id,
             typeMeta=self.type_meta,
             metadata=self.metadata,
             spec=self.spec,
-            status=copy.deepcopy(self.status),
+            status=status if status is not None else copy.deepcopy(self.status),
         )
 
     @classmethod
@@ -686,6 +739,84 @@ class BatchJob(_Strict):
         )
 
     @property
-    def job_id(self) -> Optional[str]:
+    def job_id(self) -> str:
         """Get the job ID."""
-        return self.status.job_id if self.status else None
+        return self.status.job_id
+
+
+def aggregate_batch_usage(
+    base_usage: Optional[BatchUsage], status_copies: Dict[str, BatchJobStatusCopy]
+) -> Optional[BatchUsage]:
+    aggregated_usage = BatchUsage()
+    has_usage = False
+    for status_copy in status_copies.values():
+        if status_copy.usage is None:
+            continue
+        has_usage = True
+        aggregated_usage.input_tokens += status_copy.usage.input_tokens
+        aggregated_usage.output_tokens += status_copy.usage.output_tokens
+        aggregated_usage.total_tokens += status_copy.usage.total_tokens
+        aggregated_usage.input_tokens_details.cached_tokens += (
+            status_copy.usage.input_tokens_details.cached_tokens
+        )
+        aggregated_usage.output_tokens_details.reasoning_tokens += (
+            status_copy.usage.output_tokens_details.reasoning_tokens
+        )
+    if has_usage:
+        return aggregated_usage
+    return base_usage.model_copy(deep=True) if base_usage is not None else None
+
+
+def aggregate_batch_job_status(
+    status: BatchJobStatus, copy: bool = True
+) -> BatchJobStatus:
+    aggregated = status
+    if copy:
+        aggregated = aggregated.model_copy(deep=True)
+    if not aggregated.status_copies:
+        return aggregated
+
+    total = aggregated.request_counts.total
+    if total == 0:
+        total = max(
+            (
+                status_copy.request_counts.total
+                for status_copy in aggregated.status_copies.values()
+            ),
+            default=0,
+        )
+    launched = sum(
+        status_copy.request_counts.launched
+        for status_copy in aggregated.status_copies.values()
+    )
+    completed = sum(
+        status_copy.request_counts.completed
+        for status_copy in aggregated.status_copies.values()
+    )
+    failed = sum(
+        status_copy.request_counts.failed
+        for status_copy in aggregated.status_copies.values()
+    )
+
+    aggregated.request_counts.total = total
+    aggregated.request_counts.launched = min(total, launched) if total > 0 else launched
+    aggregated.request_counts.completed = (
+        min(total, completed) if total > 0 else completed
+    )
+    remaining = (
+        max(total - aggregated.request_counts.completed, 0) if total > 0 else failed
+    )
+    aggregated.request_counts.failed = min(remaining, failed) if total > 0 else failed
+    aggregated.usage = aggregate_batch_usage(aggregated.usage, aggregated.status_copies)
+    return aggregated
+
+
+def merge_batch_job_status_copies(
+    existing_status: BatchJobStatus, new_status: BatchJobStatus
+) -> BatchJobStatus:
+    merged = new_status.model_copy(deep=True)
+    if existing_status.status_copies and merged.status_copies:
+        merged.status_copies.update(copy.deepcopy(existing_status.status_copies))
+    if new_status.status_copies and merged.status_copies:
+        merged.status_copies.update(copy.deepcopy(new_status.status_copies))
+    return aggregate_batch_job_status(merged)

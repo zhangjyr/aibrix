@@ -522,7 +522,33 @@ class TestMetastoreEnv:
         env_names = {e["name"] for e in _worker_container(m)["env"]}
         assert "REDIS_HOST" not in env_names
 
-    def test_worker_redis_host_overrides_metadata_redis_host(
+    def test_s3_storage_and_cluster_redis_env_are_rendered_together(
+        self, renderer_factory, monkeypatch
+    ):
+        from aibrix.batch.storage import batch_metastore
+        from aibrix.storage import StorageType
+
+        monkeypatch.setattr(
+            batch_metastore, "get_metastore_type", lambda: StorageType.REDIS
+        )
+        monkeypatch.setattr(envs, "STORAGE_REDIS_HOST", "localhost")
+        monkeypatch.setattr(envs, "STORAGE_REDIS_DB", 7)
+        monkeypatch.setenv("WORKER_REDIS_HOST", "redis.svc.cluster.local")
+
+        r = renderer_factory(
+            templates=[_vllm_template(count=1)],
+            profiles=[_profile(backend="s3", bucket="batch-bucket")],
+        )
+        m = r.render(session_id="s1", spec=_spec())
+        env = {e["name"]: e for e in _worker_container(m)["env"]}
+
+        assert env["STORAGE_TYPE"]["value"] == "s3"
+        assert "STORAGE_AWS_BUCKET" in env
+        assert "STORAGE_LOCAL_PATH" not in env
+        assert env["REDIS_HOST"]["value"] == "redis.svc.cluster.local"
+        assert env["REDIS_DB"]["value"] == "7"
+
+    def test_legacy_worker_redis_host_envs_are_ignored(
         self, renderer_factory, monkeypatch
     ):
         """Metadata may use ``REDIS_HOST=localhost`` (port-forwarded

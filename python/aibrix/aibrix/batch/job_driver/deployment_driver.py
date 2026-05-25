@@ -25,7 +25,10 @@ import httpx
 from kubernetes import client as k8s_client
 from kubernetes.client import ApiException
 
-from aibrix.batch.job_entity import BatchJob, BatchJobState, JobEntityManager
+from aibrix.batch.job_entity import (
+    BatchJob,
+    JobEntityManager,
+)
 from aibrix.batch.manifest import DeploymentManifestRenderer
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
@@ -424,8 +427,7 @@ class DeploymentJobDriver(LocalJobDriver):
                     "DeploymentJobDriver execution interrupted by job deletion.",
                     job_id=job_id,
                 )  # type: ignore[call-arg]
-                return
-            raise
+            # pass down for after execute process
         except Exception as ex:
             logger.error(
                 "Execute deployment-backed job failed.",
@@ -433,17 +435,17 @@ class DeploymentJobDriver(LocalJobDriver):
                 exception=str(ex),
                 exc_info=True,
             )  # type: ignore[call-arg]
-            job = await self._progress_manager.mark_job_failed(job_id, str(ex))
-            await self._snapshot_usage_to_status(job_id)
-            self._drop_usage_state(job_id)
+            job = await self._progress_manager.mark_job_failed(
+                job_id,
+                self._ensure_batch_job_error(ex),
+            )
 
-        if (
-            job.status.state == BatchJobState.FINALIZING
-            and not self._delete_requested.is_set()
-        ):
+        if job.status.is_finalizing_required() and not self._delete_requested.is_set():
             job = await self.finalize_job(job)
+            logger.info("Execute deployment-backed job successfully.", job_id=job_id)  # type: ignore[call-arg]
+            return job
 
-        logger.info("Execute deployment-backed job successfully.", job_id=job_id)  # type: ignore[call-arg]
-        await self._snapshot_usage_to_status(job_id)
-        self._drop_usage_state(job_id)
+        # Memory hygiene: persist worker status and drop the per-job accumulator.
+        await self._persist_worker_status(job)
+        self._drop_usage_state(job.job_id)
         return job

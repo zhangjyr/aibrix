@@ -153,7 +153,7 @@ class JobCache(JobEntityManager):
 
         ``op`` tags the originating operation for log correlation.
         """
-        batch_id = job.status.job_id
+        batch_id = job.job_id
         try:
             await put_batch_job(batch_id, job)
         except Exception as e:
@@ -174,7 +174,7 @@ class JobCache(JobEntityManager):
         K8s deletion is the authoritative signal, the metastore entry
         is a leaked artifact at worst. Errors are logged and swallowed.
         """
-        batch_id = job.status.job_id
+        batch_id = job.job_id
         try:
             await delete_batch_job(batch_id)
         except Exception as e:  # pragma: no cover - defensive

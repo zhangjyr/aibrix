@@ -13,8 +13,11 @@
 # limitations under the License.
 
 import argparse
+import copy
+import json
 import os
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
@@ -24,8 +27,10 @@ import boto3
 import kopf
 import pytest
 import yaml
+from fastapi.testclient import TestClient
 from kubernetes import client, config
 
+from aibrix.batch.job_driver import EchoInferenceEngineClient
 from aibrix.logger import init_logger
 from aibrix.metadata.app import build_app
 from aibrix.metadata.cache.job import JobCache
@@ -413,10 +418,12 @@ def create_test_app(
     enable_k8s_job: bool = False,
     enable_redis_job: bool = False,
     enable_mongo_job: bool = False,
+    enable_metastore_job: bool = False,
     storage_type: StorageType = StorageType.LOCAL,
     metastore_type: StorageType = StorageType.LOCAL,
     params: Optional[Dict[str, Any]] = None,
     dry_run: Optional[bool] = None,
+    inference_client: Optional[Any] = None,
 ):
     """Create a FastAPI app configured for e2e testing.
 
@@ -447,6 +454,7 @@ def create_test_app(
             enable_k8s_job=enable_k8s_job,
             enable_mongo_job=enable_mongo_job,
             enable_redis_job=enable_redis_job,
+            enable_metastore_job=enable_metastore_job,
             k8s_namespace="default",
             k8s_job_patch=None,  # accepted by parser but always None in tests
             registry_provider="configmap",
@@ -456,9 +464,207 @@ def create_test_app(
         ),
         params,
     )
+    if inference_client is not None and hasattr(app.state, "batch_driver"):
+        app.state.batch_driver._inference_client = inference_client
     # RESTORE settings
     settings.STORAGE_TYPE, settings.METASTORE_TYPE = oldStorage, oldMetaStore
     return app
+
+
+class MockMetadataStore:
+    client = None
+
+    async def ping(self) -> bool:
+        return True
+
+    async def close(self) -> None:
+        return None
+
+
+ENDPOINT_SAMPLE_BODIES = {
+    "/v1/chat/completions": {
+        "model": "gpt-3.5-turbo-0125",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello world!"},
+        ],
+        "max_tokens": 1000,
+    },
+    "/v1/completions": {
+        "model": "gpt-3.5-turbo-0125",
+        "prompt": "Once upon a time",
+        "max_tokens": 100,
+    },
+    "/v1/embeddings": {
+        "model": "text-embedding-ada-002",
+        "input": "The food was delicious and the waiter was friendly.",
+    },
+    "/v1/rerank": {
+        "model": "reranker-v1",
+        "query": "What is deep learning?",
+        "documents": [
+            "Deep learning is a subset of machine learning.",
+            "The weather is nice today.",
+            "Neural networks are inspired by the brain.",
+        ],
+    },
+}
+
+
+def select_e2e_backends(
+    metafunc, keyword_backends: list[str], default_backend: str = "local_metastore_job"
+):
+    if "test_backend" not in metafunc.fixturenames:
+        return
+
+    keyword = metafunc.config.option.keyword or ""
+    selected_backend = default_backend
+    for backend in keyword_backends:
+        if backend in keyword:
+            selected_backend = backend
+            break
+
+    metafunc.parametrize(
+        "test_backend",
+        [pytest.param(selected_backend, id=selected_backend)],
+    )
+
+
+def generate_batch_input_data(
+    num_requests: int = 3, endpoint: str = "/v1/chat/completions"
+) -> str:
+    sample_body = ENDPOINT_SAMPLE_BODIES.get(endpoint)
+    if sample_body is None:
+        raise ValueError(
+            f"No sample body defined for endpoint '{endpoint}'. "
+            f"Supported: {list(ENDPOINT_SAMPLE_BODIES.keys())}"
+        )
+
+    lines = []
+    for i in range(num_requests):
+        request = {
+            "custom_id": f"request-{i + 1}",
+            "method": "POST",
+            "url": endpoint,
+            "body": copy.deepcopy(sample_body),
+        }
+        lines.append(json.dumps(request))
+
+    return "\n".join(lines)
+
+
+def build_batch_request(
+    input_file_id: str,
+    endpoint: str = "/v1/chat/completions",
+    *,
+    completion_window: str = "24h",
+    aibrix_template: str | None = None,
+    aibrix_profile: str | None = None,
+    provider: str | None = None,
+) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "input_file_id": input_file_id,
+        "endpoint": endpoint,
+        "completion_window": completion_window,
+    }
+    aibrix: dict[str, Any] = {}
+    if aibrix_template:
+        aibrix["model_template"] = {"name": aibrix_template}
+    if aibrix_profile:
+        aibrix["profile"] = {"name": aibrix_profile}
+    if provider:
+        aibrix["planner_decision"] = {
+            "provision_id": "reservation-1",
+            "provision_resource_deadline": 3600,
+            "resource_details": [
+                {
+                    "provider": provider,
+                    "endpoint_cluster": "cluster-a",
+                    "resources": [
+                        {
+                            "accelerator_type": "H100",
+                            "replica": 1,
+                            "name": "default",
+                        }
+                    ],
+                }
+            ],
+        }
+    if aibrix:
+        request["aibrix"] = aibrix
+    return request
+
+
+def e2e_batch_request_kwargs(test_backend: str) -> dict[str, str]:
+    if test_backend == "k8s_job":
+        return {
+            "aibrix_template": "mock-vllm",
+            "aibrix_profile": "unittest",
+            "provider": "kubernetes",
+        }
+    if test_backend == "redis_job_using_deployment":
+        return {
+            "aibrix_template": "mock-vllm",
+            "aibrix_profile": "unittest",
+            "provider": "deployment",
+        }
+    return {}
+
+
+def create_test_client(app) -> TestClient:
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def upload_batch_input_file(
+    client: TestClient,
+    num_requests: int,
+    endpoint: str = "/v1/chat/completions",
+    filename: str = "test_input.jsonl",
+) -> str:
+    upload_response = client.post(
+        "/v1/files",
+        files={
+            "file": (
+                filename,
+                generate_batch_input_data(num_requests, endpoint=endpoint),
+                "application/jsonl",
+            )
+        },
+        data={"purpose": "batch"},
+    )
+    assert upload_response.status_code == 200, upload_response.text
+    return upload_response.json()["id"]
+
+
+def create_batch_job(
+    client: TestClient,
+    input_file_id: str,
+    endpoint: str = "/v1/chat/completions",
+    *,
+    test_backend: str | None = None,
+    completion_window: str = "24h",
+    aibrix_template: str | None = None,
+    aibrix_profile: str | None = None,
+    provider: str | None = None,
+) -> str:
+    if test_backend is not None:
+        backend_kwargs = e2e_batch_request_kwargs(test_backend)
+        aibrix_template = aibrix_template or backend_kwargs.get("aibrix_template")
+        aibrix_profile = aibrix_profile or backend_kwargs.get("aibrix_profile")
+        provider = provider or backend_kwargs.get("provider")
+    batch_response = client.post(
+        "/v1/batches",
+        json=build_batch_request(
+            input_file_id,
+            endpoint,
+            completion_window=completion_window,
+            aibrix_template=aibrix_template,
+            aibrix_profile=aibrix_profile,
+            provider=provider,
+        ),
+    )
+    assert batch_response.status_code == 200, batch_response.text
+    return batch_response.json()["id"]
 
 
 @pytest.fixture(scope="session")
@@ -536,22 +742,61 @@ def template_configmaps(
 
 
 @pytest.fixture(scope="function")
-def test_app(
-    k8s_config,
-    test_s3_bucket,
-    s3_credentials_secret,
-    redis_config_available,
-    ensure_job_rbac,
-    template_configmaps,
-    monkeypatch,
-):
-    monkeypatch.setenv(
-        "WORKER_REDIS_HOST", "aibrix-redis-master.aibrix-system.svc.cluster.local"
+def e2e_test_app(request, test_backend, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    if test_backend == "local_metastore_job":
+        app = create_test_app(
+            enable_metastore_job=True,
+            storage_type=StorageType.LOCAL,
+            metastore_type=StorageType.LOCAL,
+            dry_run=False,
+            inference_client=EchoInferenceEngineClient(),
+        )
+        app.state.metadata_store = MockMetadataStore()
+        app.state.redis_client = None
+        return app
+
+    if test_backend == "redis_job":
+        request.getfixturevalue("redis_config_available")
+        monkeypatch.setattr(
+            "aibrix.metadata.app.envs.DB_REDIS_PREFIX",
+            f"batch-e2e-redis-{uuid.uuid4().hex}:",
+        )
+        return create_test_app(
+            enable_redis_job=True,
+            storage_type=StorageType.LOCAL,
+            metastore_type=StorageType.REDIS,
+            dry_run=False,
+            inference_client=EchoInferenceEngineClient(),
+        )
+
+    test_s3_bucket = request.getfixturevalue("test_s3_bucket")
+    request.getfixturevalue("k8s_config")
+    request.getfixturevalue("redis_config_available")
+    request.getfixturevalue("ensure_job_rbac")
+    request.getfixturevalue("template_configmaps")
+
+    if test_backend == "k8s_job":
+        return create_test_app(
+            enable_k8s_job=True,
+            storage_type=StorageType.S3,
+            metastore_type=StorageType.REDIS,
+            params={"bucket_name": test_s3_bucket},
+        )
+
+    monkeypatch.setattr(
+        "aibrix.metadata.app.envs.DB_REDIS_PREFIX",
+        f"batch-e2e-deployment-{uuid.uuid4().hex}:",
     )
-    monkeypatch.setenv("WORKER_REDIS_PORT", os.environ.get("REDIS_PORT", "6379"))
+    monkeypatch.setattr(
+        "aibrix.batch.job_driver.deployment_driver._deployment_job_driver",
+        None,
+    )
     return create_test_app(
-        enable_k8s_job=True,
+        enable_redis_job=True,
         storage_type=StorageType.S3,
         metastore_type=StorageType.REDIS,
         params={"bucket_name": test_s3_bucket},
+        dry_run=False,
     )

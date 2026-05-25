@@ -15,8 +15,8 @@
 import asyncio
 from typing import Any, Coroutine, Dict, List, Optional
 
+import aibrix.batch.constant as constant
 import aibrix.batch.storage as _storage
-from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE
 from aibrix.batch.job_driver import InferenceEngineClient, ProxyInferenceEngineClient
 from aibrix.batch.job_entity import JobEntityManager
 from aibrix.batch.job_manager import JobManager
@@ -82,7 +82,7 @@ class BatchDriver:
                 self._context,
                 self._job_manager,
                 self._job_entity_manager,
-                DEFAULT_JOB_POOL_SIZE,
+                constant.DEFAULT_JOB_POOL_SIZE,
             )
             self._job_manager.set_scheduler(self._scheduler)
 

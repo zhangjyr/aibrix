@@ -14,7 +14,7 @@
 
 
 # The following are all constants.
-import os
+from aibrix import envs
 
 # This is the time interval for the sliding window to check.
 EXPIRE_INTERVAL: float = 1
@@ -22,7 +22,7 @@ EXPIRE_INTERVAL: float = 1
 # This is the job pool size in job scheduler.
 # It should be proportional to resource size in the backend.
 # Can be configured via AIBRIX_BATCH_JOB_POOL_SIZE environment variable.
-DEFAULT_JOB_POOL_SIZE = int(os.environ.get("AIBRIX_BATCH_JOB_POOL_SIZE", "1"))
+DEFAULT_JOB_POOL_SIZE = envs.BATCH_JOB_POOL_SIZE
 
 # Validate job pool size
 if not (1 <= DEFAULT_JOB_POOL_SIZE <= 100):

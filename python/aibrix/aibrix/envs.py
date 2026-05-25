@@ -110,10 +110,7 @@ STORAGE_REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 # Database Redis Envs, other settings simply reuse Storage Redis Envs
 DB_REDIS_PREFIX = os.getenv("DB_REDIS_PREFIX", "")
 
-# Database Mongo Envs
-DB_MONGO_URI = os.getenv("DB_MONGO_URI")
-DB_MONGO_DATABASE = os.getenv("DB_MONGO_DATABASE")
-DB_MONGO_COLLECTION = os.getenv("DB_MONGO_COLLECTION")
+BATCH_JOB_POOL_SIZE = int(os.getenv("AIBRIX_BATCH_JOB_POOL_SIZE", "1"))
 
 # Metric Standardizing Related Config
 # Scrape config

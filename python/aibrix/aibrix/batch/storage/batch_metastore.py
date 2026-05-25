@@ -12,10 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from typing import Optional, Tuple
 
 from aibrix import envs
-from aibrix.batch.job_entity.batch_job import BatchJob
+from aibrix.batch.job_entity.batch_job import (
+    BatchJob,
+    BatchJobState,
+    BatchJobStatusCopy,
+    aggregate_batch_job_status,
+)
 from aibrix.logger import init_logger
 from aibrix.storage import BaseStorage, StorageType, create_storage
 from aibrix.storage.base import PutObjectOptionsBuilder
@@ -200,7 +206,18 @@ async def put_batch_job(batch_id: str, job: BatchJob) -> None:
     Last-writer-wins. When the metastore is Redis-backed this is a
     single SET; on file-backed metastores it is a small object write.
     """
-    payload = job.model_dump_json(by_alias=True, exclude_none=True)
+    job_to_store = job.copy()
+    status_copies = job_to_store.status.status_copies or {}
+    job_to_store.status.status_copies = None
+    # Store updated status copies
+    for worker_id, status_copy in status_copies.items():
+        if not status_copy.updated:
+            continue
+
+        status_json = status_copy.model_dump_json(by_alias=True, exclude_none=True)
+        await set_metadata(f"batchstatus_copies:{batch_id}:{worker_id}", status_json)
+    # Store the main status document
+    payload = job_to_store.model_dump_json(by_alias=True, exclude_none=True)
     await set_metadata(f"batchjob:{batch_id}", payload)
 
 
@@ -209,19 +226,61 @@ async def get_batch_job(batch_id: str) -> Optional[BatchJob]:
     raw, exists = await get_metadata(f"batchjob:{batch_id}")
     if not exists:
         return None
-    return BatchJob.model_validate_json(raw)
+    job = BatchJob.model_validate_json(raw)
+    if job.status.state in (
+        BatchJobState.CREATED,
+        BatchJobState.VALIDATING,
+        BatchJobState.FINALIZED,
+    ):
+        return job
+
+    # Load updated status copies
+    status_copies = {}
+    prefix = f"batchstatus_copies:{batch_id}:"
+    for key in await list_metastore_keys(prefix):
+        storage_key = key if key.startswith(prefix) else f"{prefix}{key}"
+        worker_id = storage_key[len(prefix) :]
+        status_json, exists = await get_metadata(storage_key)
+        if exists:
+            status_copies[worker_id] = BatchJobStatusCopy.model_validate_json(
+                status_json
+            )
+    if len(status_copies) == 0:
+        return job
+
+    job.status.status_copies = status_copies
+    job.status = aggregate_batch_job_status(job.status, False)
+    return job
 
 
 async def delete_batch_job(batch_id: str) -> None:
     """Remove the BatchJob document. Silent no-op if absent."""
     try:
+        prefix = f"batchstatus_copies:{batch_id}:"
+        for key in await list_metastore_keys(prefix):
+            try:
+                storage_key = key if key.startswith(prefix) else f"{prefix}{key}"
+                await delete_metadata(storage_key)
+            except FileNotFoundError:
+                continue
+
         await delete_metadata(f"batchjob:{batch_id}")
     except FileNotFoundError:
         return
 
 
+async def list_batch_jobs() -> list[BatchJob]:
+    """List all persisted BatchJob documents."""
+    job_ids = [
+        key.removeprefix("batchjob:") for key in await list_metastore_keys("batchjob:")
+    ]
+    jobs = await asyncio.gather(*(get_batch_job(job_id) for job_id in job_ids))
+    return [job for job in jobs if job is not None]
+
+
 async def list_metastore_keys(prefix: str) -> list[str]:
     """List all keys from metastore matching the given prefix.
+
 
     Args:
         prefix: Key prefix to filter

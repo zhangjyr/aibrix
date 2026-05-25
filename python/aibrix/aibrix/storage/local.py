@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import os
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
@@ -153,13 +154,9 @@ class LocalStorage(BaseStorage):
     def _write_file(self, path: Path, reader: Reader) -> None:
         """Write data to file (synchronous helper)."""
         if reader.is_binary():
-            # Write as bytes
-            with open(path, "wb") as f:
-                f.write(bytes(reader))
+            self._atomic_write_bytes(path, bytes(reader))
         else:
-            # Write as text string
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(str(reader))
+            self._atomic_write_text(path, str(reader))
 
     async def _store_metadata(
         self,
@@ -463,8 +460,7 @@ class LocalStorage(BaseStorage):
         """Write JSON data to file (synchronous helper)."""
         import json
 
-        with open(path, "w") as f:
-            json.dump(data, f)
+        self._atomic_write_text(path, json.dumps(data))
 
     def _read_json_file(self, path: Path) -> dict:
         """Read JSON data from file (synchronous helper)."""
@@ -475,8 +471,38 @@ class LocalStorage(BaseStorage):
 
     def _write_bytes_file(self, path: Path, data: bytes) -> None:
         """Write bytes to file (synchronous helper)."""
-        with open(path, "wb") as f:
-            f.write(data)
+        self._atomic_write_bytes(path, data)
+
+    def _atomic_write_text(self, path: Path, data: str) -> None:
+        temp_path = self._get_temp_path(path)
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                f.write(data)
+            os.replace(temp_path, path)
+        except Exception:
+            if temp_path.exists():
+                temp_path.unlink()
+            raise
+
+    def _atomic_write_bytes(self, path: Path, data: bytes) -> None:
+        temp_path = self._get_temp_path(path)
+        try:
+            with open(temp_path, "wb") as f:
+                f.write(data)
+            os.replace(temp_path, path)
+        except Exception:
+            if temp_path.exists():
+                temp_path.unlink()
+            raise
+
+    def _get_temp_path(self, path: Path) -> Path:
+        fd, temp_name = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        os.close(fd)
+        return Path(temp_name)
 
     def _combine_parts(self, upload_dir: Path, parts: list, final_path: Path) -> None:
         """Combine multipart upload parts into final file (synchronous helper)."""

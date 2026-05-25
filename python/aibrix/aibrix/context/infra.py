@@ -10,6 +10,7 @@ class InfrastructureContext:
     profile_registry: Optional[ProfileRegistry] = None
     apps_v1_api: Any = None
     core_v1_api: Any = None
+    httpx_client_wrapper: Any = None
     values: Dict[str, Any] = field(default_factory=dict)
 
     def get(self, name: str, default: Any = None) -> Any:

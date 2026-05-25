@@ -28,6 +28,7 @@ from .batch_job import (
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
+    BatchJobStatusCopy,
     BatchUsage,
     CompletionWindow,
     Condition,
@@ -38,6 +39,9 @@ from .batch_job import (
     OutputTokensDetails,
     RequestCountStats,
     TypeMeta,
+    aggregate_batch_job_status,
+    ensure_batch_job_error,
+    merge_batch_job_status_copies,
 )
 from .job_entity_manager import JobEntityManager
 from .k8s_transformer import BatchJobTransformer, JobAnnotationKey, k8s_job_to_batch_job
@@ -55,7 +59,9 @@ __all__ = [
     "BatchJobState",
     "BatchJobErrorCode",
     "BatchJobError",
+    "ensure_batch_job_error",
     "BatchJobStatus",
+    "BatchJobStatusCopy",
     "BatchUsage",
     "CompletionWindow",
     "Condition",
@@ -67,6 +73,8 @@ __all__ = [
     "OutputTokensDetails",
     "RequestCountStats",
     "TypeMeta",
+    "aggregate_batch_job_status",
+    "merge_batch_job_status_copies",
     "BatchJobTransformer",
     "JobAnnotationKey",
     "k8s_job_to_batch_job",

@@ -66,6 +66,28 @@ class JobProgressManager(Protocol):
         """
         ...
 
+    async def mark_job_validated(self, job_id: str, status: BatchJobStatus) -> BatchJob:
+        """Persist validated job status changes for a job before execution.
+
+        Args:
+            job_id: Job identifier
+            status: BatchJob with status updated
+
+        Return:
+            Updated BatchJob
+        """
+        ...
+
+    async def update_job_local_status(
+        self, job_id: str, worker_id: str, status: BatchJobStatus
+    ) -> BatchJob:
+        """Persist a worker-local status snapshot for aggregation. This operation is thread-safe."""
+        ...
+
+    async def mark_job_finalizing(self, job_id: str) -> BatchJob:
+        """Transition a running job into finalizing."""
+        ...
+
     async def mark_job_done(self, job_id: str) -> BatchJob:
         """Mark job as completed.
 
@@ -90,6 +112,10 @@ class JobProgressManager(Protocol):
         Raises:
             JobUnexpectedStateError: If job is not in progress.
         """
+        ...
+
+    async def mark_job_expired(self, job_id: str) -> BatchJob:
+        """Mark job as expired."""
         ...
 
     async def mark_jobs_progresses(

@@ -77,7 +77,6 @@ def create_test_app(disable_batch_api: bool = False, disable_file_api: bool = Fa
                 disable_batch_api=disable_batch_api,
                 disable_file_api=disable_file_api,
                 enable_k8s_job=False,
-                enable_mongo_job=False,
                 k8s_job_patch=None,
                 dry_run=True,
             )

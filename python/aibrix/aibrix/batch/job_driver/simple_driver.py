@@ -19,6 +19,7 @@ from aibrix.batch.job_entity import (
     BatchJobError,
     BatchJobErrorCode,
     BatchJobState,
+    ConditionType,
     JobEntityManager,
 )
 from aibrix.logger import init_logger
@@ -90,9 +91,15 @@ class simpleJobDriver(LocalJobDriver):
 
     async def job_updated_handler(self, old_job: BatchJob, new_job: BatchJob) -> bool:
         # Mark post-state-transition flags
+        terminal_conditions = {
+            ConditionType.COMPLETED,
+            ConditionType.FAILED,
+            ConditionType.CANCELLED,
+            ConditionType.EXPIRED,
+        }
         finalizing_needed = (
-            new_job.status.state == BatchJobState.FINALIZING
-            and old_job.status.state != BatchJobState.FINALIZING
+            new_job.status.condition in terminal_conditions
+            and old_job.status.condition is None
         )
         job_id = old_job.job_id
 

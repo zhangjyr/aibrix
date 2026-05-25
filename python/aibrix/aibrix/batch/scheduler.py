@@ -25,11 +25,11 @@ from aibrix.batch.job_driver import (
     InferenceEngineClient,
     JobProgressManager,
 )
-from aibrix.batch.job_entity import JobEntityManager
+from aibrix.batch.job_entity import JobEntityManager, ensure_batch_job_error
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
 
-from .job_entity import BatchJobError, BatchJobErrorCode
+from .job_entity import BatchJobErrorCode
 
 # JobManager will be passed as parameter to avoid circular import
 
@@ -141,7 +141,7 @@ class JobScheduler:
         job_progress_manager: JobProgressManager,
         job_entity_manager: Optional[JobEntityManager],
         pool_size: int,
-        cc_controller=BasicCongestionControl(constant.DEFAULT_JOB_POOL_SIZE),
+        cc_controller=None,
         policy=SchedulePolicy.FIFO,
     ) -> None:
         """
@@ -159,7 +159,7 @@ class JobScheduler:
         self._due_jobs_list: list[tuple[str, float]] = []
         self._queued_running_jobs: set[str] = set()
 
-        self._CC_controller = cc_controller
+        self._CC_controller = cc_controller or BasicCongestionControl(pool_size)
         self._current_pool_size = self._CC_controller._job_pool_size
         # Start the loop process in an async way
         self._policy = policy
@@ -233,6 +233,7 @@ class JobScheduler:
                 # Update job's status to job manager
                 job_id = self._due_jobs_list[i][0]
                 self._inactive_jobs.add(job_id)
+                await self._job_progress_manager.mark_job_expired(job_id)
                 logger.info("Job expired", job_id=job_id)
             self._due_jobs_list = self._due_jobs_list[idx:]
         else:
@@ -277,19 +278,10 @@ class JobScheduler:
                     if job_driver is None:
                         raise Exception(f"scheduled job '{one_job}' has no job driver")
                     await job_driver.execute_job(one_job)
-                except RuntimeError as re:
-                    logger.error(
-                        "Runtime err",
-                        job_id=one_job,
-                        error=str(re),
-                    )  # type: ignore[call-arg]
-                    raise
                 except Exception as e:
                     job = await self._job_progress_manager.mark_job_failed(
                         one_job,
-                        BatchJobError(
-                            code=BatchJobErrorCode.INFERENCE_FAILED, message=str(e)
-                        ),
+                        ensure_batch_job_error(e, BatchJobErrorCode.INFERENCE_FAILED),
                     )
                     logger.error(
                         "Failed to execute job",
@@ -297,7 +289,6 @@ class JobScheduler:
                         status=job.status.state.value,
                         error=str(e),
                     )  # type: ignore[call-arg]
-                    raise
             # yield loop
             await asyncio.sleep(0)
 

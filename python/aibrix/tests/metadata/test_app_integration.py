@@ -36,8 +36,8 @@ def _args(**overrides):
         "disable_file_api": True,
         "disable_inference_endpoint": True,
         "enable_k8s_job": False,
-        "enable_mongo_job": False,
         "enable_redis_job": False,
+        "enable_metastore_job": False,
         "registry_provider": None,
         "dry_run": False,
         "k8s_namespace": "default",
@@ -92,7 +92,7 @@ def test_build_app_with_k8s_job():
     # and calls reload() on each, which would hit the K8s API. Stub
     # them out here since this test only exercises wiring.
     with (
-        patch("aibrix.metadata.app.JobCache"),
+        patch("aibrix.metadata.cache.job.JobCache"),
         patch("aibrix.metadata.app.k8s_client.CoreV1Api"),
         patch("aibrix.metadata.app.k8s_client.AppsV1Api"),
         patch("aibrix.metadata.app.k8s_template_registry"),
@@ -168,7 +168,7 @@ def test_load_batch_k8s_context_registry_loading_overrides_k8s_disabled():
             "aibrix.metadata.app.k8s_profile_registry",
             return_value=profile_registry,
         ) as profile_registry_factory,
-        patch("aibrix.metadata.app.JobCache"),
+        patch("aibrix.metadata.cache.job.JobCache"),
     ):
         app = build_app(args)
 
@@ -199,7 +199,7 @@ def test_build_app_with_redis_job(monkeypatch):
     monkeypatch.setattr("aibrix.metadata.app.envs.STORAGE_REDIS_PASSWORD", "secret")
     monkeypatch.setattr("aibrix.metadata.app.envs.DB_REDIS_PREFIX", "batch_jobs_test:")
 
-    with patch("aibrix.metadata.app.RedisJobCache") as redis_job_cache:
+    with patch("aibrix.metadata.cache.redis.RedisJobCache") as redis_job_cache:
         app = build_app(args)
 
     assert hasattr(app.state, "batch_driver")
@@ -208,30 +208,32 @@ def test_build_app_with_redis_job(monkeypatch):
         port=6380,
         db=2,
         password="secret",
-        key_prefix="batch_jobs_test:batch_jobs",
+        key_prefix="batch_jobs_test:",
     )
 
 
-def test_build_app_with_mongo_job(monkeypatch):
+def test_build_app_with_metastore_job():
     args = _args(
         disable_batch_api=False,
-        enable_mongo_job=True,
+        disable_file_api=True,
+        enable_k8s_job=False,
+        disable_inference_endpoint=True,
+        enable_metastore_job=True,
         dry_run=True,
     )
-    monkeypatch.setattr(
-        "aibrix.metadata.app.envs.DB_MONGO_URI", "mongodb://mongo:27017"
-    )
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_DATABASE", "aibrix")
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_COLLECTION", "batch_jobs")
 
-    with patch("aibrix.metadata.app.MongoJobCache") as mongo_job_cache:
+    with patch(
+        "aibrix.metadata.cache.metastore.MetastoreJobCache"
+    ) as metastore_job_cache:
         app = build_app(args)
 
     assert hasattr(app.state, "batch_driver")
-    mongo_job_cache.assert_called_once_with(
-        uri="mongodb://mongo:27017",
-        database="aibrix",
-        collection="batch_jobs",
+    metastore_job_cache.assert_called_once_with(
+        storage_type=StorageType.LOCAL,
+        params={},
+    )
+    assert (
+        app.state.batch_driver._job_entity_manager is metastore_job_cache.return_value
     )
 
 
@@ -249,22 +251,6 @@ def test_build_app_with_redis_job_missing_env(monkeypatch):
 
     with pytest.raises(
         RuntimeError, match="REDIS_HOST environment variable is required"
-    ):
-        build_app(args)
-
-
-def test_build_app_with_mongo_job_missing_env(monkeypatch):
-    args = _args(
-        disable_batch_api=False,
-        enable_mongo_job=True,
-        dry_run=True,
-    )
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_URI", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_DATABASE", None)
-    monkeypatch.setattr("aibrix.metadata.app.envs.DB_MONGO_COLLECTION", None)
-
-    with pytest.raises(
-        RuntimeError, match="DB_MONGO_URI environment variable is required"
     ):
         build_app(args)
 
@@ -305,7 +291,7 @@ def test_status_endpoint_with_k8s():
     )
 
     with (
-        patch("aibrix.metadata.app.JobCache"),
+        patch("aibrix.metadata.cache.job.JobCache"),
         patch("aibrix.metadata.app.k8s_client.CoreV1Api"),
         patch("aibrix.metadata.app.k8s_client.AppsV1Api"),
         patch("aibrix.metadata.app.k8s_template_registry"),

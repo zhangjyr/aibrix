@@ -41,6 +41,42 @@ async def test_execute_batch_job_raises_when_final_state_failed():
 
 
 @pytest.mark.asyncio
+async def test_run_returns_success_and_stops_after_one_job(monkeypatch):
+    worker = BatchWorker()
+    batch_job = SimpleNamespace(
+        status=SimpleNamespace(state=BatchJobState.IN_PROGRESS),
+        spec=SimpleNamespace(
+            input_file_id="input-1",
+            endpoint="/v1/chat/completions",
+        ),
+    )
+
+    monkeypatch.setattr(worker, "load_job_from_env", lambda: batch_job)
+    monkeypatch.setattr(
+        worker, "wait_for_in_progress", AsyncMock(return_value=batch_job)
+    )
+    worker.health_checker = SimpleNamespace(wait_for_ready=AsyncMock(return_value=True))
+    execute_batch_job = AsyncMock(return_value="job-1")
+    monkeypatch.setattr(worker, "execute_batch_job", execute_batch_job)
+
+    fake_driver = SimpleNamespace(
+        start=AsyncMock(),
+        stop=AsyncMock(),
+    )
+
+    from aibrix.batch import worker as worker_module
+
+    monkeypatch.setattr(worker_module, "BatchDriver", lambda **kwargs: fake_driver)
+
+    result = await worker.run()
+
+    assert result == 0
+    execute_batch_job.assert_awaited_once_with(batch_job)
+    fake_driver.start.assert_awaited_once()
+    assert fake_driver.stop.await_count >= 1
+
+
+@pytest.mark.asyncio
 async def test_run_returns_failure_when_execute_batch_job_fails(monkeypatch):
     worker = BatchWorker()
     batch_job = SimpleNamespace(
@@ -59,7 +95,9 @@ async def test_run_returns_failure_when_execute_batch_job_fails(monkeypatch):
     monkeypatch.setattr(
         worker,
         "execute_batch_job",
-        AsyncMock(side_effect=RuntimeError("Batch job failed in worker: failed")),
+        execute_batch_job := AsyncMock(
+            side_effect=RuntimeError("Batch job failed in worker: failed")
+        ),
     )
 
     fake_driver = SimpleNamespace(
@@ -74,6 +112,7 @@ async def test_run_returns_failure_when_execute_batch_job_fails(monkeypatch):
     result = await worker.run()
 
     assert result == 1
+    execute_batch_job.assert_awaited_once_with(batch_job)
     fake_driver.start.assert_awaited_once()
     assert fake_driver.stop.await_count >= 1
 

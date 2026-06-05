@@ -19,6 +19,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 
 import pytest
 
+import aibrix.client.redis as redis_client
 from aibrix.storage import RedisStorage, StorageType, create_storage
 
 
@@ -75,10 +76,7 @@ def get_redis_storage(**kwargs):
 async def test_redis_storage_creation():
     """Test Redis storage can be created."""
     storage = RedisStorage()
-    assert storage.host == "localhost"
-    assert storage.port == 6379
-    assert storage.db == 0
-    assert storage.password is None
+    assert storage._kwargs == {}
     await storage.close()
 
 
@@ -86,10 +84,12 @@ async def test_redis_storage_creation():
 async def test_redis_storage_creation_with_params():
     """Test Redis storage can be created with custom parameters."""
     storage = RedisStorage(host="redis-server", port=6380, db=1, password="secret")
-    assert storage.host == "redis-server"
-    assert storage.port == 6380
-    assert storage.db == 1
-    assert storage.password == "secret"
+    assert storage._kwargs == {
+        "host": "redis-server",
+        "port": 6380,
+        "db": 1,
+        "password": "secret",
+    }
     await storage.close()
 
 
@@ -98,9 +98,12 @@ async def test_redis_storage_factory():
     """Test Redis storage can be created via factory."""
     storage = create_storage(StorageType.REDIS, host="localhost", port=6379, db=0)
     assert isinstance(storage, RedisStorage)
-    assert storage.host == "localhost"
-    assert storage.port == 6379
-    assert storage.db == 0
+    assert storage._kwargs == {
+        "host": "localhost",
+        "port": 6379,
+        "db": 0,
+        "password": None,
+    }
     await storage.close()
 
 

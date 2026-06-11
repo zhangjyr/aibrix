@@ -80,6 +80,7 @@ def create_test_app(disable_batch_api: bool = False, disable_file_api: bool = Fa
                 enable_k8s_support=False,
                 disable_batch_api=disable_batch_api,
                 disable_file_api=disable_file_api,
+                job_store_provider=None,
                 dry_run=True,
             )
         )

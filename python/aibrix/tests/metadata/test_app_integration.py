@@ -14,7 +14,7 @@
 
 import argparse
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,6 +34,7 @@ def _args(**overrides):
         "enable_k8s_support": False,
         "disable_batch_api": True,
         "disable_file_api": True,
+        "job_store_provider": None,
         "dry_run": False,
     }
     defaults.update(overrides)
@@ -143,6 +144,60 @@ def test_build_app_skips_k8s_clients_when_disabled(
     core_api.assert_not_called()
     apps_api.assert_not_called()
     assert hasattr(app.state, "batch_driver")
+
+
+def test_build_app_with_redis_job_store():
+    args = _args(
+        enable_k8s_support=False,
+        disable_batch_api=False,
+        job_store_provider="redis",
+    )
+    redis_client = MagicMock(name="redis_client")
+
+    with (
+        patch(
+            "aibrix.client.redis.get_redis_client",
+            return_value=redis_client,
+        ) as get_redis_client,
+        patch("aibrix.batch.state.redis_job_store.RedisJobStore") as redis_job_store,
+    ):
+        app = build_app(args)
+
+    assert hasattr(app.state, "batch_driver")
+    get_redis_client.assert_called_once_with(require_check=True)
+    redis_job_store.assert_called_once_with(redis_client)
+
+
+def test_build_app_with_redis_job_store_during_dry_run():
+    args = _args(
+        enable_k8s_support=False,
+        disable_batch_api=False,
+        job_store_provider="redis",
+        dry_run=True,
+    )
+    with pytest.raises(
+        RuntimeError, match="Redis job store is not supported in dry run mode"
+    ):
+        build_app(args)
+
+
+def test_build_app_with_redis_job_missing_env():
+    args = _args(
+        enable_k8s_support=False,
+        disable_batch_api=False,
+        job_store_provider="redis",
+    )
+
+    with (
+        patch(
+            "aibrix.metadata.app.redis.get_redis_client",
+            side_effect=RuntimeError("REDIS_HOST environment variable is required"),
+        ),
+        pytest.raises(
+            RuntimeError, match="REDIS_HOST environment variable is required"
+        ),
+    ):
+        build_app(args)
 
 
 def test_status_endpoint_without_k8s(_mock_k8s_config_loading):

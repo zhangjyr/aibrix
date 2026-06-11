@@ -24,13 +24,13 @@ from fastapi.responses import JSONResponse
 from kubernetes import client as k8s_client
 from kubernetes import config
 
-from aibrix import envs
+import aibrix.client.redis as redis
 from aibrix.batch import BatchDriver
 from aibrix.batch.client import (
     EndpointSource,
     NoopEndpointSource,
 )
-from aibrix.batch.state import JobStore
+from aibrix.batch.state import JobEntityManager
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files, models, users
@@ -166,20 +166,12 @@ async def lifespan(app: FastAPI):
     if not hasattr(app.state, "metadata_store") or app.state.metadata_store is None:
         from aibrix.metadata.store import RedisMetadataStore
 
-        redis_host = envs.STORAGE_REDIS_HOST or "localhost"
-        metadata_store = RedisMetadataStore(
-            host=redis_host,
-            port=envs.STORAGE_REDIS_PORT,
-            db=envs.STORAGE_REDIS_DB,
-            password=envs.STORAGE_REDIS_PASSWORD,
-        )
+        metadata_store = RedisMetadataStore()
         app.state.metadata_store = metadata_store
         # Backward compatibility: expose underlying Redis client for components
         # that haven't migrated to the MetadataStore interface yet
         app.state.redis_client = metadata_store.client
-        logger.info(
-            f"Metadata store initialized: {redis_host}:{envs.STORAGE_REDIS_PORT}"
-        )
+        logger.info("Metadata store initialized")
 
     if hasattr(app.state, "httpx_client_wrapper"):
         app.state.httpx_client_wrapper.start()
@@ -327,18 +319,39 @@ def build_app(args: argparse.Namespace, params={}):
         app.state.template_registry = infrastructure_context.template_registry
         app.state.profile_registry = infrastructure_context.profile_registry
 
+        job_entity_manager: Optional[JobEntityManager] = None
         if not args.dry_run:
             if infrastructure_context is None:
                 raise RuntimeError("Kubernetes batch context is required")
+        else:
+            if args.job_store_provider == "redis":
+                raise RuntimeError("Redis job store is not supported in dry run mode")
 
         # The single entity manager is the metastore-backed JobStore; the
         # substrate (LOCAL / Redis / S3 / TOS) is selected via METASTORE_TYPE, so
         # one store serves every backend. endpoint_source is None outside
         # --dry-run: jobs carry their own aibrix.runtime.target and the per-job
         # runtime builds its own EndpointSource.
+        if args.job_store_provider == "redis":
+            logger.info("Will run using entity manager RedisJobStore")
+            # Use RedisJobCache for optimized performance.
+            from aibrix.batch.state.redis_job_store import RedisJobStore
+
+            job_entity_manager = RedisJobStore(
+                redis.get_redis_client(require_check=True)
+            )
+        else:
+            logger.info("Will run using entity manager JobStore")
+            from aibrix.batch.state.job_store import JobStore
+
+            job_entity_manager = JobStore(
+                storage_type=settings.METASTORE_TYPE,
+                params=params,
+            )
+
         app.state.batch_driver = BatchDriver(
             context=infrastructure_context,
-            job_entity_manager=JobStore(),
+            job_entity_manager=job_entity_manager,
             storage_type=settings.STORAGE_TYPE,
             metastore_type=settings.METASTORE_TYPE,
             endpoint_source=endpoint_source,
@@ -402,6 +415,12 @@ def main():
             "Disable the files API. Only valid when the batch API is also "
             "disabled, because batch jobs use files as their input/output channel."
         ),
+    )
+    parser.add_argument(
+        "--job-store-provider",
+        type=str,
+        default=None,
+        help="Job store provider for the job entity manager. Choose redis for optimized performance.",
     )
     parser.add_argument(
         "--dry-run",

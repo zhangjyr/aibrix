@@ -310,6 +310,7 @@ def ensure_job_rbac(job_rbac):
 
 
 def create_test_app(
+    job_store_provider: Optional[str] = None,
     enable_k8s_support: bool = True,
     storage_type: StorageType = StorageType.LOCAL,
     metastore_type: StorageType = StorageType.LOCAL,
@@ -339,6 +340,7 @@ def create_test_app(
             disable_batch_api=False,
             disable_file_api=False,
             enable_k8s_support=enable_k8s_support,
+            job_store_provider=job_store_provider,
             dry_run=dry_run,
         ),
         params,

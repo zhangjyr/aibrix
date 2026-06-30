@@ -60,7 +60,7 @@ class _DeadlineStopRuntime:
     def cancelled(self) -> bool:
         return False
 
-    def runtime_deadline_reached(self) -> bool:
+    def expired(self) -> bool:
         return self._deadline_reached
 
     def execution_key(self, job: BatchJob) -> str | None:
@@ -126,6 +126,25 @@ def test_should_stop_before_proceed_when_job_expired():
     )
 
     assert driver._should_stop_before_proceed(job) is True
+
+
+@pytest.mark.asyncio
+async def test_execute_runtime_deadline_marks_job_suspended(monkeypatch):
+    job = _make_job()
+    driver = BaseJobDriver(SingleJobRunner(job), _DeadlineStopRuntime())
+
+    async def _passthrough_prepare(job):
+        return job
+
+    monkeypatch.setattr(driver, "_prepare_execution_job", _passthrough_prepare)
+
+    await driver.execute(job.job_id)
+
+    latest = await driver._progress_manager.get_job(job.job_id)
+    assert latest is not None
+    assert latest.status.state == BatchJobState.SUSPEND
+    assert latest.status.finalizing_at is None
+    assert latest.status.finalized_at is None
 
 
 @pytest.mark.asyncio

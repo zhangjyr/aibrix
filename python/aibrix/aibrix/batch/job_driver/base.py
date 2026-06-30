@@ -303,6 +303,13 @@ class BaseJobDriver:
         try:
             job = await self._execute_job_in_runtime(self._runtime, job)
         except asyncio.CancelledError:
+            if self._runtime.expired():
+                suspended = await self._progress_manager.mark_job_suspended(job_id)
+                logger.info(
+                    "Execution suspended by runtime allocation deadline",
+                    job_id=job_id,
+                )  # type: ignore[call-arg]
+                return suspended
             # A provisioning runtime cancels the run when its job is deleted;
             # teardown already ran via the session. Conclude the accepted cancel
             # here only after reloading the shared job state.
@@ -1125,6 +1132,8 @@ class BaseJobDriver:
                     request_id = request_input.pop("_request_index", -1)
                     if request_id < 0:
                         continue
+                    if self._runtime.expired():
+                        return
                     self._accumulate_dispatched_request(job_id, request_id)
                     pending_in_round += 1
                     round_drained.clear()

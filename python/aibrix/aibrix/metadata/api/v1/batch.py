@@ -484,7 +484,9 @@ def _batch_job_to_openai_response(batch_job: BatchJob) -> BatchResponse:
     #     near-instant: VALIDATING flips to IN_PROGRESS inside admit()).
     #   - FINALIZED: terminal umbrella state; the actual outcome lives in
     #     `status.condition` (completed / failed / expired / cancelled).
-    if status.finished:
+    if status.state == BatchJobState.SUSPEND:
+        state = BatchJobState.SUSPEND.value
+    elif status.finished:
         condition = status.condition
         if condition is None:
             logger.error(

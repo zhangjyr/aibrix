@@ -2239,6 +2239,74 @@ async def test_job_expiration_during_processing(e2e_test_app, test_backend):
 
 
 @pytest.mark.asyncio
+async def test_job_suspend_on_runtime_deadline(
+    e2e_test_app, test_backend, monkeypatch
+):
+    skip_if_runtime_unavailable(test_backend)
+    if not backend_has_runtime_debug_state(test_backend):
+        pytest.skip("This test requires runtime debug state")
+
+    with create_test_client(e2e_test_app) as client:
+        input_file_id = upload_batch_input_file(client, 3)
+        original_delay = set_runtime_inference_delay(
+            e2e_test_app,
+            test_backend,
+            delay_seconds=(
+                6.0 if test_backend == "local_metastore_job_parallel" else 5.0
+            ),
+        )
+        inject_runtime_deadline(monkeypatch, e2e_test_app, offset_seconds=3.0)
+        batch_id = None
+
+        try:
+            debug_state = capture_runtime_debug_state(e2e_test_app, test_backend)
+            batch_id = create_batch_job(
+                client, input_file_id, test_backend=test_backend
+            )
+
+            await wait_for_status(client, batch_id, "in_progress", max_polls=20)
+            suspended = await wait_for_status(
+                client, batch_id, "suspend", max_polls=40, poll_interval=0.5
+            )
+            await wait_for_runtime_teardown_delta(
+                e2e_test_app,
+                test_backend,
+                debug_state,
+                expected_delta=1,
+                timeout_seconds=10.0,
+                poll_interval=0.2,
+            )
+            await asyncio.sleep(1.0)
+
+            current = client.get(f"/v1/batches/{batch_id}")
+            assert current.status_code == 200, current.text
+            response = current.json()
+            assert suspended["status"] == "suspend"
+            assert response["status"] == "suspend"
+            assert response.get("finalizing_at") is None
+            assert response.get("completed_at") is None
+            assert response.get("failed_at") is None
+            assert response.get("expired_at") is None
+            assert response.get("cancelled_at") is None
+
+            job = await e2e_test_app.state.batch_driver.job_manager.get_job(batch_id)
+            assert job is not None
+            assert job.status.state == BatchJobState.SUSPEND
+            assert job.status.finalizing_at is None
+            assert job.status.finalized_at is None
+            assert job.status.expired_at is None
+            assert job.status.execution is None
+        finally:
+            if original_delay is not None:
+                set_runtime_inference_delay(
+                    e2e_test_app, test_backend, delay_seconds=original_delay
+                )
+            if batch_id is not None:
+                await e2e_test_app.state.batch_driver.cancel_job(batch_id)
+                await e2e_test_app.state.batch_driver.clear_job(batch_id)
+
+
+@pytest.mark.asyncio
 async def test_job_restart_during_validation(
     e2e_test_app, test_backend, request, tmp_path, monkeypatch
 ):

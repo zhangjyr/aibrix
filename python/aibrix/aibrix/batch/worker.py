@@ -144,6 +144,12 @@ class SingleJobRunner(RunningJobs):
         self._meta.status.state = BatchJobState.FINALIZING
         return self._meta
 
+    async def mark_job_suspended(self, job_id: str) -> BatchJob:
+        del job_id
+        self._meta.status.state = BatchJobState.SUSPEND
+        self._meta.status.execution = None
+        return self._meta
+
     async def mark_job_failed(self, job_id: str, ex: BatchJobError) -> BatchJob:
         job = self._meta
         job.status.failed_at = datetime.now(timezone.utc)

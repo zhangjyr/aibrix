@@ -117,6 +117,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
         ],
         BatchJobState.IN_PROGRESS: [
             BatchJobState.FINALIZING,
+            BatchJobState.SUSPEND,
             BatchJobState.FINALIZED,  # failure with no output to aggregate
             BatchJobState.CANCELLING,  # For cancellation
         ],
@@ -125,6 +126,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
             BatchJobState.FINALIZED,
             BatchJobState.FINALIZING,  # For in_progress -> cancelling -> finalizing
         ],
+        BatchJobState.SUSPEND: [],  # Terminal state
         BatchJobState.FINALIZED: [],  # Terminal state
     }
 
@@ -873,6 +875,21 @@ class BatchManager(RunningJobs, SchedulableJobs):
             await self._job_entity_manager.update_job_status(persisted)
         await self.job_updated_handler(meta_data, persisted)
         return persisted
+
+    async def mark_job_suspended(self, job_id: str) -> BatchJob:
+        meta_data = await self._meta_from_in_progress_job(job_id)
+        if meta_data.status.state == BatchJobState.SUSPEND:
+            return meta_data
+
+        suspended = meta_data.copy()
+        suspended.status.state = BatchJobState.SUSPEND
+        suspended.status.execution = None
+
+        if not await self.conclude_job(suspended, meta_data):
+            return meta_data
+
+        logger.info("Job suspended", job_id=job_id)  # type: ignore[call-arg]
+        return suspended
 
     async def mark_job_done(self, job: BatchJob) -> BatchJob:
         """

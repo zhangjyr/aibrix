@@ -64,6 +64,7 @@ class BatchJobState(str, Enum):
     IN_PROGRESS = "in_progress"
     CANCELLING = "cancelling"
     FINALIZING = "finalizing"
+    SUSPEND = "suspend"
     FINALIZED = "finalized"
 
 
@@ -627,7 +628,7 @@ class BatchJobStatus(_Strict):
 
     @property
     def finished(self) -> bool:
-        return self.state == BatchJobState.FINALIZED
+        return self.state in (BatchJobState.FINALIZED, BatchJobState.SUSPEND)
 
     @property
     def completed(self) -> bool:

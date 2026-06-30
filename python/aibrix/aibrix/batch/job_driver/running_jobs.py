@@ -63,6 +63,10 @@ class RunningJobs(Protocol):
         """Transition a running job into finalizing."""
         ...
 
+    async def mark_job_suspended(self, job_id: str) -> BatchJob:
+        """Transition a running job into suspend after runtime self-stop."""
+        ...
+
     async def mark_job_done(self, job: BatchJob) -> BatchJob:
         """Mark job completed.
 

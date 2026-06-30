@@ -109,6 +109,10 @@ class Runtime(Protocol):
         """True once delete-triggered teardown has fully finished."""
         ...
 
+    def expired(self) -> bool:
+        """True once the runtime stopped itself on allocation deadline."""
+        ...
+
     def session(
         self,
         job: BatchJob,
@@ -177,11 +181,16 @@ class RuntimeBase:
         self._progress_manager: Optional[RunningJobs] = None
         self._stop_requested = asyncio.Event()
         self._stopped = asyncio.Event()
+        self._runtime_deadline_requested = asyncio.Event()
         self._stop_job_id: Optional[str] = None
         self._stopped_job_id: Optional[str] = None
+        self._deadline_watch_task: Optional[asyncio.Task[None]] = None
 
     def cancelled(self) -> bool:
         return self._stopped.is_set()
+
+    def expired(self) -> bool:
+        return self._runtime_deadline_requested.is_set()
 
     def _stop_matches_job(self, job_id: Optional[str]) -> bool:
         return job_id is not None and (
@@ -272,23 +281,87 @@ class RuntimeBase:
         self._stopped.clear()
         self._stop_job_id = None
         self._stopped_job_id = None
+        if self._deadline_watch_task is not None:
+            self._deadline_watch_task.cancel()
+            self._deadline_watch_task = None
 
     def _bind_active_session(
-        self, job_id: str, progress_manager: Optional[RunningJobs] = None
+        self,
+        job: BatchJob,
+        job_id: str,
+        progress_manager: Optional[RunningJobs] = None,
     ) -> None:
         self._active_job_id = job_id
         self._active_task = asyncio.current_task()
         if not self._stop_matches_job(job_id):
             self._stop_requested.clear()
             self._stopped.clear()
+            self._runtime_deadline_requested.clear()
             self._stop_job_id = None
             self._stopped_job_id = None
         self._progress_manager = progress_manager
+        if self._deadline_watch_task is not None:
+            self._deadline_watch_task.cancel()
+            self._deadline_watch_task = None
+        delay_seconds = self._runtime_deadline_delay_seconds(job)
+        if delay_seconds is not None:
+            self._deadline_watch_task = asyncio.create_task(
+                self._watch_runtime_deadline(delay_seconds)
+            )
 
     def _unbind_active_session(self) -> None:
         self._active_job_id = None
         self._active_task = None
         self._progress_manager = None
+        if self._deadline_watch_task is not None:
+            self._deadline_watch_task.cancel()
+            self._deadline_watch_task = None
+
+    def _runtime_deadline_timestamp(self, job: BatchJob) -> Optional[int]:
+        metadata = job.spec.aibrix
+        if metadata is None or metadata.resource_allocation is None:
+            return None
+        deadline = metadata.resource_allocation.provision_resource_deadline
+        if deadline is None or deadline <= 0:
+            return None
+        return deadline
+
+    def _runtime_deadline_delay_seconds(self, job: BatchJob) -> Optional[float]:
+        deadline = self._runtime_deadline_timestamp(job)
+        if deadline is None:
+            return None
+        return max(0.0, deadline - datetime.now(timezone.utc).timestamp())
+
+    async def _watch_runtime_deadline(self, delay_seconds: float) -> None:
+        try:
+            await asyncio.sleep(delay_seconds)
+        except asyncio.CancelledError:
+            return
+
+        job_id = self._active_job_id
+        if job_id is None:
+            return
+        self._runtime_deadline_requested.set()
+        job = None
+        if self._progress_manager is not None:
+            job = await self._progress_manager.get_job(job_id)
+        if job is None:
+            logger.warning(
+                "Runtime allocation deadline reached but job is unavailable",
+                job_id=job_id,
+            )  # type: ignore[call-arg]
+            if self._active_task is not None:
+                self._active_task.cancel()
+            return
+
+        result = await self.terminate(job)
+        logger.info(
+            "Runtime allocation deadline reached; terminate requested",
+            job_id=job_id,
+            result=result.value,
+        )  # type: ignore[call-arg]
+        if result == TerminateResult.ACCEPTED and self._active_task is not None:
+            self._active_task.cancel()
 
     def _get_runtime_key(self, job: BatchJob) -> str:
         """Execution-key to locate execution ref."""
@@ -469,7 +542,7 @@ class RuntimeBase:
         runtimeRef = self._load_runtime_ref(job)
         handle = None
         max_attempts = self.session_retry_attempts + 1
-        self._bind_active_session(job_id, progress_manager)
+        self._bind_active_session(job, job_id, progress_manager)
         error: BaseException | None = None
         try:
             if self._stop_requested.is_set() or self._stopped.is_set():

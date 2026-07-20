@@ -41,6 +41,7 @@ from aibrix.batch.job_entity import (
     RuntimeSpec,
 )
 from aibrix.batch.manifest import RenderError
+from aibrix.batch.metrics import tags_from_job
 from aibrix.batch.template import (
     BatchProfile,
     ModelDeploymentTemplate,
@@ -49,6 +50,7 @@ from aibrix.batch.template import (
 )
 from aibrix.context import InfrastructureContext, get_deployment_detail_provider
 from aibrix.logger import init_logger
+from aibrix.metadata.core.metrics import Emitter, metrics_names
 
 logger = init_logger(__name__)
 
@@ -595,6 +597,11 @@ async def create_batch(request: Request, batch_spec: BatchSpec) -> BatchResponse
         if not job:
             logger.error("Created job not found", job_id=job_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=500, detail="Created batch not found")
+        Emitter.counter(
+            metrics_names.METRIC_METADATA_BATCH_API_JOB_INCOMING,
+            1,
+            *tags_from_job(job),
+        )
 
         logger.info("Batch created successfully", job_id=job_id, session_id=session_id)  # type: ignore[call-arg]
 

@@ -18,6 +18,7 @@ import os
 from typing import Optional
 
 import pytest
+from prometheus_client import generate_latest
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
@@ -34,6 +35,7 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.batch.state import JobEntityManager, JobStore
 from aibrix.batch.storage import batch_metastore
+from aibrix.metadata.core.metrics import MetricsConfig, setup_metrics, shutdown_metrics
 from aibrix.storage import StorageConfig, StorageType
 from aibrix.storage.types import StorageListOrdering
 
@@ -166,6 +168,44 @@ async def test_job_store_submit_persists_to_metastore_and_fires_committed(
     assert persisted_job is not None
     assert persisted_job.job_id == committed_job.job_id
     assert [job.job_id for job in listed_jobs] == [committed_job.job_id]
+
+
+@pytest.mark.asyncio
+async def test_job_store_emits_operation_latency_and_storage_ops_metrics(
+    fake_metastore,
+):
+    _, _ = fake_metastore
+    runtime = setup_metrics(MetricsConfig(prometheus_enabled=True))
+    store = JobStore(storage_type=StorageType.LOCAL)
+
+    try:
+        await store.submit_job("session-1", _spec(), request_count=1)
+        job = next(iter(store.active_jobs.values()))
+
+        await store.get_job(job.job_id)
+        await store.update_job_status(job)
+
+        assert runtime.registry is not None
+        metrics_text = generate_latest(runtime.registry).decode()
+        assert "metadata_job_store_duration_ms_bucket" in metrics_text
+        assert (
+            'metadata_job_store_operation_total{operation="get_job",storage_type="local"} 1.0'
+            in metrics_text
+        )
+        assert (
+            'metadata_job_store_storage_operations_total{operation="get_job",storage_type="local"} 0.0'
+            in metrics_text
+        )
+        assert (
+            'metadata_job_store_operation_total{operation="update_job_status",storage_type="local"} 1.0'
+            in metrics_text
+        )
+        assert (
+            'metadata_job_store_storage_operations_total{operation="update_job_status",storage_type="local"} 0.0'
+            in metrics_text
+        )
+    finally:
+        shutdown_metrics()
 
 
 @pytest.mark.asyncio

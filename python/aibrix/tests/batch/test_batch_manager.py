@@ -44,6 +44,7 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.batch.state import JobEntityManager, JobMetaInfo
 from aibrix.context import InfrastructureContext
+from aibrix.metadata.core.metrics import Emitter
 from tests.fake.batch_runtime import FakeRuntime
 
 
@@ -1195,6 +1196,61 @@ async def test_expire_job_persists_via_entity_manager():
     assert len(recorded) == 1
     assert recorded[0].status.state == BatchJobState.FINALIZED
     assert recorded[0].status.expired_at is not None
+
+
+@pytest.mark.asyncio
+async def test_conclude_job_emits_finished_metrics_once_when_repeated(monkeypatch):
+    metric_calls: list[tuple[str, float]] = []
+
+    def _record_counter(name, value, *tags):
+        del tags
+        metric_calls.append((name, value))
+
+    def _record_timer(name, value, *tags):
+        del tags
+        metric_calls.append((name, value))
+
+    monkeypatch.setattr(Emitter, "counter", _record_counter)
+    monkeypatch.setattr(Emitter, "timer", _record_timer)
+
+    _set_current_loop_name("test_conclude_job_metrics_once")
+    job_manager = _job_manager()
+    job_entity_manager = MockJobEntityManager(delay=0.0)
+    await job_manager.set_job_entity_manager(job_entity_manager)
+
+    old_job = BatchJob(
+        sessionID="sess-finished",
+        typeMeta=TypeMeta(apiVersion="v1", kind="BatchJob"),
+        metadata=ObjectMeta(resourceVersion="1", creationTimestamp=datetime.now()),
+        spec=BatchJobSpec(
+            input_file_id="f-finished",
+            endpoint="/v1/chat/completions",
+            completion_window=86400,
+        ),
+        status=BatchJobStatus(
+            jobID="job-finished",
+            state=BatchJobState.IN_PROGRESS,
+            createdAt=datetime.now(),
+            inProgressAt=datetime.now(),
+        ),
+    )
+    finished_job = old_job.copy()
+    finished_job.status.add_condition(
+        Condition(
+            type=ConditionType.COMPLETED,
+            status=ConditionStatus.TRUE,
+            lastTransitionTime=datetime.now(),
+        )
+    )
+    finished_job.status.completed_at = datetime.now()
+    finished_job.status.finalized_at = datetime.now()
+    finished_job.status.state = BatchJobState.FINALIZED
+    job_entity_manager.jobs[old_job.job_id] = old_job.model_copy(deep=True)
+    job_manager._in_progress_jobs[old_job.job_id] = JobMetaInfo(old_job)
+
+    assert await job_manager.conclude_job(finished_job, old_job) is True
+    assert await job_manager.conclude_job(finished_job, old_job) is True
+    assert len(metric_calls) == 2
 
 
 @pytest.mark.asyncio

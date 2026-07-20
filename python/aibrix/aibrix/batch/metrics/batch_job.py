@@ -1,0 +1,47 @@
+# Copyright 2026 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+from aibrix.batch.job_entity import BatchJob, ConditionType
+from aibrix.metadata.core.metrics import T, Tag
+
+
+def _finalize_type(job: BatchJob) -> str:
+    condition = job.status.condition
+    if condition is None:
+        return ConditionType.COMPLETED.value
+    return condition.value
+
+
+def _terminal_error_code(job: BatchJob) -> str:
+    if job.status.errors:
+        code = job.status.errors[0].code
+        return str(getattr(code, "value", code))
+    return "none"
+
+
+def tags_from_job(job: BatchJob) -> tuple[Tag, ...]:
+    return (
+        T("endpoint", job.spec.endpoint),
+        T("completion_window", str(job.spec.completion_window)),
+    )
+
+
+def tags_from_finalized_job(job: BatchJob) -> tuple[Tag, ...]:
+    return (
+        *tags_from_job(job),
+        T("finalize_type", _finalize_type(job)),
+        T("error_code", _terminal_error_code(job)),
+    )

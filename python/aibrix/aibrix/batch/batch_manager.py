@@ -45,6 +45,10 @@ from aibrix.batch.job_entity import (
     aggregate_batch_job_status,
     ensure_batch_job_error,
 )
+from aibrix.batch.metrics import (
+    metric_duration_ms,
+    tags_from_finalized_job,
+)
 from aibrix.batch.state import (
     BatchRegistry,
     EntityManagerBridge,
@@ -54,6 +58,7 @@ from aibrix.batch.state import (
 )
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger
+from aibrix.metadata.core.metrics import Emitter, metrics_names
 
 
 # Custom exceptions for batch manager
@@ -164,6 +169,40 @@ class BatchManager(RunningJobs, SchedulableJobs):
         self._creation_timeouts: Dict[str, asyncio.Task] = {}
         self._session_metadata: Dict[str, Dict[str, Any]] = {}
         self._pending_deleted_jobs: set[str] = set()
+
+    def _emit_finished_job_metrics(
+        self, job: BatchJob, was_finished: bool = False
+    ) -> None:
+        if was_finished or not job.status.finished:
+            return
+
+        try:
+            finalized_tags = tags_from_finalized_job(job)
+            Emitter.counter(
+                metrics_names.METRIC_METADATA_BATCH_API_JOB_FINISHED,
+                1,
+                *finalized_tags,
+            )
+
+            execution_ms = metric_duration_ms(
+                job.status.in_progress_at,
+                job.status.finalized_at,
+            )
+            if execution_ms is not None and execution_ms >= 0:
+                Emitter.timer(
+                    f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_TIME}.ms",
+                    execution_ms,
+                    *finalized_tags,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to emit finished job metrics",
+                job_id=job.job_id,
+                condition=job.status.condition.value
+                if job.status.condition
+                else "complete",
+                exc_info=True,
+            )  # type: ignore[call-arg]
 
     # The three pools live in the BatchRegistry; these proxies keep the existing
     # by-pool access (orchestration logic + tests) working unchanged while the
@@ -598,6 +637,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 )  # type: ignore[call-arg]
                 return False
             old_job = old_job_in_category
+            was_finished = old_job.status.finished
 
             # Validate state transition
             if not self._validate_state_transition(old_job, new_job):
@@ -637,6 +677,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
                     new_category=new_name,
                 )  # type: ignore[call-arg]
 
+            self._emit_finished_job_metrics(new_job, was_finished=was_finished)
             if job_id in self._pending_deleted_jobs and new_job.status.finished:
                 await self.job_deleted_handler(new_job)
             return True

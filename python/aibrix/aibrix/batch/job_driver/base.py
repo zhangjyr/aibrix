@@ -75,8 +75,10 @@ from aibrix.batch.job_entity import (
     RequestCountStats,
     ensure_batch_job_error,
 )
+from aibrix.batch.metrics import tags_from_job
 from aibrix.context.infra import InfrastructureContext
 from aibrix.logger import init_logger
+from aibrix.metadata.core.metrics import Emitter, T, metrics_names
 
 logger = init_logger(__name__)
 
@@ -560,10 +562,32 @@ class BaseJobDriver:
     def _log_cancelled(self, job_id: str) -> None:
         logger.info("Execution interrupted by job deletion", job_id=job_id)  # type: ignore[call-arg]
 
-    def _log_failed(self, job_id: str, error: BatchJobError) -> None:
+    def _emit_request_completion_metrics(
+        self,
+        job: BatchJob,
+        *,
+        completed: int = 0,
+        failed: int = 0,
+    ) -> None:
+        if completed > 0:
+            Emitter.counter(
+                metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED,
+                completed,
+                *tags_from_job(job),
+                T("result", "success"),
+            )
+        if failed > 0:
+            Emitter.counter(
+                metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED,
+                failed,
+                *tags_from_job(job),
+                T("result", "fail"),
+            )
+
+    def _log_failed(self, job: BatchJob, error: BatchJobError) -> None:
         logger.error(
             "Failed to execute job",
-            job_id=job_id,
+            job_id=job.job_id,
             error_code=error.code,
             error=error.message,
             line=error.line,
@@ -584,6 +608,35 @@ class BaseJobDriver:
             job_id=job.job_id,
             status=job.status.state.value,
         )  # type: ignore[call-arg]
+
+    def _emit_request_usage_metrics(
+        self, job: BatchJob, usage: Optional[BatchUsage]
+    ) -> None:
+        if usage is None:
+            return
+
+        Emitter.counter(
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_USAGE_TOKENS,
+            usage.input_tokens,
+            *tags_from_job(job),
+            T("token_type", "input_token"),
+        )
+        Emitter.counter(
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_USAGE_TOKENS,
+            usage.output_tokens,
+            *tags_from_job(job),
+            T("token_type", "output_token"),
+        )
+        Emitter.counter(
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_CACHED_TOKENS,
+            usage.input_tokens_details.cached_tokens,
+            *tags_from_job(job),
+        )
+        Emitter.counter(
+            metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_REASONING_TOKENS,
+            usage.output_tokens_details.reasoning_tokens,
+            *tags_from_job(job),
+        )
 
     def _should_stop_before_proceed(self, job: BatchJob, reload: bool = False) -> bool:
         """Check for interruption signal"""
@@ -746,7 +799,7 @@ class BaseJobDriver:
 
     def _accumulate_usage(
         self, job_id: str, custom_id: Optional[str], raw_usage: Optional[dict]
-    ) -> None:
+    ) -> Optional[BatchUsage]:
         """Add a single response's usage to the running per-job total.
 
         Maps OpenAI Completions naming (``prompt_tokens`` /
@@ -755,34 +808,39 @@ class BaseJobDriver:
         a duplicate ``custom_id`` within the job (retry) is skipped too.
         """
         if not raw_usage or not isinstance(raw_usage, dict):
-            return
+            return None
 
         self._ensure_local_job_state(job_id)
         seen = self._usage_counted_ids
         if custom_id is not None:
             if custom_id in seen:
-                return
+                return None
             seen.add(custom_id)
 
         if self._usage is None:
             self._usage = BatchUsage()
+        emitted_usage = BatchUsage()
         usage = self._usage
         prompt = int(raw_usage.get("prompt_tokens") or 0)
         completion = int(raw_usage.get("completion_tokens") or 0)
         usage.input_tokens += prompt
         usage.output_tokens += completion
         usage.total_tokens += prompt + completion
+        emitted_usage.input_tokens = prompt
+        emitted_usage.output_tokens = completion
+        emitted_usage.total_tokens = prompt + completion
 
         prompt_details = raw_usage.get("prompt_tokens_details") or {}
         if isinstance(prompt_details, dict):
-            usage.input_tokens_details.cached_tokens += int(
-                prompt_details.get("cached_tokens") or 0
-            )
+            cached_tokens = int(prompt_details.get("cached_tokens") or 0)
+            usage.input_tokens_details.cached_tokens += cached_tokens
+            emitted_usage.input_tokens_details.cached_tokens = cached_tokens
         completion_details = raw_usage.get("completion_tokens_details") or {}
         if isinstance(completion_details, dict):
-            usage.output_tokens_details.reasoning_tokens += int(
-                completion_details.get("reasoning_tokens") or 0
-            )
+            reasoning_tokens = int(completion_details.get("reasoning_tokens") or 0)
+            usage.output_tokens_details.reasoning_tokens += reasoning_tokens
+            emitted_usage.output_tokens_details.reasoning_tokens = reasoning_tokens
+        return emitted_usage
 
     def _get_accumulated_usage(self, job_id: str) -> Optional[BatchUsage]:
         """Return the running token usage for a job, or None if no successful
@@ -900,6 +958,11 @@ class BaseJobDriver:
             completed_request_ids,
             failed_request_ids,
         )
+        self._emit_request_completion_metrics(
+            job,
+            completed=len(completed_request_ids),
+            failed=len(failed_request_ids),
+        )
         job = await self._persist_worker_status(job)
         return job, len(completed_results)
 
@@ -929,9 +992,12 @@ class BaseJobDriver:
             )
 
             if last_error is None and isinstance(request_output, dict):
-                self._accumulate_usage(
-                    job.job_id, custom_id, request_output.get("usage")
+                emitted_usage = self._accumulate_usage(
+                    job.job_id,
+                    custom_id,
+                    request_output.get("usage"),
                 )
+                self._emit_request_usage_metrics(job, emitted_usage)
 
             response = self._build_response(
                 custom_id,
@@ -1010,7 +1076,7 @@ class BaseJobDriver:
                 raise
             except Exception as ex:  # noqa: BLE001 - finalize must still run
                 normalized_error = self._make_failure_error(ex)
-                self._log_failed(job.job_id, normalized_error)
+                self._log_failed(job, normalized_error)
                 job = await self._progress_manager.mark_job_failed(
                     job.job_id, normalized_error
                 )

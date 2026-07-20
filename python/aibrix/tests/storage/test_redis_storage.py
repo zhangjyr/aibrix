@@ -19,6 +19,11 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 import pytest
 
 import aibrix.client.redis as redis_client
+from aibrix.metadata.core.metrics import (
+    begin_backend_operation_count,
+    get_backend_operation_count,
+    reset_backend_operation_count,
+)
 from aibrix.storage import RedisStorage, StorageType, create_storage
 from aibrix.storage.base import StorageConfig
 from aibrix.storage.redis_upgrade import (
@@ -154,6 +159,11 @@ class _FakeRedisForListObjects:
             return members.index(member)
         except ValueError:
             return None
+
+
+class _FakeRedisForBackendTracking:
+    async def get(self, key: str) -> bytes:
+        return key.encode("utf-8")
 
 
 class _FakeRedisForUpgrade:
@@ -1000,9 +1010,24 @@ async def test_redis_hierarchical_after_key_pagination():
 
         for key in test_keys:
             await storage.delete_object(key)
-
     finally:
         await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_get_redis_tracks_backend_calls(monkeypatch):
+    storage = RedisStorage()
+    fake_client = _FakeRedisForBackendTracking()
+    monkeypatch.setattr(redis_client, "get_redis_client", lambda **kwargs: fake_client)
+
+    token = begin_backend_operation_count()
+    try:
+        client = await storage._get_redis()
+        result = await client.get("demo-key")
+        assert result == b"demo-key"
+        assert get_backend_operation_count() == 1
+    finally:
+        reset_backend_operation_count(token)
 
 
 def test_feature_detection():

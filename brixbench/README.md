@@ -356,8 +356,14 @@ kubectl get podmonitor brixbench-aibrix-vllm-metrics -n brixbench-adhoc -o yaml
 Run artifacts are written under:
 
 ```text
-benchmark/testdata/logs/<timestamp>-UTC-<scenario>/
+benchmark/testdata/logs/<timestamp>-<zone>-<scenario>/
 ```
+
+The `<zone>` token comes from `BENCHMARK_TIMEZONE` (IANA name such as
+`Asia/Shanghai` or `UTC`). When unset, the runner uses the host local
+timezone. The abbreviation is sanitized for path safety (for example
+`Asia/Shanghai` → `cst`). The same location also shapes the scenario
+`run_id` used for local logs and TOS publish paths.
 
 Typical artifacts include:
 
@@ -368,6 +374,67 @@ Typical artifacts include:
 - per-case `vllm-bench-client.log`
 - per-case `vllm-bench-pod.yaml`
 - optional comparison figures under `figures/`
+
+## Prebuilt Gateway Image
+
+By default, AIBrix scenarios that resolve a workspace commit build the
+gateway image locally. To skip that build in CI (or when an image is
+already published), set:
+
+```bash
+export BENCHMARK_GATEWAY_IMAGE=registry.example/aibrix/gateway:my-tag
+# optional: full 40-char commit SHA recorded as the run's resolved commit
+# and written to aggregate CSV platform_commit / series_label
+export BENCHMARK_GATEWAY_COMMIT=01ce8b3a1b2c3d4e5f678901234567890abcdef0
+
+go test -v ./benchmark -run TestAIBrixBenchmarkSuite \
+  -scenario testdata/scenarios/<scenario>.yaml -count=1
+```
+
+`BENCHMARK_GATEWAY_COMMIT` requires `BENCHMARK_GATEWAY_IMAGE`. When only
+the image is set, the runner still uses the prebuilt image but keeps the
+commit resolved from the scenario (`version` / `commit` / workspace).
+
+## Publishing Official Results
+
+Artifacts remain local by default. Publish a completed scenario to TOS only for
+an official or explicitly shared result:
+
+```bash
+BENCHMARK_PUBLISH_RESULTS=true \
+go test -v ./benchmark -run TestAIBrixBenchmarkSuite \
+  -scenario testdata/scenarios/dynamo-hello-world.yaml -count=1
+```
+
+The default destination is
+`tos://aibrix-artifact-testing/benchmarks/brixbench-results/runs/<run_id>/`.
+Use `BENCHMARK_TOS_BUCKET` and `BENCHMARK_TOS_PREFIX` to override it, and set
+`BENCHMARK_PUBLISH_TIER` to `minimal`, `standard` (default), or `full`.
+
+Publishing uses the Volcengine TOS Go SDK. Set credentials via environment
+variables (never commit them):
+
+```bash
+export TOS_ACCESS_KEY=...
+export TOS_SECRET_KEY=...
+# optional overrides:
+# export TOS_ENDPOINT=https://tos-cn-beijing.volces.com
+# export TOS_REGION=cn-beijing
+```
+
+Do not put TOS credentials, kubeconfigs, or secret values in scenario files or
+the repository. Scenario inputs are copied with common secret fields redacted
+before upload.
+
+Per-run artifacts use `PutObject`. The top-level aggregate CSV
+(`aggregates/benchmark_metrics.csv`) is maintained as an **Appendable** object
+via `AppendObjectV2` (append-only; do not overwrite it with `PutObject` /
+`tosutil cp` or it will lose appendability).
+
+An upload failure is a warning by default and leaves the local artifacts
+intact. CI should use `BENCHMARK_PUBLISH_STRICT=true`; it retries failed object
+uploads three times and fails the benchmark test if publishing is incomplete.
+The scenario YAML does not control publishing.
 
 ## Optional Figure Generation
 

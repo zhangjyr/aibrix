@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
+
+  - job_name: metadata-service
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - metadata-service.aibrix-system.svc.cluster.local:8090
+
+  - job_name: console
+    metrics_path: /api/v1/metrics
+    static_configs:
+      - targets:
+          - console.aibrix-system.svc.cluster.local:8080
+
+  - job_name: minio
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets:
+          - minio.aibrix-system.svc.cluster.local:9000

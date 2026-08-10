@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metadata-service
+  namespace: aibrix-system
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: init-redis
+          command:
+            - sh
+            - -c
+            - until echo "ping" | nc redis-master 6379 -w 1 | grep -c PONG; do echo waiting for redis; sleep 2; done
+      containers:
+        - name: metadata-service
+          env:
+            - name: REDIS_HOST
+              value: redis-master
+            - name: STORAGE_AWS_ENDPOINT_URL
+              value: http://minio.aibrix-system.svc.cluster.local:9000
+            - name: METRICS_PROMETHEUS_ENABLED
+              value: "true"
+            - name: METRICS_SERVICE_NAME
+              value: aibrix-metadata

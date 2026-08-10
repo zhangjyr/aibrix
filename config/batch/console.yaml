@@ -1,0 +1,153 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aibrix-console-config
+  namespace: aibrix-system
+data:
+  store-uri: sqlite:/var/lib/aibrix/console.db
+  metadata-service-url: http://metadata-service.aibrix-system.svc.cluster.local:8090
+  gateway-endpoint: http://aibrix-gateway.aibrix-system.svc.cluster.local:8888
+  auth-mode: dev
+  dev-mode: "true"
+  allowed-origins: "*"
+  default-batch-model-deployment-template: mock-vllm
+  provisioner: kubernetes
+  planning-policy: simple
+  planner-worker-count: "2"
+  metrics-prometheus-enabled: "true"
+  metrics-service-name: aibrix-console
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: console
+  namespace: aibrix-system
+  labels:
+    app.kubernetes.io/name: console
+    app.kubernetes.io/part-of: aibrix-batch
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: console
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: console
+        app.kubernetes.io/part-of: aibrix-batch
+    spec:
+      containers:
+        - name: console
+          image: aibrix-console:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 50060
+          env:
+            - name: STORE_URI
+              valueFrom:
+                configMapKeyRef:
+                  name: aibrix-console-config
+                  key: store-uri
+            - name: METADATA_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: aibrix-console-config
+                  key: metadata-service-url
+            - name: GATEWAY_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: aibrix-console-config
+                  key: gateway-endpoint
+            - name: AUTH_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: aibrix-console-config
+                  key: auth-mode
+            - name: DEV_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: aibrix-console-config
+                  key: dev-mode
+            - name: ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: aibrix-console-config
+                  key: allowed-origins
+            - name: DEFAULT_BATCH_MODEL_DEPLOYMENT_TEMPLATE
+              valueFrom:
+                configMapKeyRef:
+                  name: aibrix-console-config
+                  key: default-batch-model-deployment-template
+            - name: PROVISIONER
+              valueFrom:
+                configMapKeyRef:
+                  name: aibrix-console-config
+                  key: provisioner
+            - name: PLANNING_POLICY
+              valueFrom:
+                configMapKeyRef:
+                  name: aibrix-console-config
+                  key: planning-policy
+            - name: PLANNER_WORKER_COUNT
+              valueFrom:
+                configMapKeyRef:
+                  name: aibrix-console-config
+                  key: planner-worker-count
+            - name: METRICS_PROMETHEUS_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: aibrix-console-config
+                  key: metrics-prometheus-enabled
+            - name: METRICS_SERVICE_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: aibrix-console-config
+                  key: metrics-service-name
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1
+              memory: 1Gi
+          volumeMounts:
+            - name: console-data
+              mountPath: /var/lib/aibrix
+      volumes:
+        - name: console-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: console
+  namespace: aibrix-system
+  labels:
+    app.kubernetes.io/name: console
+    app.kubernetes.io/part-of: aibrix-batch
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: console
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc
+      port: 50060
+      targetPort: grpc

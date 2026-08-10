@@ -254,9 +254,10 @@ run: manifests generate fmt vet ## Run a controller from your host.
 
 # This is used to determine if the current branch is the main branch.
 IS_MAIN_BRANCH ?= true
+LOCAL_CA_CERT_NAME ?= SealSuite SWG Root CA - v1
 
 define build_and_tag
-	$(CONTAINER_TOOL) build -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} -f ${DOCKERFILE_PATH}/$(2) .
+	$(CONTAINER_TOOL) build $(if $(LOCAL_CA_CERT),--secret id=corporate_ca$(COMMA)src=$(LOCAL_CA_CERT) --build-arg CORPORATE_CA_SHA=$(LOCAL_CA_CERT_SHA),) -t ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} -f ${DOCKERFILE_PATH}/$(2) .
 	if [ "${IS_MAIN_BRANCH}" = "true" ]; then $(CONTAINER_TOOL) tag ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):${IMAGE_TAG} ${AIBRIX_CONTAINER_REGISTRY_NAMESPACE}/$(1):nightly; fi
 endef
 
@@ -289,6 +290,27 @@ docker-build-kvcached-runtime: ## Build the kvcached-enabled ModelClaim runtime 
 .PHONY: docker-build-metadata-service
 docker-build-metadata-service: ## Build docker image with the metadata-service (same as runtime but different tag).
 	$(call build_and_tag,metadata-service,Dockerfile.python)
+
+.PHONY: docker-build-metadata-service-local
+docker-build-metadata-service-local: ## Build metadata-service locally, auto-loading the macOS corporate CA when available.
+	@set -eu; \
+	tmp_ca=""; \
+	cleanup() { \
+		if [ -n "$$tmp_ca" ] && [ -f "$$tmp_ca" ]; then rm -f "$$tmp_ca"; fi; \
+	}; \
+	trap cleanup EXIT; \
+	if [ -n "${LOCAL_CA_CERT:-}" ]; then \
+		echo "Using LOCAL_CA_CERT=$$LOCAL_CA_CERT"; \
+		$(MAKE) docker-build-metadata-service LOCAL_CA_CERT="$$LOCAL_CA_CERT" LOCAL_CA_CERT_SHA="$${LOCAL_CA_CERT_SHA:-$$(shasum -a 256 "$$LOCAL_CA_CERT" | awk '{print $$1}')}"; \
+	elif command -v security >/dev/null 2>&1 && security find-certificate -c "$(LOCAL_CA_CERT_NAME)" -p >/dev/null 2>&1; then \
+		tmp_ca=$$(mktemp /tmp/aibrix-local-ca.XXXXXX); \
+		security find-certificate -c "$(LOCAL_CA_CERT_NAME)" -p > "$$tmp_ca"; \
+		echo "Using macOS Keychain CA: $(LOCAL_CA_CERT_NAME)"; \
+		$(MAKE) docker-build-metadata-service LOCAL_CA_CERT="$$tmp_ca" LOCAL_CA_CERT_SHA="$$(shasum -a 256 "$$tmp_ca" | awk '{print $$1}')"; \
+	else \
+		echo "Building without a local CA certificate. Set LOCAL_CA_CERT=/path/to/ca.crt if your network intercepts TLS."; \
+		$(MAKE) docker-build-metadata-service; \
+	fi
 
 .PHONY: docker-build-kvcache-watcher
 docker-build-kvcache-watcher: ## Build docker image with the kvcache-watcher.
@@ -329,6 +351,7 @@ docker-push-kvcache-watcher: ## Push docker image with the kvcache-watcher.
 # - be able to push the image to your registry (i.e. if you do not set a valid value via AIBRIX_CONTAINER_REGISTRY_NAMESPACE=<myregistry> then the export will fail)
 # To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
 PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
+COMMA := ,
 .PHONY: docker-buildx
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
 	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile

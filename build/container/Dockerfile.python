@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # AIBrix Python Services
 #
 # Unified image for all AIBrix Python services from python/aibrix/
@@ -19,10 +20,23 @@ FROM ${BASE_IMAGE} AS builder
 WORKDIR /app
 
 ARG POETRY_VERSION=1.8.3
+ARG CORPORATE_CA_SHA=absent
 
-# Install dependencies
-RUN apt-get update \
-    && apt-get install -y python3-dev build-essential \
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+
+# Install dependencies and optional corporate CA trust material.
+# When a BuildKit secret named "corporate_ca" is provided, trust it for
+# subsequent pip/poetry network access inside the image.
+RUN --mount=type=secret,id=corporate_ca,target=/run/secrets/corporate_ca,required=false \
+    echo "corporate-ca-sha=${CORPORATE_CA_SHA}" >/dev/null \
+    && apt-get update \
+    && apt-get install -y python3-dev build-essential ca-certificates \
+    && if [ -f /run/secrets/corporate_ca ]; then \
+        install -m 0644 /run/secrets/corporate_ca /usr/local/share/ca-certificates/corporate-ca.crt; \
+        update-ca-certificates; \
+    fi \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
     
@@ -43,19 +57,31 @@ FROM ${BASE_IMAGE}
 
 WORKDIR /app
 
+ARG CORPORATE_CA_SHA=absent
+
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+
 COPY --from=builder /app/dist/*.whl ./
 
-# Install build dependencies and clean up in one step (avoiding creating another new layer)
-# procps grep mawk are for batch worker to kill llm engine
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc python3-dev mawk procps grep  \
+# Install runtime dependencies and optional corporate CA trust material.
+# procps grep mawk are for batch worker to kill llm engine.
+RUN --mount=type=secret,id=corporate_ca,target=/run/secrets/corporate_ca,required=false \
+    echo "corporate-ca-sha=${CORPORATE_CA_SHA}" >/dev/null \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gcc python3-dev mawk procps grep ca-certificates \
+    && if [ -f /run/secrets/corporate_ca ]; then \
+        install -m 0644 /run/secrets/corporate_ca /usr/local/share/ca-certificates/corporate-ca.crt; \
+        update-ca-certificates; \
+    fi \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir ./*.whl \
     && rm -f ./*.whl \
     && apt-get purge -y gcc python3-dev \
     && apt-get autoremove -y \
-    && pip cache purge || true
+    && (pip cache purge || true)
 
 # Set entrypoint for Runtime
 ENTRYPOINT ["aibrix_runtime"]

@@ -1,0 +1,172 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aibrix-s3-credentials
+  namespace: aibrix-system
+type: Opaque
+stringData:
+  access-key-id: minioadmin
+  secret-access-key: minioadmin
+  region: us-east-1
+  bucket-name: aibrix-batch
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: aibrix-system
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: aibrix-batch
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio
+        app.kubernetes.io/part-of: aibrix-batch
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:latest
+          args:
+            - server
+            - /data
+            - --console-address
+            - :9001
+          env:
+            - name: MINIO_ROOT_USER
+              value: minioadmin
+            - name: MINIO_ROOT_PASSWORD
+              value: minioadmin
+          ports:
+            - name: api
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: aibrix-system
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: aibrix-batch
+spec:
+  selector:
+    app.kubernetes.io/name: minio
+  ports:
+    - name: api
+      port: 9000
+      targetPort: api
+    - name: console
+      port: 9001
+      targetPort: console
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-create-bucket
+  namespace: aibrix-system
+  labels:
+    app.kubernetes.io/name: minio-create-bucket
+    app.kubernetes.io/part-of: aibrix-batch
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:latest
+          command:
+            - sh
+            - -c
+            - |
+              until mc alias set local http://minio.aibrix-system.svc.cluster.local:9000 minioadmin minioadmin; do
+                echo "waiting for minio"
+                sleep 2
+              done
+              mc mb --ignore-existing local/aibrix-batch
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aibrix-model-deployment-templates
+  namespace: aibrix-system
+data:
+  templates.yaml: |
+    - name: mock-vllm
+      version: v0.0.1
+      status: active
+      spec:
+        engine:
+          type: mock
+          version: "0.1.0"
+          image: aibrix/vllm-mock:nightly
+          invocation: http_server
+          health_endpoint: /ready
+        model_source:
+          type: local
+          uri: /models/mock
+        accelerator:
+          type: cpu
+          count: 1
+        parallelism:
+          tp: 1
+        supported_endpoints:
+          - /v1/chat/completions
+          - /v1/embeddings
+        deployment_mode: dedicated
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aibrix-batch-profiles
+  namespace: aibrix-system
+data:
+  profiles.yaml: |
+    default: dev
+    items:
+      - name: dev
+        spec:
+          storage:
+            backend: minio
+            bucket: aibrix-batch
+            region: us-east-1
+            credentials_secret_ref: aibrix-s3-credentials
+            endpoint_url: http://minio.aibrix-system.svc.cluster.local:9000
+          metastore:
+            backend: redis
+            endpoint_url: redis-master.aibrix-system.svc.cluster.local
+          scheduling:
+            completion_window: 24h
+            max_concurrency: 4
+            request_timeout_seconds: 60
+          quota:
+            max_requests_per_batch: 1000
+            max_input_size_mb: 100
+            max_output_size_gb: 1

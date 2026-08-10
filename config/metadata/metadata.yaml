@@ -30,10 +30,23 @@ rules:
   - apiGroups: ["model.aibrix.ai"]
     resources: ["modeladapters"]
     verbs: ["get", "list"]
-  # For batch job execution (K8sJobRuntime creates/polls/deletes Jobs in-process)
+  # For batch job execution. The metadata service may run either the
+  # Kubernetes Job runtime or the per-job Deployment runtime.
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "create", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/status"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -81,7 +94,7 @@ spec:
             # extra_body.aibrix.planner_decision and their worker pods bring
             # their own inference engine endpoint. --enable-k8s-support lets the
             # metadata service create the k8s clients needed to run jobs as
-            # Kubernetes Jobs/Deployments. Requires the jobs RBAC granted to the
+            # Kubernetes Jobs/Deployments. Requires the batch RBAC granted to the
             # metadata service account.
             - --enable-k8s-support
           imagePullPolicy: IfNotPresent

@@ -1,0 +1,237 @@
+# AIBrix batch dev bootstrap — single-namespace (default) bundle.
+#
+# Lays down everything a local metadata-service process needs to drive
+# real worker pods on a real cluster:
+#   * Redis     — metastore + users API backend
+#   * MinIO     — S3-compatible storage shared by metadata + workers
+#   * Secret    — S3 creds the worker pods read at runtime
+#   * Templates ConfigMap — model deployment template registry
+#   * Profiles  ConfigMap — batch profile registry
+#
+# Apply once per cluster:
+#   kubectl apply -f python/aibrix/aibrix/k8s-batch-bootstrap.yaml
+#
+# Then start the metadata service locally with the matching env vars
+# (see "Local metadata service" comments at the bottom of this file).
+#
+# Notes:
+# - Namespace is intentionally `default` to keep the dev loop short.
+#   Production should isolate into `aibrix-system` and lock down RBAC.
+# - MinIO bucket is created by the post-install Job at the end of this
+#   file; it is idempotent (`mc mb --ignore-existing`).
+# - Profile's storage.endpoint_url is the *worker pod's* view
+#   (in-cluster Service DNS). The local metadata process uses a
+#   separate STORAGE_AWS_ENDPOINT_URL env var pointing at port-forward.
+
+---
+# ---------- Redis ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: default
+  labels: { app: redis, component: aibrix-batch-dev }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: redis } }
+  template:
+    metadata: { labels: { app: redis } }
+    spec:
+      containers:
+      - name: redis
+        image: redis:7.4
+        args: ["--save", "", "--appendonly", "no"]   # ephemeral, no persistence
+        ports:
+        - { name: redis, containerPort: 6379 }
+        readinessProbe:
+          tcpSocket: { port: 6379 }
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        resources:
+          requests: { cpu: 50m, memory: 64Mi }
+          limits:   { cpu: 500m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: default
+spec:
+  selector: { app: redis }
+  ports:
+  - { name: redis, port: 6379, targetPort: 6379 }
+
+---
+# ---------- MinIO ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: default
+  labels: { app: minio, component: aibrix-batch-dev }
+  annotations: { "ambient.istio.io/redirection": "disabled" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: minio } }
+  template:
+    metadata: { labels: { app: minio } }
+    spec:
+      containers:
+      - name: minio
+        image: minio/minio:latest
+        args: ["server", "/data", "--console-address", ":9001"]
+        env:
+        - { name: MINIO_ROOT_USER,     value: minioadmin }
+        - { name: MINIO_ROOT_PASSWORD, value: minioadmin }
+        ports:
+        - { name: api,     containerPort: 9000 }
+        - { name: console, containerPort: 9001 }
+        readinessProbe:
+          httpGet: { path: /minio/health/ready, port: 9000 }
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests: { cpu: 100m, memory: 256Mi }
+          limits:   { cpu: 1,    memory: 1Gi }
+        volumeMounts:
+        - { name: data, mountPath: /data }
+      volumes:
+      - { name: data, emptyDir: {} }                # ephemeral; swap for PVC if you care
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: default
+spec:
+  selector: { app: minio }
+  ports:
+  - { name: api,     port: 9000, targetPort: 9000 }
+  - { name: console, port: 9001, targetPort: 9001 }
+
+---
+# ---------- S3 credentials Secret (consumed by worker pods) ----------
+# Key names are fixed by aibrix/batch/manifest/storage_env.py:
+#   access-key-id, secret-access-key, region, bucket-name
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aibrix-s3-creds
+  namespace: default
+type: Opaque
+stringData:
+  access-key-id:     minioadmin
+  secret-access-key: minioadmin
+  region:            us-east-1
+  bucket-name:       aibrix-batch
+
+---
+# ---------- Templates ConfigMap ----------
+# Name MUST be `aibrix-model-deployment-templates` — see
+# aibrix/batch/template/registry.py:TEMPLATES_CONFIGMAP_NAME.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aibrix-model-deployment-templates
+  namespace: default
+data:
+  templates.yaml: |
+    - name: mock-vllm
+      version: v0.0.1
+      status: active
+      spec:
+        engine:
+          type: mock
+          version: "0.1.0"
+          # Swap to whatever image your cluster can pull. The development
+          # mock at development/app/app.py is one option; another is any
+          # OpenAI-compatible HTTP server image you have on hand.
+          image: aibrix/vllm-mock:nightly
+          invocation: http_server
+          health_endpoint: /ready
+        model_source:
+          type: local
+          uri: /models/mock
+        accelerator:
+          type: cpu
+          count: 1
+        parallelism:
+          tp: 1
+        supported_endpoints:
+          - /v1/chat/completions
+          - /v1/embeddings
+        deployment_mode: dedicated
+
+---
+# ---------- Profiles ConfigMap ----------
+# Name MUST be `aibrix-batch-profiles` — see
+# aibrix/batch/template/registry.py:PROFILES_CONFIGMAP_NAME.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aibrix-batch-profiles
+  namespace: default
+data:
+  profiles.yaml: |
+    default: dev
+    items:
+      - name: dev
+        spec:
+          storage:
+            backend: minio
+            bucket: aibrix-batch
+            region: us-east-1
+            credentials_secret_ref: aibrix-s3-creds
+            # WORKER pod's view of MinIO. In-cluster Service DNS.
+            endpoint_url: http://minio.default.svc.cluster.local:9000
+          metastore:
+            backend: redis
+            endpoint_url: redis.default.svc.cluster.local
+          scheduling:
+            completion_window: 24h
+            max_concurrency: 4
+            request_timeout_seconds: 60
+          quota:
+            max_requests_per_batch: 1000
+            max_input_size_mb: 100
+            max_output_size_gb: 1
+
+# ===================================================================
+# Bucket creation: not bundled — do it manually after MinIO is Ready.
+# Easiest: port-forward the console (9001) and click "Create Bucket"
+# at http://localhost:9001 (login minioadmin / minioadmin).
+# Or from any in-cluster pod:
+#
+#   kubectl run mc --rm -it --restart=Never --image=minio/mc -- \
+#     sh -c 'mc alias set m http://minio.default.svc.cluster.local:9000 \
+#            minioadmin minioadmin && mc mb m/aibrix-batch'
+# ===================================================================
+
+# ===================================================================
+# Local metadata service (run as a host process, not a pod):
+#
+#   # 1) port-forward MinIO so the local process can read/write S3:
+#   kubectl port-forward svc/minio 9000:9000 &
+#
+#   # 2) port-forward Redis for metastore + users API:
+#   kubectl port-forward svc/redis 6379:6379 &
+#
+#   # 3) export env and start metadata service in --enable-k8s-job mode:
+#   export STORAGE_REDIS_HOST=localhost
+#   export STORAGE_REDIS_PORT=6379
+#   export STORAGE_AWS_ACCESS_KEY_ID=minioadmin
+#   export STORAGE_AWS_SECRET_ACCESS_KEY=minioadmin
+#   export STORAGE_AWS_ENDPOINT_URL=http://localhost:9000  # LOCAL view
+#   export STORAGE_AWS_REGION=us-east-1
+#   export STORAGE_AWS_BUCKET=aibrix-batch
+#
+#   cd python/aibrix
+#   poetry run python -m aibrix.metadata.app \
+#       --port 8090 \
+#       --enable-k8s-job \
+#       --k8s-namespace default
+#
+#   # 4) drive a batch:
+#   poetry run python scripts/batch_api_smoke.py \
+#       --num-records 5 --timeout 600 --poll-interval 10
+# ===================================================================

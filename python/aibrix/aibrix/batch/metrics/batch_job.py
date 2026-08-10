@@ -33,9 +33,16 @@ def _terminal_error_code(job: BatchJob) -> str:
 
 
 def tags_from_job(job: BatchJob) -> tuple[Tag, ...]:
+    console_job_id = (
+        job.spec.aibrix.job_id
+        if job.spec.aibrix is not None and job.spec.aibrix.job_id is not None
+        else "none"
+    )
     return (
         T("endpoint", job.spec.endpoint),
         T("completion_window", str(job.spec.completion_window)),
+        T("job_id", job.job_id),
+        T("console_job_id", console_job_id),
     )
 
 

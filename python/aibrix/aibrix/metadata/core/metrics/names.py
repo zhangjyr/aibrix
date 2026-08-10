@@ -32,6 +32,11 @@ METRIC_METADATA_BATCH_API_JOB_FINISHED = "metadata.batch.api.job.finished"
 # End-to-end execution time from in-progress to terminal state, emitted in milliseconds.
 METRIC_METADATA_BATCH_API_JOB_EXECUTION_TIME = "metadata.batch.api.job.execution_time"
 
+# Time spent in each execution phase, tagged by `phase`, emitted in milliseconds.
+METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME = (
+    "metadata.batch.api.job.execution_phase_time"
+)
+
 # Count of batch requests as they finish in the driver, tagged by result.
 # Use rate() on this counter to derive completion throughput over time.
 METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED = (

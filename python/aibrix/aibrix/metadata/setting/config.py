@@ -15,7 +15,6 @@ from typing import Optional
 
 from pydantic import Field
 
-from aibrix import envs
 from aibrix.config import AIBrixSettings
 from aibrix.storage.types import StorageType
 
@@ -46,6 +45,7 @@ class Settings(AIBrixSettings):
     METASTORE_TYPE: StorageType = StorageType.AUTO
     MAX_FILE_SIZE: int = 100 * 1024 * 1024  # 100 MB in bytes
     METRICS: MetricsConfig | None = Field(default_factory=load_metrics_config)
+
 
 # Create an instance of the Settings class
 # Pydantic will automatically try to load values from environment variables

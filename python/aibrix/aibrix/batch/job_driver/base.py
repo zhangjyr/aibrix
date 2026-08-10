@@ -596,7 +596,9 @@ class BaseJobDriver:
             status=job.status.state.value,
         )  # type: ignore[call-arg]
 
-    def _emit_request_usage_metrics(self, job: BatchJob, usage: Optional[BatchUsage]) -> None:
+    def _emit_request_usage_metrics(
+        self, job: BatchJob, usage: Optional[BatchUsage]
+    ) -> None:
         if usage is None:
             return
 

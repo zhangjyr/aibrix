@@ -173,6 +173,7 @@ Prometheus will expose them with normalized names such as:
 
 - `metadata_batch_api_job_finished_total`
 - `metadata_batch_api_job_execution_time_ms_bucket`
+- `metadata_batch_api_job_execution_phase_time_ms_bucket`
 
 The dashboard queries must use the Prometheus-normalized names, not the raw
 Python constants.
@@ -199,8 +200,22 @@ When adding or changing metrics:
 The dashboard currently focuses on summary views for:
 
 - batch API intake and finalization
+- batch execution breakdown across scheduling, runtime provision, task execution, and finalization
 - request completion throughput
 - request token throughput
+
+Execution phase breakdown timers are emitted when each phase completes and carry
+the base job labels plus a `phase` label. Current phases are:
+
+- `scheduling`
+- `runtime_provision`
+- `task_execution`
+- `finalization`
+
+Batch job metrics derived from `tags_from_job()` now also include:
+
+- `job_id`: the BatchJob status job ID
+- `console_job_id`: `spec.aibrix.job_id` when present, otherwise `none`
 - failure injection events
 - runtime started and torn-down lifecycle counts
 - JobStore latency and read amplification

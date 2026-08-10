@@ -206,7 +206,7 @@ class JobEntityManager(ABC):
         self._refresh_task = None
 
     async def refresh(self) -> None:
-        jobs = await self._list_recovery_jobs()
+        jobs = await self._list_active_jobs()
         current_jobs: dict[str, BatchJob] = {}
         for job in jobs:
             job_id = job.job_id
@@ -245,7 +245,7 @@ class JobEntityManager(ABC):
             await self.job_updated(previous_job, latest_job)
 
     async def _bootstrap_jobs(self) -> None:
-        for job in await self._list_recovery_jobs():
+        for job in await self._list_active_jobs():
             job_id = job.job_id
             if job_id is None:
                 continue
@@ -266,39 +266,39 @@ class JobEntityManager(ABC):
             except Exception:
                 logger.error("job entity manager refresh failed", exc_info=True)  # type: ignore[call-arg]
 
-    async def _list_recovery_jobs(self) -> list[BatchJob]:
-        return await self._list_jobs_for_recovery(None)
+    async def _list_active_jobs(self) -> list[BatchJob]:
+        return await self._list_active_job_impl(None)
 
-    async def _list_jobs_for_recovery(
-        self, oldest_unfinished_created_at: Optional[datetime]
+    async def _list_active_job_impl(
+        self, oldest_active_job_created_at: Optional[datetime]
     ) -> list[BatchJob]:
-        recovered_jobs: list[BatchJob] = []
+        active_jobs: list[BatchJob] = []
         after: Optional[str] = None
         while True:
             jobs = await self.list_jobs(after=after, limit=self.DEFAULT_JOB_PAGE_LIMIT)
             if not jobs:
-                return recovered_jobs
+                return active_jobs
             for job in jobs:
                 if job.job_id is not None and not job.status.finished:
-                    recovered_jobs.append(job)
+                    active_jobs.append(job)
             last_job = jobs[-1]
             last_job_id = last_job.job_id or last_job.status.job_id
             last_created_at = last_job.status.created_at
             if last_job_id is None or len(jobs) < self.DEFAULT_JOB_PAGE_LIMIT:
-                return recovered_jobs
+                return active_jobs
             if (
-                self._supports_created_at_desc_recovery_ordering()
-                and oldest_unfinished_created_at is not None
+                self._supports_created_at_desc_job_ordering()
+                and oldest_active_job_created_at is not None
                 and last_created_at is not None
-                and last_created_at < oldest_unfinished_created_at
+                and last_created_at < oldest_active_job_created_at
             ):
-                return recovered_jobs
+                return active_jobs
             after = last_job_id
 
-    def _supports_created_at_desc_recovery_ordering(self) -> bool:
+    def _supports_created_at_desc_job_ordering(self) -> bool:
         """Whether ``list_jobs`` is guaranteed newest->oldest by created_at.
 
-        Recovery can stop early only when this ordering guarantee holds.
+        Active-job listing can stop early only when this ordering guarantee holds.
         """
         return False
 
@@ -314,7 +314,7 @@ class JobEntityManager(ABC):
         """Republish an active job discovered outside bootstrap/refresh.
 
         A direct ``get_job()`` read can discover an unfinished job that was not
-        restored into the manager during startup recovery. In that case, publish
+        restored into the manager during startup active-job sync. In that case, publish
         the same committed event the refresh/bootstrap path would have emitted.
         """
 

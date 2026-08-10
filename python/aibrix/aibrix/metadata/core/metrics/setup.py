@@ -24,9 +24,7 @@ from aibrix.metadata.core.metrics.prometheus import PrometheusSink
 from aibrix.metadata.core.metrics.sink import Emitter, FanoutSink, NoopSink, Sink
 from aibrix.metadata.core.metrics.udp import DogStatsdSink, StatsdSink, StatsiteSink
 from aibrix.metadata.setting import (
-    InternalMetricsConfig,
     MetricsConfig,
-    load_internal_metrics_config,
     load_metrics_config,
 )
 
@@ -40,18 +38,8 @@ class MetricsRuntime:
     metrics_app: ASGIApp | None = None
 
 
-def setup_metrics(
-    config: MetricsConfig | None = None,
-    internal_config: InternalMetricsConfig | None = None,
-) -> MetricsRuntime:
+def setup_metrics(config: MetricsConfig | None = None) -> MetricsRuntime:
     config = config if config is not None else load_metrics_config()
-    if internal_config is None and isinstance(config, InternalMetricsConfig):
-        internal_config = config
-    internal_config = (
-        internal_config
-        if internal_config is not None
-        else load_internal_metrics_config()
-    )
     if config is None:
         sink: Sink = NoopSink()
         Emitter.set_sink(sink)

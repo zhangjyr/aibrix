@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 import pytest
+from prometheus_client import generate_latest
 
 # Set required environment variable before importing
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
@@ -44,7 +45,12 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.batch.state import JobEntityManager, JobMetaInfo
 from aibrix.context import InfrastructureContext
-from aibrix.metadata.core.metrics import Emitter
+from aibrix.metadata.core.metrics import (
+    Emitter,
+    MetricsConfig,
+    setup_metrics,
+    shutdown_metrics,
+)
 from tests.fake.batch_runtime import FakeRuntime
 
 
@@ -1640,8 +1646,165 @@ async def test_list_jobs_paginates_without_entity_manager():
 
     page2 = await job_manager.list_jobs(after="job-2", limit=2)
     assert [job.job_id for job in page2] == ["job-1"]
-
     assert await job_manager.list_jobs(after="missing-job", limit=2) == []
+
+
+def test_emit_finished_job_metrics_only_emits_terminal_breakdown():
+    runtime = setup_metrics(MetricsConfig(prometheus_enabled=True))
+    try:
+        job_manager = _job_manager()
+        created_at = datetime(2024, 1, 1, 0, 0, 0)
+        in_progress_at = created_at + timedelta(seconds=5)
+        connected_at = in_progress_at + timedelta(seconds=15)
+        finalizing_at = connected_at + timedelta(seconds=30)
+        finalized_at = finalizing_at + timedelta(seconds=7)
+
+        job = BatchJob(
+            sessionID="session-breakdown",
+            typeMeta=TypeMeta(apiVersion="v1", kind="BatchJob"),
+            metadata=ObjectMeta(
+                resourceVersion="1",
+                creationTimestamp=created_at,
+                deletionTimestamp=None,
+            ),
+            spec=BatchJobSpec(
+                endpoint=BatchJobEndpoint.CHAT_COMPLETIONS.value,
+                input_file_id="input-breakdown",
+                completion_window=CompletionWindow.TWENTY_FOUR_HOURS.expires_at(),
+            ),
+            status=BatchJobStatus(
+                jobID="job-breakdown",
+                state=BatchJobState.FINALIZED,
+                createdAt=created_at,
+                inProgressAt=in_progress_at,
+                finalizingAt=finalizing_at,
+                completedAt=finalized_at,
+                finalizedAt=finalized_at,
+                execution={
+                    "attempt-0": JobRuntimeRef(
+                        driverType="fake",
+                        connectedAt=connected_at,
+                    )
+                },
+                requestCounts=RequestCountStats(total=10, completed=10),
+                conditions=[
+                    Condition(
+                        type=ConditionType.COMPLETED,
+                        status=ConditionStatus.TRUE,
+                        lastTransitionTime=finalized_at,
+                    )
+                ],
+            ),
+        )
+
+        job_manager._emit_finished_job_metrics(job)
+
+        metrics_text = generate_latest(runtime.registry).decode()
+        assert (
+            "metadata_batch_api_job_execution_phase_time_ms_count" not in metrics_text
+        )
+        assert "metadata_batch_api_job_execution_time_ms_sum" in metrics_text
+        assert 'job_id="job-breakdown"' in metrics_text
+    finally:
+        shutdown_metrics()
+
+
+@pytest.mark.asyncio
+async def test_job_updated_handler_emits_scheduling_metric_on_in_progress():
+    runtime = setup_metrics(MetricsConfig(prometheus_enabled=True))
+    try:
+        job_manager = _job_manager()
+        meta_job = _in_progress_meta_job("job-scheduling", total_requests=10)
+        created_at = datetime(2024, 1, 1, 0, 0, 0)
+        meta_job.status.state = BatchJobState.VALIDATING
+        meta_job.status.created_at = created_at
+        meta_job.status.in_progress_at = None
+        job_manager._in_progress_jobs[meta_job.job_id] = meta_job
+
+        updated = meta_job.copy()
+        updated.status.state = BatchJobState.IN_PROGRESS
+        updated.status.in_progress_at = created_at + timedelta(seconds=5)
+
+        assert await job_manager.job_updated_handler(meta_job, updated) is True
+
+        metrics_text = generate_latest(runtime.registry).decode()
+        assert (
+            'metadata_batch_api_job_execution_phase_time_ms_sum{completion_window="86400",console_job_id="none",endpoint="/v1/chat/completions",job_id="job-scheduling",phase="scheduling"} 5000.0'
+            in metrics_text
+        )
+    finally:
+        shutdown_metrics()
+
+
+@pytest.mark.asyncio
+async def test_job_updated_handler_emits_runtime_provision_metric_on_connect():
+    runtime = setup_metrics(MetricsConfig(prometheus_enabled=True))
+    try:
+        job_manager = _job_manager()
+        meta_job = _in_progress_meta_job("job-connect", total_requests=10)
+        in_progress_at = datetime(2024, 1, 1, 0, 0, 5)
+        meta_job.status.in_progress_at = in_progress_at
+        job_manager._in_progress_jobs[meta_job.job_id] = meta_job
+
+        updated = meta_job.copy()
+        updated.status.execution = {
+            "attempt-0": JobRuntimeRef(
+                driverType="fake",
+                connectedAt=in_progress_at + timedelta(seconds=15),
+            )
+        }
+
+        assert await job_manager.job_updated_handler(meta_job, updated) is True
+
+        metrics_text = generate_latest(runtime.registry).decode()
+        assert (
+            'metadata_batch_api_job_execution_phase_time_ms_sum{completion_window="86400",console_job_id="none",endpoint="/v1/chat/completions",job_id="job-connect",phase="runtime_provision"} 15000.0'
+            in metrics_text
+        )
+        assert 'phase="task_execution"' not in metrics_text
+    finally:
+        shutdown_metrics()
+
+
+@pytest.mark.asyncio
+async def test_job_updated_handler_emits_task_execution_metric_on_finalizing():
+    runtime = setup_metrics(MetricsConfig(prometheus_enabled=True))
+    try:
+        job_manager = _job_manager()
+        meta_job = _in_progress_meta_job("job-finalizing", total_requests=10)
+        in_progress_at = datetime(2024, 1, 1, 0, 0, 5)
+        connected_at = in_progress_at + timedelta(seconds=15)
+        meta_job.status.in_progress_at = in_progress_at
+        meta_job.status.set_runtime_ref(
+            "attempt-0",
+            JobRuntimeRef(
+                driverType="fake",
+                connectedAt=connected_at,
+            ),
+        )
+        job_manager._in_progress_jobs[meta_job.job_id] = meta_job
+
+        updated = meta_job.copy()
+        updated.status.state = BatchJobState.FINALIZING
+        updated.status.finalizing_at = connected_at + timedelta(seconds=30)
+        updated.status.add_condition(
+            Condition(
+                type=ConditionType.COMPLETED,
+                status=ConditionStatus.TRUE,
+                lastTransitionTime=updated.status.finalizing_at,
+            )
+        )
+
+        assert await job_manager.job_updated_handler(meta_job, updated) is True
+
+        metrics_text = generate_latest(runtime.registry).decode()
+        assert (
+            'metadata_batch_api_job_execution_phase_time_ms_sum{completion_window="86400",console_job_id="none",endpoint="/v1/chat/completions",job_id="job-finalizing",phase="task_execution"} 30000.0'
+            in metrics_text
+        )
+        assert 'phase="finalization"' not in metrics_text
+    finally:
+        shutdown_metrics()
 
 
 @pytest.mark.asyncio

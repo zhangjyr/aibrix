@@ -25,6 +25,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 from aibrix.metadata.app import build_app
 from aibrix.metadata.core.metrics import MetricsConfig, setup_metrics, shutdown_metrics
 from aibrix.metadata.store import RedisMetadataStore
+from tests.fake.redis import FakeRedisClient
 
 
 def _args(**overrides):
@@ -45,16 +46,9 @@ def test_metrics_endpoint_exposes_metadata_http_metrics(monkeypatch):
     monkeypatch.delenv("METRICS_STATSITE_ADDR", raising=False)
     monkeypatch.delenv("METRICS_DOGSTATSD_ADDR", raising=False)
 
-    class FakeRedisClient:
-        async def ping(self):
-            return True
-
-        async def aclose(self):
-            return None
-
     with patch(
         "aibrix.metadata.store.redis.get_redis_client",
-        return_value=FakeRedisClient(),
+        return_value=FakeRedisClient(ping_result=True),
     ):
         app = build_app(_args())
         with TestClient(app) as client:
@@ -73,17 +67,10 @@ def test_metrics_endpoint_exposes_metadata_http_metrics(monkeypatch):
 def test_redis_metadata_store_emits_prometheus_metrics():
     runtime = setup_metrics(MetricsConfig(prometheus_enabled=True))
 
-    class FakeRedisClient:
-        async def get(self, key):
-            return b"demo-user"
-
-        async def aclose(self):
-            return None
-
     try:
         with patch(
             "aibrix.metadata.store.redis.get_redis_client",
-            return_value=FakeRedisClient(),
+            return_value=FakeRedisClient(values={"user:1": b"demo-user"}),
         ):
             store = RedisMetadataStore()
             result = asyncio.run(store.get("user:1"))

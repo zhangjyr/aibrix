@@ -19,7 +19,8 @@ A single JobEntityManager whose document store is the **batch metastore**
 Role split (see ``JobEntityManager``):
   * command store — document CRUD delegated to the metastore (one source of truth);
   * event source — committed / updated / deleted emitted on writes;
-  * recovery — ``_list_recovery_jobs`` reads the metastore on startup.
+  * active job listing — ``_list_active_jobs`` reads the metastore during
+    startup and refreshes.
 
 """
 
@@ -126,15 +127,15 @@ class JobStore(JobEntityManager):
 
         return await self._run_tracked_operation("list_jobs", _impl)
 
-    async def _list_recovery_jobs(self) -> List[BatchJob]:
+    async def _list_active_jobs(self) -> List[BatchJob]:
         async def _impl() -> List[BatchJob]:
-            return await self._list_jobs_for_recovery(
+            return await self._list_active_job_impl(
                 await batch_metastore.get_oldest_unfinished_job_created_at()
             )
 
-        return await self._run_tracked_operation("list_recovery_jobs", _impl)
+        return await self._run_tracked_operation("list_active_jobs", _impl)
 
-    def _supports_created_at_desc_recovery_ordering(self) -> bool:
+    def _supports_created_at_desc_job_ordering(self) -> bool:
         return (
             batch_metastore.p_metastore is not None
             and batch_metastore.p_metastore.get_list_ordering()

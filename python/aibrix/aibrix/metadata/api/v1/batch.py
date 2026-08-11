@@ -22,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from aibrix.batch import BatchDriver
+from aibrix.batch.batch_manager import JobUnexpectedStateError
 from aibrix.batch.job_entity import (
     AibrixMetadata,
     BatchJob,
@@ -754,6 +755,47 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
     except Exception as e:
         logger.error(
             "Unexpected error cancelling batch", batch_id=batch_id, error=str(e)
+        )  # type: ignore[call-arg]
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/{batch_id}/retry_finalize", response_model_exclude_none=True)
+async def retry_finalize_batch(request: Request, batch_id: str) -> BatchResponse:
+    """Retry the storage-only finalization phase for a previously finalizing batch."""
+    try:
+        batch_driver: BatchDriver = request.app.state.batch_driver
+
+        logger.info("Retrying batch finalization", batch_id=batch_id)  # type: ignore[call-arg]
+
+        job = await _resolve_batch_job(request, batch_id)
+        if not job:
+            logger.warning("Batch not found for retry_finalize", batch_id=batch_id)  # type: ignore[call-arg]
+            raise HTTPException(status_code=404, detail="Batch not found")
+        if job.status.finalizing_at is None:
+            raise HTTPException(
+                status_code=412,
+                detail="Batch has not entered finalization and cannot be retried",
+            )
+
+        updated_job = await batch_driver.retry_finalize_job(batch_id)
+        logger.info(
+            "Batch retry_finalize completed",
+            batch_id=batch_id,
+            state=updated_job.status.state.value,
+            condition=updated_job.status.condition.value
+            if updated_job.status.condition is not None
+            else None,
+        )  # type: ignore[call-arg]
+        return _batch_job_to_openai_response(updated_job)
+    except HTTPException:
+        raise
+    except JobUnexpectedStateError as e:
+        raise HTTPException(status_code=412, detail=str(e)) from e
+    except Exception as e:
+        logger.error(
+            "Unexpected error retrying batch finalization",
+            batch_id=batch_id,
+            error=str(e),
         )  # type: ignore[call-arg]
         raise HTTPException(status_code=500, detail="Internal server error")
 

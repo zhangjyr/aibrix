@@ -26,6 +26,7 @@ from aibrix.metadata.core.metrics import (
 )
 from aibrix.storage import RedisStorage, StorageType, create_storage
 from aibrix.storage.base import StorageConfig
+from aibrix.storage.redis import _TrackedRedisClientProxy
 from aibrix.storage.redis_upgrade import (
     REDIS_STORAGE_LATEST_VERSION,
     REDIS_STORAGE_VERSION_KEY,
@@ -826,6 +827,21 @@ async def test_get_redis_tracks_backend_calls(monkeypatch):
         assert get_backend_operation_count() == 1
     finally:
         reset_backend_operation_count(token)
+
+
+def test_tracked_redis_proxy_preserves_wrapped_method_metadata():
+    class _Client:
+        def sample_method(self, key: str) -> bytes:
+            """Sample redis operation."""
+            return key.encode("utf-8")
+
+    proxy = _TrackedRedisClientProxy(_Client())
+    wrapped = proxy.sample_method
+
+    assert wrapped.__name__ == "sample_method"
+    assert wrapped.__doc__ == "Sample redis operation."
+    assert wrapped.__wrapped__.__name__ == "sample_method"
+    assert wrapped("demo") == b"demo"
 
 
 def test_feature_detection():

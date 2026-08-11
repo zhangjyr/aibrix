@@ -15,26 +15,54 @@
 from __future__ import annotations
 
 import socket
-from typing import Iterable
+import time
+from typing import Iterable, Optional
 
 from aibrix.logger import init_logger
 from aibrix.metadata.core.metrics.sink import Sink, Tag, normalize_tags
 
 logger = init_logger(__name__)
+_UDP_ADDR_CACHE_TTL_SECONDS = 30.0
+
+
+def _split_udp_addr(address: str) -> tuple[str, int]:
+    address = address.strip()
+    if not address:
+        raise ValueError("UDP address must not be empty")
+    if address.startswith("["):
+        end = address.find("]")
+        if end == -1 or end + 1 >= len(address) or address[end + 1] != ":":
+            raise ValueError("UDP address must use [host]:port for IPv6 literals")
+        host = address[1:end]
+        port_text = address[end + 2 :]
+    else:
+        if ":" not in address:
+            raise ValueError("UDP address must be in host:port format")
+        host, port_text = address.rsplit(":", 1)
+    if not host:
+        raise ValueError("UDP address host must not be empty")
+    try:
+        port = int(port_text)
+    except ValueError as exc:
+        raise ValueError("UDP address port must be an integer") from exc
+    return host, port
 
 
 def _resolve_udp_addr(address: str) -> tuple[int, tuple]:
-    host, port = address.rsplit(":", 1)
-    family, _, _, _, sockaddr = socket.getaddrinfo(
-        host, int(port), type=socket.SOCK_DGRAM
-    )[0]
+    host, port = _split_udp_addr(address)
+    family, _, _, _, sockaddr = socket.getaddrinfo(host, port, type=socket.SOCK_DGRAM)[
+        0
+    ]
     return family, sockaddr
 
 
 class _UDPSinkBase(Sink):
     def __init__(self, address: str, prefix: str = ""):
-        self._family, self._sockaddr = _resolve_udp_addr(address)
-        self._socket = socket.socket(self._family, socket.SOCK_DGRAM)
+        self._address = address
+        self._family: Optional[int] = None
+        self._sockaddr: Optional[tuple] = None
+        self._socket: Optional[socket.socket] = None
+        self._resolved_at = 0.0
         self._prefix = prefix.strip(".")
 
     def _metric_name(self, name: str) -> str:
@@ -42,9 +70,40 @@ class _UDPSinkBase(Sink):
             return f"{self._prefix}.{name}"
         return name
 
-    def _send(self, payload: str) -> None:
+    def _destination(self) -> tuple[socket.socket, tuple] | None:
+        now = time.monotonic()
+        if (
+            self._socket is not None
+            and self._sockaddr is not None
+            and self._family is not None
+            and now - self._resolved_at < _UDP_ADDR_CACHE_TTL_SECONDS
+        ):
+            return self._socket, self._sockaddr
         try:
-            self._socket.sendto(payload.encode("utf-8"), self._sockaddr)
+            family, sockaddr = _resolve_udp_addr(self._address)
+        except Exception as exc:
+            logger.warning(
+                "Failed to resolve UDP metrics sink address",
+                address=self._address,
+                error=str(exc),
+            )  # type: ignore[call-arg]
+            return None
+        if self._socket is None or self._family != family:
+            if self._socket is not None:
+                self._socket.close()
+            self._socket = socket.socket(family, socket.SOCK_DGRAM)
+        self._family = family
+        self._sockaddr = sockaddr
+        self._resolved_at = now
+        return self._socket, self._sockaddr
+
+    def _send(self, payload: str) -> None:
+        destination = self._destination()
+        if destination is None:
+            return
+        udp_socket, sockaddr = destination
+        try:
+            udp_socket.sendto(payload.encode("utf-8"), sockaddr)
         except Exception:
             logger.exception("Failed to emit metrics payload", payload=payload)
 
@@ -70,7 +129,9 @@ class _UDPSinkBase(Sink):
         self.counter(name, value, *tags)
 
     def close(self) -> None:
-        self._socket.close()
+        if self._socket is not None:
+            self._socket.close()
+            self._socket = None
 
     def _format(
         self, name: str, value: float, metric_type: str, tags: tuple[Tag, ...]

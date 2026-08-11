@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from aibrix.batch.job_entity import BatchJob, ConditionType
 from aibrix.metadata.core.metrics import T, Tag
 
@@ -32,7 +34,14 @@ def _terminal_error_code(job: BatchJob) -> str:
     return "none"
 
 
-def tags_from_job(job: BatchJob) -> tuple[Tag, ...]:
+def tags_from_job(job: Optional[BatchJob]) -> tuple[Tag, ...]:
+    if job is None:
+        return (
+            T("endpoint", "none"),
+            T("completion_window", "none"),
+            T("job_id", "none"),
+            T("console_job_id", "none"),
+        )
     console_job_id = (
         job.spec.aibrix.job_id
         if job.spec.aibrix is not None and job.spec.aibrix.job_id is not None

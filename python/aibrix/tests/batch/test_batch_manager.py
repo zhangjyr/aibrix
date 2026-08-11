@@ -23,7 +23,7 @@ from prometheus_client import generate_latest
 # Set required environment variable before importing
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
-from aibrix.batch.batch_manager import BatchManager
+from aibrix.batch.batch_manager import BatchManager, _runtime_connected_at
 from aibrix.batch.job_driver import BaseJobDriver, TerminateResult
 from aibrix.batch.job_entity import (
     BatchJob,
@@ -95,6 +95,19 @@ def _in_progress_meta_job(job_id: str, total_requests: int) -> JobMetaInfo:
     )
     job.status.request_counts.total = total_requests
     return JobMetaInfo(job)
+
+
+def test_runtime_connected_at_ignores_none_execution_entries():
+    job = _in_progress_meta_job("job-runtime-connected-at", total_requests=1)
+    earlier = datetime(2024, 1, 1, 0, 0, 10)
+    later = datetime(2024, 1, 1, 0, 0, 20)
+    job.status.execution = {
+        "missing": None,
+        "later": JobRuntimeRef(driverType="later", connectedAt=later),
+        "earlier": JobRuntimeRef(driverType="earlier", connectedAt=earlier),
+    }
+
+    assert _runtime_connected_at(job) == earlier
 
 
 class _FakeJobDriver:

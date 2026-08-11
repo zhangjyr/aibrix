@@ -110,7 +110,9 @@ def _preserve_local_timestamps(
 def _runtime_connected_at(job: BatchJob) -> Optional[datetime]:
     execution = job.status.execution or {}
     connected_times = [
-        ref.connected_at for ref in execution.values() if ref.connected_at is not None
+        ref.connected_at
+        for ref in execution.values()
+        if ref is not None and ref.connected_at is not None
     ]
     if not connected_times:
         return None

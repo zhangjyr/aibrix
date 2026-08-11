@@ -208,6 +208,12 @@ def test_emit_request_completion_metrics_counts_finished_requests(monkeypatch):
     job = _make_job()
     driver = _make_driver(job)
     metric_calls: list[tuple[str, float, tuple[str, ...]]] = []
+    base_tags = (
+        job.spec.endpoint,
+        str(job.spec.completion_window),
+        job.job_id,
+        "none",
+    )
 
     def _record_counter(name, value, *tags):
         metric_calls.append((name, value, tuple(tag.value for tag in tags)))
@@ -220,12 +226,12 @@ def test_emit_request_completion_metrics_counts_finished_requests(monkeypatch):
         (
             metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED,
             3,
-            (job.spec.endpoint, str(job.spec.completion_window), "success"),
+            (*base_tags, "success"),
         ),
         (
             metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_COMPLETED,
             2,
-            (job.spec.endpoint, str(job.spec.completion_window), "fail"),
+            (*base_tags, "fail"),
         ),
     ]
 
@@ -234,6 +240,12 @@ def test_request_usage_metrics_emit_when_request_finishes(monkeypatch):
     job = _make_job()
     driver = _make_driver(job)
     metric_calls: list[tuple[str, float, tuple[str, ...]]] = []
+    base_tags = (
+        job.spec.endpoint,
+        str(job.spec.completion_window),
+        job.job_id,
+        "none",
+    )
 
     def _record_counter(name, value, *tags):
         metric_calls.append((name, value, tuple(tag.value for tag in tags)))
@@ -266,22 +278,22 @@ def test_request_usage_metrics_emit_when_request_finishes(monkeypatch):
         (
             metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_USAGE_TOKENS,
             11,
-            (job.spec.endpoint, str(job.spec.completion_window), "input_token"),
+            (*base_tags, "input_token"),
         ),
         (
             metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_USAGE_TOKENS,
             7,
-            (job.spec.endpoint, str(job.spec.completion_window), "output_token"),
+            (*base_tags, "output_token"),
         ),
         (
             metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_CACHED_TOKENS,
             5,
-            (job.spec.endpoint, str(job.spec.completion_window)),
+            base_tags,
         ),
         (
             metrics_names.METRIC_METADATA_BATCH_JOBDRIVER_REQUEST_REASONING_TOKENS,
             3,
-            (job.spec.endpoint, str(job.spec.completion_window)),
+            base_tags,
         ),
     ]
 

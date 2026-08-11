@@ -14,6 +14,7 @@
 
 import asyncio
 import time
+from functools import wraps
 from typing import BinaryIO, Optional, TextIO, Union
 
 import aibrix.client.redis as redis
@@ -39,6 +40,7 @@ class _TrackedRedisClientProxy:
         if not callable(attr):
             return attr
 
+        @wraps(attr)
         def _wrapped(*args, **kwargs):
             record_backend_operation()
             return attr(*args, **kwargs)

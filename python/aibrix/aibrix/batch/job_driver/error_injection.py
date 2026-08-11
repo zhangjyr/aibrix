@@ -352,7 +352,7 @@ class JobDriverErrorInjector:
         )
 
     def _log_event(self, event: JobDriverErrorInjectionEvent) -> None:
-        job_tags = tags_from_job(self._job) if self._job is not None else ()
+        job_tags = tags_from_job(self._job)
         Emitter.counter(
             metrics_names.METRIC_METADATA_BATCH_DRIVER_FAILURE_INJECTION,
             1,

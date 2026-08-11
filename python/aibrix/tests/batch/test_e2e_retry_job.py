@@ -65,7 +65,7 @@ async def test_retry_finalize_after_finalizing_failure(e2e_test_app, test_backen
             ):
                 persisted = await e2e_test_app.state.batch_driver.get_job(batch_id)
                 assert persisted is not None
-                assert persisted.status.state.value == "finalized"
+                assert persisted.status.state.value == "finalizing"
                 assert persisted.status.finalizing_at is not None
                 assert persisted.status.condition == ConditionType.COMPLETED
                 assert persisted.status.failed_at is None
@@ -115,11 +115,13 @@ async def test_retry_finalize_after_finalizing_failure(e2e_test_app, test_backen
 
                 retry_response = client.post(f"/v1/batches/{batch_id}/retry_finalize")
                 assert retry_response.status_code == 200, retry_response.text
-                assert observed_pre_retry_cleanup
+                retry_body = retry_response.json()
+                assert retry_body["status"] == "finalizing"
 
                 final_status = await wait_for_status(
                     client, batch_id, "completed", max_polls=20, poll_interval=0.5
                 )
+                assert observed_pre_retry_cleanup
                 validate_batch_response_with_runtime_teardown(
                     final_status,
                     e2e_test_app=e2e_test_app,

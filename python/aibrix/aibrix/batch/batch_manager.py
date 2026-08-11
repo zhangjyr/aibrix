@@ -132,7 +132,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
             BatchJobState.FINALIZED,
             BatchJobState.FINALIZING,  # For in_progress -> cancelling -> finalizing
         ],
-        BatchJobState.FINALIZED: [],  # Terminal state
+        BatchJobState.FINALIZED: [
+            BatchJobState.FINALIZING,  # Manual retry of finalization failure
+        ],
     }
 
     def __init__(
@@ -702,8 +704,8 @@ class BatchManager(RunningJobs, SchedulableJobs):
         job = await self.get_job(job_id)
         return job.status if job else None
 
-    async def retry_finalize_job(self, job_id: str) -> BatchJob:
-        """Retry the storage-only finalization phase for a previously finalizing job."""
+    async def prepare_retry_finalize_job(self, job_id: str) -> BatchJob:
+        """Persist a retryable job back into FINALIZING before storage finalization."""
         job = await self.get_job(job_id)
         if job is None:
             raise ValueError(f"Job {job_id} does not exist")
@@ -746,9 +748,31 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 f"Failed to persist retry-finalize preparation for job {job_id}"
             )
 
+        latest_job = await self.get_job(job_id)
+        return latest_job or prepared
+
+    async def retry_finalize_job(self, job_id: str) -> BatchJob:
+        """Retry the storage-only finalization phase for a prepared finalizing job."""
+        prepared = await self.get_job(job_id)
+        if prepared is None:
+            raise ValueError(f"Job {job_id} does not exist")
+        if prepared.status.state != BatchJobState.FINALIZING:
+            raise JobUnexpectedStateError(
+                "Job is not prepared for retry finalization",
+                prepared.status.state,
+            )
+        if (
+            prepared.status.output_file_id is None
+            or prepared.status.error_file_id is None
+            or prepared.status.temp_output_file_id is None
+            or prepared.status.temp_error_file_id is None
+        ):
+            raise JobUnexpectedStateError(
+                "Job has no prepared output files to finalize",
+                prepared.status.state,
+            )
+
         retrying = prepared.copy(prepared.status.model_copy(deep=True))
-        retrying.status.state = BatchJobState.FINALIZING
-        retrying.status.finalized_at = None
 
         try:
             retrying = await batch_storage.finalize_job_output_data(retrying)
@@ -1371,6 +1395,8 @@ class BatchManager(RunningJobs, SchedulableJobs):
     def _build_retry_prepared_job(self, previous_job: BatchJob) -> BatchJob:
         """Persist a cleaned terminal snapshot before retrying storage finalization."""
         job = previous_job.copy(previous_job.status.model_copy(deep=True))
+        job.status.state = BatchJobState.FINALIZING
+        job.status.finalized_at = None
         # TODO: Ignore cancel_rejected error. Specifically, add a flag to BatchJobError to specify an error is fixable
         # and should be ignored after retry.
         remaining_errors = [
@@ -1386,8 +1412,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 condition
                 for condition in job.status.conditions
                 if not (
-                    remove_failed_condition
-                    and condition.type == ConditionType.FAILED
+                    condition.type == ConditionType.FAILED
                     and condition.reason == BatchJobErrorCode.FINALIZING_ERROR.value
                 )
             ]

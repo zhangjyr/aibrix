@@ -777,16 +777,36 @@ async def retry_finalize_batch(request: Request, batch_id: str) -> BatchResponse
                 detail="Batch has not entered finalization and cannot be retried",
             )
 
-        updated_job = await batch_driver.retry_finalize_job(batch_id)
+        prepared_job = await batch_driver.prepare_retry_finalize_job(batch_id)
+
+        async def _retry_finalize_in_background() -> None:
+            try:
+                updated_job = await batch_driver.retry_finalize_job(batch_id)
+                logger.info(
+                    "Batch retry_finalize completed",
+                    batch_id=batch_id,
+                    state=updated_job.status.state.value,
+                    condition=updated_job.status.condition.value
+                    if updated_job.status.condition is not None
+                    else None,
+                )  # type: ignore[call-arg]
+            except Exception as exc:
+                logger.error(
+                    "Batch retry_finalize failed",
+                    batch_id=batch_id,
+                    error=str(exc),
+                )  # type: ignore[call-arg]
+
+        asyncio.create_task(_retry_finalize_in_background())
         logger.info(
-            "Batch retry_finalize completed",
+            "Batch retry_finalize scheduled",
             batch_id=batch_id,
-            state=updated_job.status.state.value,
-            condition=updated_job.status.condition.value
-            if updated_job.status.condition is not None
+            state=prepared_job.status.state.value,
+            condition=prepared_job.status.condition.value
+            if prepared_job.status.condition is not None
             else None,
         )  # type: ignore[call-arg]
-        return _batch_job_to_openai_response(updated_job)
+        return _batch_job_to_openai_response(prepared_job)
     except HTTPException:
         raise
     except JobUnexpectedStateError as e:

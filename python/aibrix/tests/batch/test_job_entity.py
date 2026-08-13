@@ -666,6 +666,78 @@ class TestExceptionMessageConversion:
         assert error.message == "Multi-line\nerror\tmessage\nwith\ttabs"
 
 
+class TestEnsureBatchJobError:
+    def test_unknown_exception_records_traceback_source(self):
+        def raise_unknown():
+            raise RuntimeError("boom")
+
+        try:
+            raise_unknown()
+        except RuntimeError as exc:
+            error = ensure_batch_job_error(exc, BatchJobErrorCode.INTERNAL_ERROR)
+
+        assert error.code == BatchJobErrorCode.INTERNAL_ERROR.value
+        assert error.message.startswith("RuntimeError: boom")
+        assert "(source: test_job_entity.py:" in error.message
+        assert error.param is None
+        assert error.line is None
+
+    def test_unknown_exception_without_message_uses_class_name(self):
+        try:
+            raise Exception()
+        except Exception as exc:
+            error = ensure_batch_job_error(exc, BatchJobErrorCode.INTERNAL_ERROR)
+
+        assert error.message.startswith("Exception")
+
+    def test_unknown_exception_uses_input_line_context(self):
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError as exc:
+            error = ensure_batch_job_error(
+                exc,
+                BatchJobErrorCode.INTERNAL_ERROR,
+                line=79,
+                param='{"custom_id":"req-79","body":{"model":"gemma"}}',
+            )
+
+        assert error.line == 79
+        assert error.param == '{"custom_id":"req-79","body":{"model":"gemma"}}'
+        assert error.message.startswith("RuntimeError: boom")
+
+    def test_existing_batch_job_error_keeps_existing_context(self):
+        original = BatchJobError(
+            code=BatchJobErrorCode.INTERNAL_ERROR,
+            message="known",
+            param="status",
+            line=7,
+        )
+
+        error = ensure_batch_job_error(original, BatchJobErrorCode.FINALIZING_ERROR)
+
+        assert error is original
+        assert error.param == "status"
+        assert error.line == 7
+
+    def test_existing_batch_job_error_fills_missing_input_context(self):
+        original = BatchJobError(
+            code=BatchJobErrorCode.INTERNAL_ERROR,
+            message="known",
+        )
+
+        error = ensure_batch_job_error(
+            original,
+            BatchJobErrorCode.FINALIZING_ERROR,
+            line=11,
+            param='{"custom_id":"req-11"}',
+        )
+
+        assert error is not original
+        assert error.message == "known"
+        assert error.line == 11
+        assert error.param == '{"custom_id":"req-11"}'
+
+
 class TestBatchJobErrorFastAPICompatibility:
     """Test BatchJobError compatibility with FastAPI serialization."""
 

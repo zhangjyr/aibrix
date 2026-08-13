@@ -70,11 +70,20 @@ def test_assign_worker_id_normalizes_runtime_owner_ref_slashes():
     assert worker_id == "cluster-a-default-workload-1-token1234"
 
 
-def test_driver_error_normalization_uses_repr_for_empty_message():
-    error = BaseJobDriver._ensure_batch_job_error(TimeoutError())
+def test_ensure_batch_job_error_records_unknown_exception_source():
+    def raise_unknown():
+        raise RuntimeError("driver boom")
+
+    try:
+        raise_unknown()
+    except RuntimeError as exc:
+        error = BaseJobDriver._ensure_batch_job_error(exc)
 
     assert error.code == BatchJobErrorCode.INTERNAL_ERROR.value
-    assert error.message == "TimeoutError()"
+    assert error.message.startswith("RuntimeError: driver boom")
+    assert "(source: test_base_job_driver.py:" in error.message
+    assert error.param is None
+    assert error.line is None
 
 
 class _DeadlineStopRuntime:

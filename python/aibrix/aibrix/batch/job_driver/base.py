@@ -73,6 +73,7 @@ from aibrix.batch.job_entity import (
     ConditionStatus,
     ConditionType,
     RequestCountStats,
+    ensure_batch_job_error,
 )
 from aibrix.context.infra import InfrastructureContext
 from aibrix.logger import init_logger
@@ -506,13 +507,9 @@ class BaseJobDriver:
     def _ensure_batch_job_error(
         error: Exception,
         default_code: BatchJobErrorCode = BatchJobErrorCode.INTERNAL_ERROR,
+        **kwargs,
     ) -> BatchJobError:
-        if isinstance(error, BatchJobError):
-            return error
-        return BatchJobError(
-            code=default_code,
-            message=str(error) or repr(error),
-        )
+        return ensure_batch_job_error(error, default_code, **kwargs)
 
     @staticmethod
     def _error_code_from_reason(reason: Optional[str]) -> BatchJobErrorCode:
@@ -903,34 +900,47 @@ class BaseJobDriver:
     ) -> tuple[int, bool]:
         """Execute one request and persist its output record."""
         request_id = request_input.pop("_request_index")
+        input_line_no = request_input.pop("_input_line_no", request_id)
+        input_line_data = request_input.pop("_input_line_data", None)
         self._accumulate_dispatched_request(job.job_id, request_id)
         custom_id = request_input.get("custom_id", "")
 
-        if "body" not in request_input:
-            raise BatchJobError(
-                code=BatchJobErrorCode.INVALID_INPUT_FILE,
-                message="Request missing 'body' field",
-                line=request_id,
+        try:
+            if "body" not in request_input:
+                raise BatchJobError(
+                    code=BatchJobErrorCode.INVALID_INPUT_FILE,
+                    message="Request missing 'body' field",
+                    param=input_line_data,
+                    line=input_line_no,
+                )
+
+            request_output, last_error = await self._send_one(
+                job.spec.endpoint, request_input["body"], request_id
             )
 
-        request_output, last_error = await self._send_one(
-            job.spec.endpoint, request_input["body"], request_id
-        )
+            if last_error is None and isinstance(request_output, dict):
+                self._accumulate_usage(
+                    job.job_id, custom_id, request_output.get("usage")
+                )
 
-        if last_error is None and isinstance(request_output, dict):
-            self._accumulate_usage(job.job_id, custom_id, request_output.get("usage"))
-
-        response = self._build_response(
-            custom_id,
-            job.job_id,
-            request_id,
-            job.spec,
-            request_output,
-            last_error,
-            request_payload=request_input.get("body"),
-        )
-        await storage.write_job_output_data(job, request_id, response)
-        return request_id, last_error is not None
+            response = self._build_response(
+                custom_id,
+                job.job_id,
+                request_id,
+                job.spec,
+                request_output,
+                last_error,
+                request_payload=request_input.get("body"),
+            )
+            await storage.write_job_output_data(job, request_id, response)
+            return request_id, last_error is not None
+        except Exception as exc:
+            raise self._ensure_batch_job_error(
+                exc,
+                default_code=self._default_failure_code,
+                line=input_line_no,
+                param=input_line_data,
+            ) from exc
 
     # ── lifecycle template ───────────────────────────────────────────────
 
@@ -1254,6 +1264,8 @@ class BaseJobDriver:
                         return
 
                     request_id = request_input.pop("_request_index", -1)
+                    input_line_no = request_input.pop("_input_line_no", request_id)
+                    input_line_data = request_input.pop("_input_line_data", None)
                     if request_id < 0:
                         continue
                     self._accumulate_dispatched_request(job_id, request_id)
@@ -1264,14 +1276,24 @@ class BaseJobDriver:
                         raise BatchJobError(
                             code=BatchJobErrorCode.INVALID_INPUT_FILE,
                             message="Request missing 'body' field",
-                            line=request_id,
+                            param=input_line_data,
+                            line=input_line_no,
                         )
 
                     custom_id = request_input.get("custom_id", "")
+                    try:
+                        payload = self._shape_payload(request_input["body"])
+                    except Exception as exc:
+                        raise self._ensure_batch_job_error(
+                            exc,
+                            default_code=self._default_failure_code,
+                            line=input_line_no,
+                            param=input_line_data,
+                        ) from exc
                     yield InferenceRequest(
                         path=job.spec.endpoint,
-                        payload=self._shape_payload(request_input["body"]),
-                        ref=(request_id, custom_id),
+                        payload=payload,
+                        ref=(request_id, custom_id, input_line_no, input_line_data),
                     )
 
                 await round_drained.wait()
@@ -1331,28 +1353,36 @@ class BaseJobDriver:
             error: Optional[InferenceError],
         ) -> None:
             nonlocal job, processed_requests
-            request_id, custom_id = request.ref
-            if error is None and isinstance(response, dict):
-                async with self._usage_lock:
-                    self._accumulate_usage(job_id, custom_id, response.get("usage"))
+            request_id, custom_id, input_line_no, input_line_data = request.ref
+            try:
+                if error is None and isinstance(response, dict):
+                    async with self._usage_lock:
+                        self._accumulate_usage(job_id, custom_id, response.get("usage"))
 
-            record = self._build_response(
-                custom_id,
-                job_id,
-                request_id,
-                job.spec,
-                response,
-                error,
-                request_payload=request.payload,
-            )
-            await storage.write_job_output_data(job, request_id, record)
-            await completed_request_ids.put((request_id, error is not None))
-            processed_requests += 1
-            await self._apply_error_injector_breakpoint(
-                job,
-                BREAKPOINT_AFTER_N_REQUESTS,
-                n=processed_requests,
-            )
+                record = self._build_response(
+                    custom_id,
+                    job_id,
+                    request_id,
+                    job.spec,
+                    response,
+                    error,
+                    request_payload=request.payload,
+                )
+                await storage.write_job_output_data(job, request_id, record)
+                await completed_request_ids.put((request_id, error is not None))
+                processed_requests += 1
+                await self._apply_error_injector_breakpoint(
+                    job,
+                    BREAKPOINT_AFTER_N_REQUESTS,
+                    n=processed_requests,
+                )
+            except Exception as exc:
+                raise self._ensure_batch_job_error(
+                    exc,
+                    default_code=self._default_failure_code,
+                    line=input_line_no,
+                    param=input_line_data,
+                ) from exc
 
         stats = DispatchStats()
         telemetry_interval = _telemetry_interval_seconds()

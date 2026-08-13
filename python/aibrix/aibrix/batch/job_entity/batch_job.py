@@ -566,14 +566,11 @@ def ensure_batch_job_error(
             param=merged_param,
             line=merged_line,
         )
-    if input_line is not None:
-        kwargs["line"] = input_line
-    if input_line_data is not None:
-        kwargs["param"] = input_line_data
     return BatchJobError(
         code=default_code,
         message=_format_exception_message(e),
-        **kwargs,
+        param=input_line_data,
+        line=input_line,
     )
 
 

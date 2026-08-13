@@ -705,6 +705,22 @@ class TestEnsureBatchJobError:
         assert error.param == "custom_id=req-79"
         assert error.message.startswith("RuntimeError: boom")
 
+    def test_unknown_exception_ignores_unexpected_kwargs(self):
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError as exc:
+            error = ensure_batch_job_error(
+                exc,
+                BatchJobErrorCode.INTERNAL_ERROR,
+                line=13,
+                param="custom_id=req-13",
+                request_id="req-13",
+            )
+
+        assert error.line == 13
+        assert error.param == "custom_id=req-13"
+        assert error.message.startswith("RuntimeError: boom")
+
     def test_existing_batch_job_error_keeps_existing_context(self):
         original = BatchJobError(
             code=BatchJobErrorCode.INTERNAL_ERROR,

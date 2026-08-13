@@ -135,11 +135,8 @@ class BatchStorageAdapter:
                     locked = True
 
             if locked:
-                raw_line = line
                 request_data = json.loads(line)
                 request_data["_request_index"] = idx  # Add index for tracking
-                request_data["_input_line_no"] = idx
-                request_data["_input_line_data"] = raw_line
                 request_data["_done"] = done  # return done requests so far
                 logger.debug(
                     "Locked and will processing request in the job",

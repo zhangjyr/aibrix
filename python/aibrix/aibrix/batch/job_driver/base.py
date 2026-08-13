@@ -566,7 +566,17 @@ class BaseJobDriver:
             job_id=job_id,
             error_code=error.code,
             error=error.message,
+            line=error.line,
+            param=error.param,
         )  # type: ignore[call-arg]
+
+    @staticmethod
+    def _simplified_input_param(request_input: dict[str, Any]) -> Optional[str]:
+        """Return a sanitized request identifier for persisted batch errors."""
+        custom_id = request_input.get("custom_id")
+        if isinstance(custom_id, str) and custom_id.strip():
+            return f"custom_id={custom_id.strip()}"
+        return None
 
     def _log_completed(self, job: BatchJob) -> None:
         logger.debug(
@@ -900,8 +910,8 @@ class BaseJobDriver:
     ) -> tuple[int, bool]:
         """Execute one request and persist its output record."""
         request_id = request_input.pop("_request_index")
-        input_line_no = request_input.pop("_input_line_no", request_id)
-        input_line_data = request_input.pop("_input_line_data", None)
+        input_line_no = request_id
+        input_line_data = self._simplified_input_param(request_input)
         self._accumulate_dispatched_request(job.job_id, request_id)
         custom_id = request_input.get("custom_id", "")
 
@@ -1264,8 +1274,8 @@ class BaseJobDriver:
                         return
 
                     request_id = request_input.pop("_request_index", -1)
-                    input_line_no = request_input.pop("_input_line_no", request_id)
-                    input_line_data = request_input.pop("_input_line_data", None)
+                    input_line_no = request_id
+                    input_line_data = self._simplified_input_param(request_input)
                     if request_id < 0:
                         continue
                     self._accumulate_dispatched_request(job_id, request_id)
@@ -1293,7 +1303,7 @@ class BaseJobDriver:
                     yield InferenceRequest(
                         path=job.spec.endpoint,
                         payload=payload,
-                        ref=(request_id, custom_id, input_line_no, input_line_data),
+                        ref=(request_id, custom_id, input_line_data),
                     )
 
                 await round_drained.wait()
@@ -1353,7 +1363,8 @@ class BaseJobDriver:
             error: Optional[InferenceError],
         ) -> None:
             nonlocal job, processed_requests
-            request_id, custom_id, input_line_no, input_line_data = request.ref
+            request_id, custom_id, input_line_data = request.ref
+            input_line_no = request_id
             try:
                 if error is None and isinstance(response, dict):
                     async with self._usage_lock:

@@ -698,11 +698,11 @@ class TestEnsureBatchJobError:
                 exc,
                 BatchJobErrorCode.INTERNAL_ERROR,
                 line=79,
-                param='{"custom_id":"req-79","body":{"model":"gemma"}}',
+                param="custom_id=req-79",
             )
 
         assert error.line == 79
-        assert error.param == '{"custom_id":"req-79","body":{"model":"gemma"}}'
+        assert error.param == "custom_id=req-79"
         assert error.message.startswith("RuntimeError: boom")
 
     def test_existing_batch_job_error_keeps_existing_context(self):
@@ -729,13 +729,13 @@ class TestEnsureBatchJobError:
             original,
             BatchJobErrorCode.FINALIZING_ERROR,
             line=11,
-            param='{"custom_id":"req-11"}',
+            param="custom_id=req-11",
         )
 
         assert error is not original
         assert error.message == "known"
         assert error.line == 11
-        assert error.param == '{"custom_id":"req-11"}'
+        assert error.param == "custom_id=req-11"
 
 
 class TestBatchJobErrorFastAPICompatibility:

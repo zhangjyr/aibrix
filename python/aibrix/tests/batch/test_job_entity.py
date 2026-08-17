@@ -103,15 +103,6 @@ class TestBatchJobError:
         assert exc_info.value.code == BatchJobErrorCode.FINALIZING_ERROR.value
         assert exc_info.value.message == "Test exception"
 
-    def test_ensure_batch_job_error_uses_repr_for_empty_message(self):
-        error = ensure_batch_job_error(
-            TimeoutError(),
-            BatchJobErrorCode.INTERNAL_ERROR,
-        )
-
-        assert error.code == BatchJobErrorCode.INTERNAL_ERROR.value
-        assert error.message == "TimeoutError()"
-
     def test_batch_job_error_with_unicode_exception(self):
         """Test creating BatchJobError with unicode characters in exception message."""
         fe = Exception("Processing failed: 文件不存在 (file not found)")

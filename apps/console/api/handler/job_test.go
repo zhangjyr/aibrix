@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -142,6 +143,28 @@ func TestCancelJobAllowsOwner(t *testing.T) {
 	}
 	if job == nil || job.Id != "job-console-1" {
 		t.Fatalf("job = %#v, want job-console-1", job)
+	}
+}
+
+func TestCancelJobMapsUpstreamConflictToAborted(t *testing.T) {
+	planner := &fakeJobPlanner{
+		job: plannerJobWithOwner("job-console-1", "owner@example.com"),
+		cancelErr: &openai.Error{
+			StatusCode: http.StatusConflict,
+			Message:    "Cannot cancel a batch with status 'finalized'.",
+		},
+	}
+	handler := NewJobHandler(nil, planner, "", false, nil)
+
+	_, err := handler.CancelJob(contextWithUserEmail("owner@example.com"), &pb.CancelJobRequest{
+		Id: "job-console-1",
+	})
+
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("CancelJob code = %v, want Aborted; err=%v", status.Code(err), err)
+	}
+	if status.Convert(err).Message() != "Cannot cancel a batch with status 'finalized'." {
+		t.Fatalf("CancelJob message = %q", status.Convert(err).Message())
 	}
 }
 

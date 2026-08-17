@@ -472,8 +472,8 @@ async function apiFetch<T>(
       // the 401 body during the navigation.
       return new Promise<T>(() => {});
     }
-    const text = await response.text().catch(() => 'Unknown error');
-    throw new APIError(text, response.status);
+    const message = await readAPIErrorMessage(response);
+    throw new APIError(message, response.status);
   }
 
   if (response.status === 204) {
@@ -482,6 +482,29 @@ async function apiFetch<T>(
 
   const json = await response.json();
   return snakeToCamel<T>(json);
+}
+
+async function readAPIErrorMessage(response: Response): Promise<string> {
+  const fallback = response.statusText || 'Unknown error';
+  const raw = await response.text().catch(() => '');
+  if (!raw) return fallback;
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      error?: { message?: string };
+      message?: string;
+    };
+    if (typeof parsed.error?.message === 'string' && parsed.error.message.trim() !== '') {
+      return parsed.error.message;
+    }
+    if (typeof parsed.message === 'string' && parsed.message.trim() !== '') {
+      return parsed.message;
+    }
+  } catch {
+    // Fall back to the raw body for non-JSON error payloads.
+  }
+
+  return raw;
 }
 
 function buildQuery(params: Record<string, string | undefined>): string {

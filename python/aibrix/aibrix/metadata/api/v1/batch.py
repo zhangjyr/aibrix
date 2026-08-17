@@ -22,12 +22,12 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from aibrix.batch import BatchDriver
+from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_entity import (
     AibrixMetadata,
     BatchJob,
     BatchJobEndpoint,
     BatchJobError,
-    BatchJobErrorCode,
     BatchJobSpec,
     BatchJobState,
     BatchJobStatus,
@@ -734,24 +734,26 @@ async def cancel_batch(request: Request, batch_id: str) -> BatchResponse:
             logger.error("Job not found after cancellation", batch_id=batch_id)  # type: ignore[call-arg]
             raise HTTPException(status_code=500, detail="Internal server error")
 
-        if terminate_result.value == "rejected":
-            if updated_job.status.errors is None:
-                updated_job.status.errors = []
-            updated_job.status.errors.append(
-                BatchJobError(
-                    code=BatchJobErrorCode.CANCEL_REJECTED_ERROR,
-                    message=(
-                        "Batch cannot be cancelled in current state "
-                        f"'{updated_job.status.state.value}'"
-                    ),
-                    param="status",
-                )
+        if terminate_result == TerminateResult.REJECTED:
+            message = (
+                f"Cannot cancel a batch with status '{updated_job.status.state.value}'."
             )
             logger.info(  # type: ignore[call-arg]
                 "Batch cancel request rejected by current state",
                 batch_id=batch_id,
                 state=updated_job.status.state,
             )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": {
+                        "message": message,
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+        if terminate_result == TerminateResult.ALREADY_REQUESTED:
+            logger.info("Batch cancellation already requested", batch_id=batch_id)  # type: ignore[call-arg]
         else:
             logger.info("Batch cancelled successfully", batch_id=batch_id)  # type: ignore[call-arg]
 

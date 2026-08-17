@@ -88,6 +88,7 @@ func handleCleanup(ctx context.Context, p *Planner, job *queuedJob, sourceStatus
 	}
 
 	var batch *openai.Batch
+	resolvedStatus := targetStatus
 	switch {
 	case batchID == "":
 		// No MDS batch association yet (e.g. expiry/cancel before submission).
@@ -107,6 +108,9 @@ func handleCleanup(ctx context.Context, p *Planner, job *queuedJob, sourceStatus
 		var err error
 		if batch, err = p.bc.CancelBatch(ctx, batchID); err != nil {
 			klog.Warningf("[planner] CancelBatch failed for job_id=%q: %v", jobID, err)
+			if batch, err = p.bc.GetBatch(ctx, batchID); err != nil {
+				klog.Warningf("[planner] GetBatch after cancel failure failed job_id=%q batch_id=%q: %v", jobID, batchID, err)
+			}
 		}
 	}
 
@@ -119,12 +123,15 @@ func handleCleanup(ctx context.Context, p *Planner, job *queuedJob, sourceStatus
 			// can still hydrate from MDS after the in-memory job is evicted.
 			if batch != nil {
 				job.batch = batch
+				if targetStatus == plannerapi.JobStatusCancelled {
+					resolvedStatus = plannerapi.JobStatus(batch.Status)
+				}
 			}
 		} else {
 			job.batchID = ""
 			job.batch = batch
 		}
-		updateStatusUnsafe(job, targetStatus)
+		updateStatusUnsafe(job, resolvedStatus)
 	}
 	job.mu.Unlock()
 	p.persist(ctx, job)

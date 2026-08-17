@@ -199,6 +199,37 @@ func (b *fixedAllocationWindowBackend) AllocationTimeWindow(*rmtypes.ProvisionRe
 	return b.timeWindow
 }
 
+func TestHandleCleanupRefreshesBatchAfterCancelFailure(t *testing.T) {
+	bc := &fakeBatchClient{
+		CancelFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			return nil, errors.New("cancel conflict")
+		},
+		GetFn: func(ctx context.Context, batchID string) (*openai.Batch, error) {
+			return &openai.Batch{ID: batchID, Status: openai.BatchStatusFinalizing}, nil
+		},
+	}
+	p := &Planner{bc: bc}
+	now := time.Now().UTC()
+	job := &queuedJob{
+		req:      &plannerapi.EnqueueRequest{JobID: "job-1"},
+		status:   plannerapi.JobStatusCancelling,
+		batchID:  "batch-1",
+		queuedAt: now,
+	}
+
+	handleCleanup(context.Background(), p, job, plannerapi.JobStatusCancelling, plannerapi.JobStatusCancelled)
+
+	if job.status != plannerapi.JobStatusFinalizing {
+		t.Fatalf("job.status = %q, want %q", job.status, plannerapi.JobStatusFinalizing)
+	}
+	if job.batch == nil || job.batch.Status != openai.BatchStatusFinalizing {
+		t.Fatalf("job.batch = %#v, want finalizing batch", job.batch)
+	}
+	if !job.canceledAt.IsZero() {
+		t.Fatalf("job.canceledAt = %v, want zero time", job.canceledAt)
+	}
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================

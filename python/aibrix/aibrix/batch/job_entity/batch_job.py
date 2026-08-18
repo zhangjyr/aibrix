@@ -13,7 +13,9 @@
 # limitations under the License.
 
 import copy
+import os
 import re
+import traceback
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -552,10 +554,66 @@ def ensure_batch_job_error(
     e: Exception, default_code: BatchJobErrorCode, **kwargs
 ) -> BatchJobError:
     """Ensures that the exception is a BatchJobError."""
+    input_line, input_line_data = _exception_input_context(e, kwargs)
     if isinstance(e, BatchJobError):
-        return e
+        merged_line = e.line if e.line is not None else input_line
+        merged_param = e.param if e.param is not None else input_line_data
+        if merged_line == e.line and merged_param == e.param:
+            return e
+        return BatchJobError(
+            code=BatchJobErrorCode(e.code),
+            message=e.message,
+            param=merged_param,
+            line=merged_line,
+        )
+    return BatchJobError(
+        code=default_code,
+        message=_format_exception_message(e),
+        param=input_line_data,
+        line=input_line,
+    )
+
+
+def _format_exception_message(error: BaseException) -> str:
+    """Return a stable, non-empty message for generic exceptions."""
+    class_name = error.__class__.__name__
+    text = str(error).strip()
+    if text:
+        details = f"{class_name}: {text}"
+    elif error.args:
+        details = f"{class_name}: {error.args!r}"
     else:
-        return BatchJobError(code=default_code, message=str(e) or repr(e), **kwargs)
+        details = class_name
+    source = _exception_source_details(error)
+    if source is not None:
+        return f"{details} (source: {source})"
+    return details
+
+
+def _exception_source_details(error: BaseException) -> Optional[str]:
+    """Best-effort program source location for a non-BatchJobError exception."""
+    if error.__traceback__ is None:
+        return None
+    frames = traceback.extract_tb(error.__traceback__)
+    if not frames:
+        return None
+    frame = frames[-1]
+    filename = os.path.basename(frame.filename)
+    return f"{filename}:{frame.lineno}"
+
+
+def _exception_input_context(
+    error: BaseException,
+    kwargs: Dict[str, Any],
+) -> tuple[Optional[int], Optional[str]]:
+    """Prefer user-facing input line context over internal source locations."""
+    input_line = kwargs.get("line")
+    input_line_data = kwargs.get("param")
+    if input_line is None:
+        input_line = getattr(error, "batch_input_line_no", None)
+    if input_line_data is None:
+        input_line_data = getattr(error, "batch_input_line_data", None)
+    return input_line, input_line_data
 
 
 class BatchJobStatus(_Strict):

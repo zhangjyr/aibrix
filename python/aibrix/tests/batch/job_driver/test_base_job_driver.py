@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 
@@ -70,11 +71,45 @@ def test_assign_worker_id_normalizes_runtime_owner_ref_slashes():
     assert worker_id == "cluster-a-default-workload-1-token1234"
 
 
-def test_driver_error_normalization_uses_repr_for_empty_message():
-    error = BaseJobDriver._ensure_batch_job_error(TimeoutError())
+def test_ensure_batch_job_error_records_unknown_exception_source():
+    def raise_unknown():
+        raise RuntimeError("driver boom")
+
+    try:
+        raise_unknown()
+    except RuntimeError as exc:
+        error = BaseJobDriver._ensure_batch_job_error(exc)
 
     assert error.code == BatchJobErrorCode.INTERNAL_ERROR.value
-    assert error.message == "TimeoutError()"
+    assert error.message.startswith("RuntimeError: driver boom")
+    assert "(source: test_base_job_driver.py:" in error.message
+    assert error.param is None
+    assert error.line is None
+
+
+def test_log_failed_includes_input_line_and_custom_id():
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        cast(RunningJobs, None),
+    )
+    error = BatchJobError(
+        code=BatchJobErrorCode.INTERNAL_ERROR,
+        message="RuntimeError: boom",
+        param="custom_id=req-79",
+        line=79,
+    )
+
+    with patch.object(base_module.logger, "error") as mock_error:
+        driver._log_failed("job-79", error)
+
+    mock_error.assert_called_once_with(
+        "Failed to execute job",
+        job_id="job-79",
+        error_code=BatchJobErrorCode.INTERNAL_ERROR.value,
+        error="RuntimeError: boom",
+        line=79,
+        param="custom_id=req-79",
+    )
 
 
 class _DeadlineStopRuntime:

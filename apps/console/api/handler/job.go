@@ -449,7 +449,7 @@ func mapSDKError(err error, op string) error {
 		case http.StatusNotFound:
 			c = codes.NotFound
 		case http.StatusConflict:
-			c = codes.FailedPrecondition
+			c = codes.Aborted
 		case http.StatusUnauthorized, http.StatusForbidden:
 			c = codes.PermissionDenied
 		default:
@@ -457,7 +457,11 @@ func mapSDKError(err error, op string) error {
 				c = codes.Unavailable
 			}
 		}
-		return status.Error(c, apiErr.Error())
+		msg := apiErr.Message
+		if msg == "" {
+			msg = apiErr.Error()
+		}
+		return status.Error(c, msg)
 	}
 
 	return status.Errorf(codes.Unavailable, "%s: %v", op, err)

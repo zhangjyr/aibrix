@@ -408,7 +408,7 @@ async def test_refresh_does_not_apply_older_resource_version(
         published_updates.append((old_job, new_job))
         return True
 
-    monkeypatch.setattr(store, "_list_recovery_jobs", list_stale_recovery_jobs)
+    monkeypatch.setattr(store, "_list_active_jobs", list_stale_recovery_jobs)
     store.active_jobs[current_job.job_id] = current_job
     store._monitored_job_snapshots[current_job.job_id] = current_job.model_copy(
         deep=True

@@ -107,6 +107,8 @@ def test_log_failed_includes_input_line_and_custom_id():
         InfrastructureContext(),
         cast(RunningJobs, None),
     )
+    job = _make_job()
+    job.status.job_id = "job-79"
     error = BatchJobError(
         code=BatchJobErrorCode.INTERNAL_ERROR,
         message="RuntimeError: boom",
@@ -115,7 +117,7 @@ def test_log_failed_includes_input_line_and_custom_id():
     )
 
     with patch.object(base_module.logger, "error") as mock_error:
-        driver._log_failed("job-79", error)
+        driver._log_failed(job, error)
 
     mock_error.assert_called_once_with(
         "Failed to execute job",

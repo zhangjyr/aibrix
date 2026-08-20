@@ -104,7 +104,7 @@ gpuOptimizer:
   affinity: {}
 
 gateway:
-  # Mode Selection (mutually exclusive; values must be opposite)
+  # Mode Selection
   # | gateway.enable | envoyAsSideCar | Notes |
   # | -------------- | ------------------- | ----- |
   # | true           | false               | Envoy managed by Envoy Gateway (data plane). Installs Gateway, GatewayClass, EnvoyProxy, and gateway-plugins. |
@@ -113,6 +113,15 @@ gateway:
   # | true           | true                | INVALID: Do not enable both. Values must be opposite. |
   enable: true
   envoyAsSideCar: false
+  http:
+    enabled: true
+  tls:
+    enabled: false
+    autoGenerate: false
+    hostname: ""
+    validityDays: 365
+    secretName: ""
+    port: 443
   envoySideCar:
     ports:
       http: 10080

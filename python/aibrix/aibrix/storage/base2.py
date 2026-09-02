@@ -81,7 +81,7 @@ class BaseStorage2(BaseStorage):
             if tolerate_part_get_error:
                 chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
                 for part, result in zip(chunk_parts, chunk_results):
-                    if isinstance(result, Exception):
+                    if isinstance(result, BaseException):
                         if failed_parts is not None:
                             failed_parts.append(dict(part))
                         continue
@@ -101,7 +101,7 @@ class BaseStorage2(BaseStorage):
                 await asyncio.gather(*tasks, return_exceptions=True)
                 raise
 
-            for part, part_data in chunk_results:
+            for part, part_data in await asyncio.gather(*tasks):
                 yield part, part_data
 
     async def complete_multipart_upload(
@@ -129,15 +129,17 @@ class BaseStorage2(BaseStorage):
         content_type = upload_metadata.get("content_type")
         metadata = upload_metadata.get("metadata", {})
         sorted_parts = sorted(parts, key=lambda p: p["part_number"])
-        staged_part_keys = [
-            self._multipart_upload_part_key(
-                part.get("source_upload_id", upload_id)
-                if isinstance(part.get("source_upload_id", upload_id), str)
-                else upload_id,
-                int(part["part_number"]),
+        staged_part_keys: list[str] = []
+        for part in sorted_parts:
+            source_upload_id = part.get("source_upload_id")
+            part_upload_id = (
+                source_upload_id if isinstance(source_upload_id, str) else upload_id
             )
-            for part in sorted_parts
-        ]
+            staged_part_keys.append(
+                self._multipart_upload_part_key(
+                    part_upload_id, int(part["part_number"])
+                )
+            )
         failed_parts: list[dict[str, Union[str, int]]] = []
 
         if not sorted_parts:

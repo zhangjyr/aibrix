@@ -322,7 +322,7 @@ async def test_execute_request_raises_after_consecutive_failed_active_buckets(
         {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
     )
 
-    assert first_result == (0, False)
+    assert first_result == (0, None)
 
     with pytest.raises(BatchJobError, match="RuntimeError: retry later"):
         await driver._execute_request(
@@ -374,8 +374,8 @@ async def test_execute_request_counts_only_once_per_failed_bucket(
         {"_request_index": 0, "custom_id": "req-0", "body": {"i": 0}},
     )
 
-    assert first_result == (0, False)
-    assert second_result == (0, False)
+    assert first_result == (0, None)
+    assert second_result == (0, None)
 
     with pytest.raises(BatchJobError, match="RuntimeError: retry later"):
         await driver._execute_request(
@@ -433,9 +433,32 @@ async def test_execute_request_success_resets_failed_active_bucket_streak(
         {"_request_index": 2, "custom_id": "req-2", "body": {"i": 2}},
     )
 
-    assert first_result == (0, False)
+    assert first_result == (0, None)
     assert second_result == (1, False)
-    assert third_result == (2, False)
+    assert third_result == (2, None)
+
+
+@pytest.mark.asyncio
+async def test_sync_completed_request_tasks_ignores_deferred_results():
+    job = _make_job(total=3)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
+
+    updated_job, synced = await driver._sync_completed_request_tasks(
+        job,
+        [
+            (0, None),
+            (1, False),
+            (2, True),
+        ],
+    )
+
+    assert synced == 2
+    assert updated_job.status.request_counts.completed == 1
+    assert updated_job.status.request_counts.failed == 1
 
 
 def _patch_storage(monkeypatch, requests, done: Optional[set[int]] = None):

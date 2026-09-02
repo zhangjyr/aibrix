@@ -1082,16 +1082,16 @@ class BaseJobDriver:
     async def _sync_completed_request_tasks(
         self,
         job: BatchJob,
-        completed_request_results: Iterable[tuple[int, bool]],
+        completed_request_results: Iterable[tuple[int, Optional[bool]]],
     ) -> tuple[BatchJob, int]:
         """Compatibility seam for tests and drivers that sync completions after
         a pass or request batch."""
         completed_results = list(completed_request_results)
         completed_request_ids = [
-            request_id for request_id, failed in completed_results if not failed
+            request_id for request_id, failed in completed_results if failed is False
         ]
         failed_request_ids = [
-            request_id for request_id, failed in completed_results if failed
+            request_id for request_id, failed in completed_results if failed is True
         ]
         self._accumulate_done_requests(
             job.job_id,
@@ -1104,13 +1104,13 @@ class BaseJobDriver:
             failed=len(failed_request_ids),
         )
         job = await self._persist_worker_status(job)
-        return job, len(completed_results)
+        return job, len(completed_request_ids) + len(failed_request_ids)
 
     async def _execute_request(
         self,
         job: BatchJob,
         request_input: dict[str, Any],
-    ) -> tuple[int, bool]:
+    ) -> tuple[int, Optional[bool]]:
         """Execute one request and persist its output record."""
         request_id = request_input.pop("_request_index")
         input_line_no = request_id
@@ -1158,7 +1158,7 @@ class BaseJobDriver:
                     custom_id=custom_id,
                     error=exc,
                 ):
-                    return request_id, False
+                    return request_id, None
                 raise
             self._record_output_persistence_success()
             return request_id, last_error is not None
@@ -1442,7 +1442,7 @@ class BaseJobDriver:
         job_id = job.job_id
         assert job_id is not None
 
-        completed_request_ids: asyncio.Queue[Optional[tuple[int, bool]]] = (
+        completed_request_ids: asyncio.Queue[Optional[tuple[int, Optional[bool]]]] = (
             asyncio.Queue()
         )
         if start_index is None:
@@ -1553,7 +1553,9 @@ class BaseJobDriver:
         async def sync_completed_requests() -> None:
             nonlocal job, pending_in_round
 
-            async def sync_batch(request_results: list[tuple[int, bool]]) -> None:
+            async def sync_batch(
+                request_results: list[tuple[int, Optional[bool]]],
+            ) -> None:
                 nonlocal job, pending_in_round
                 if not request_results:
                     return

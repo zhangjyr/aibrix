@@ -955,10 +955,18 @@ async def test_runtime_base_session_reprovisions_after_reconnect_not_found(
 
 
 @pytest.mark.asyncio
-async def test_runtime_base_session_raises_if_execution_tracking_not_bound():
+async def test_runtime_base_session_raises_if_execution_tracking_not_bound(monkeypatch):
     job = _make_test_job(job_id="job-1")
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(runtime_base_mod.asyncio, "sleep", _fake_sleep)
 
     class _PersistingRuntime(_R):
+        session_retry_attempts = 1
+
         def _build_runtime_ref(self, job):
             existing = self._load_runtime_ref(job)
             now = datetime.now(timezone.utc)
@@ -974,10 +982,16 @@ async def test_runtime_base_session_raises_if_execution_tracking_not_bound():
     runtime = _PersistingRuntime(provision=lambda job, job_id: "handle")
     with pytest.raises(
         RuntimeError,
-        match="Execution tracking is not configured for session\\(\\)",
-    ):
+        match=(
+            "Execution tracking is not configured for session\\(\\).*"
+            "session_retries=1.*session_attempts=2"
+        ),
+    ) as exc_info:
         async with runtime.session(job=job, job_id="job-1"):
             pytest.fail("session should fail before entering body")
+
+    assert "session_retries=1" in str(exc_info.value)
+    assert sleeps == [2.0]
 
 
 @pytest.mark.asyncio
@@ -1417,6 +1431,48 @@ def test_runtime_target_enum_values_are_registered():
     registered = set(registered_runtimes())
     missing = {p.value for p in RuntimeTarget} - registered
     assert not missing, f"RuntimeTarget values not registered: {missing}"
+
+
+def test_runtime_base_uses_env_session_retry_attempts():
+    assert (
+        RuntimeBase.session_retry_attempts
+        == runtime_base_mod.envs.BATCH_SESSION_RETRY_ATTEMPTS
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_error_retry_delay_is_capped(monkeypatch):
+    delays: list[float] = []
+
+    async def _capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(runtime_base_mod.asyncio, "sleep", _capture_sleep)
+    runtime = _R()
+
+    await runtime._sleep_before_session_error_retry(10, Exception("boom"))
+
+    assert delays == [60.0]
+
+
+@pytest.mark.asyncio
+async def test_session_error_retry_after_is_capped(monkeypatch):
+    delays: list[float] = []
+
+    async def _capture_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(runtime_base_mod.asyncio, "sleep", _capture_sleep)
+    runtime = _R()
+    exc = runtime_base_mod.RuntimeDeleteInProgressError(
+        job_id="job-1",
+        runtime_key="base",
+        retry_after_s=120.0,
+    )
+
+    await runtime._sleep_before_session_error_retry(1, exc)
+
+    assert delays == [60.0]
 
 
 def test_registry_create_and_unknown_key():

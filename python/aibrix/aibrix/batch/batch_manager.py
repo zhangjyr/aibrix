@@ -631,7 +631,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 # Leave job_updated_handler to update job location in queues
             except Exception as e:
                 logger.error("Job execution failed", job_id=job_id, exc_info=True)  # type: ignore[call-arg]
-                error = ensure_batch_job_error(e, BatchJobErrorCode.INFERENCE_FAILED)
+                error = ensure_batch_job_error(
+                    e, BatchJobErrorCode.INFERENCE_FAILED, job=job
+                )
                 await self.mark_job_failed(
                     job_id,
                     error,
@@ -664,13 +666,23 @@ class BatchManager(RunningJobs, SchedulableJobs):
             # Load cache job, possibily with local metainfo.
             old_job_in_category = old_category.get(job_id)
             if old_job_in_category is None:
-                logger.warning(
-                    "Job is not in old category, ignore updating",
-                    job_id=job_id,
-                    old_category=old_name,
-                    new_category=new_name,
-                )  # type: ignore[call-arg]
-                return False
+                current_job = (
+                    self._pending_jobs.get(job_id)
+                    or self._in_progress_jobs.get(job_id)
+                    or self._done_jobs.get(job_id)
+                )
+                if current_job is not None:
+                    old_job = current_job
+                    old_category, old_name = self._categorize_jobs(old_job)
+                    old_job_in_category = old_category.get(job_id)
+                if old_job_in_category is None:
+                    logger.warning(
+                        "Job is not in old category, ignore updating",
+                        job_id=job_id,
+                        old_category=old_name,
+                        new_category=new_name,
+                    )  # type: ignore[call-arg]
+                    return False
             old_job = old_job_in_category
             was_finished = old_job.status.finished
             had_in_progress_at = old_job.status.in_progress_at is not None
@@ -914,7 +926,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
                         meta_data.status = reloaded_job.status  # Update status
         except Exception as e:
             logger.error("Job validation failed", job_id=job_id, exc_info=True)  # type: ignore[call-arg]
-            error = ensure_batch_job_error(e, BatchJobErrorCode.VALIDATION_ERROR)
+            error = ensure_batch_job_error(
+                e, BatchJobErrorCode.VALIDATION_ERROR, job_id=job_id
+            )
             await self.mark_job_failed(
                 job_id,
                 error,

@@ -554,7 +554,9 @@ class BaseJobDriver:
         to the backend's default code (inference for inline dispatch, internal
         for a provisioning backend)."""
         return self._ensure_batch_job_error(
-            error, default_code=self._default_failure_code
+            error,
+            default_code=self._default_failure_code,
+            job_id=self._job_id,
         )
 
     def _should_finalize(self) -> bool:
@@ -1052,6 +1054,7 @@ class BaseJobDriver:
             raise self._ensure_batch_job_error(
                 exc,
                 default_code=self._default_failure_code,
+                job=job,
                 line=input_line_no,
                 param=input_line_data,
             ) from exc
@@ -1401,6 +1404,7 @@ class BaseJobDriver:
                         raise self._ensure_batch_job_error(
                             exc,
                             default_code=self._default_failure_code,
+                            job=job,
                             line=input_line_no,
                             param=input_line_data,
                         ) from exc
@@ -1495,6 +1499,7 @@ class BaseJobDriver:
                 raise self._ensure_batch_job_error(
                     exc,
                     default_code=self._default_failure_code,
+                    job=job,
                     line=input_line_no,
                     param=input_line_data,
                 ) from exc

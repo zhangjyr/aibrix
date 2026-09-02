@@ -462,7 +462,7 @@ async def test_source_channels_error_is_reported_per_request():
     assert isinstance(err, InferenceError)
     assert err.code == InferenceErrorCode.CONNECTION_SETUP
     assert err.retryable is True
-    assert "drive endpoint source" in err.message
+    assert "dispatch request" in err.message
 
 
 @pytest.mark.asyncio

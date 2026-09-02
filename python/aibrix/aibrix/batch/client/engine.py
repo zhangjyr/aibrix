@@ -366,7 +366,7 @@ class DispatchEngine:
         except InferenceError:
             raise
         except Exception as ex:
-            raise _normalize_source_error("drive endpoint source", ex) from ex
+            raise _normalize_source_error("dispatch request", ex) from ex
 
     async def _send_with_failover_impl(self, request: InferenceRequest) -> Response:
         causes: list[str] = []

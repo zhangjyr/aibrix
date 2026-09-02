@@ -14,6 +14,7 @@
 """Unit tests for the Runtime seam + registry (job lifecycle axis A)."""
 
 import asyncio
+import copy
 import inspect
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -1473,6 +1474,44 @@ async def test_session_error_retry_after_is_capped(monkeypatch):
     await runtime._sleep_before_session_error_retry(1, exc)
 
     assert delays == [60.0]
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected_message_bits"),
+    [
+        (
+            runtime_base_mod.RuntimeOwnershipConflictError(
+                job_id="job-1",
+                runtime_key="base",
+                owner_worker_id="worker-a",
+                current_worker_id="worker-b",
+                retry_after_s=2.5,
+            ),
+            ["owner_worker_id=worker-a", "current_worker_id=worker-b"],
+        ),
+        (
+            runtime_base_mod.RuntimeDeleteInProgressError(
+                job_id="job-1",
+                runtime_key="base",
+                retry_after_s=2.5,
+            ),
+            ["runtime=base", "retry_after_s=2.50"],
+        ),
+    ],
+)
+def test_runtime_session_error_deepcopy_preserves_annotated_suffix(
+    exc, expected_message_bits
+):
+    runtime = _R()
+
+    annotated = runtime._annotate_exhausted_session_error(exc, retries_completed=2)
+    copied = copy.deepcopy(annotated)
+
+    assert copied.message == annotated.message
+    assert copied.args == annotated.args
+    assert "[session_retries=2, session_attempts=3]" in copied.message
+    for expected_bit in expected_message_bits:
+        assert expected_bit in copied.message
 
 
 def test_registry_create_and_unknown_key():

@@ -390,7 +390,7 @@ class BaseJobDriver:
             try:
                 job = await self._progress_manager.mark_job_failed(
                     job_id,
-                    self._make_failure_error(e),
+                    self._make_failure_error(e, job=job),
                 )
                 if not job.status.finished:
                     job = await self._finish_stopped_job(job)
@@ -548,15 +548,23 @@ class BaseJobDriver:
         except ValueError:
             return BatchJobErrorCode.INTERNAL_ERROR
 
-    def _make_failure_error(self, error: Exception) -> BatchJobError:
+    def _make_failure_error(
+        self,
+        error: Exception,
+        *,
+        job_id: Optional[str] = None,
+        job: Optional[BatchJob] = None,
+    ) -> BatchJobError:
         """Classify an uncaught run_job() failure. Preserve an already-classified
         BatchJobError (e.g. RESOURCE_CREATION_ERROR); default an unclassified one
         to the backend's default code (inference for inline dispatch, internal
         for a provisioning backend)."""
+        resolved_job_id = job_id or getattr(job, "job_id", None) or self._job_id
         return self._ensure_batch_job_error(
             error,
             default_code=self._default_failure_code,
-            job_id=self._job_id,
+            job_id=resolved_job_id,
+            job=job,
         )
 
     def _should_finalize(self) -> bool:
@@ -1116,7 +1124,10 @@ class BaseJobDriver:
             except asyncio.CancelledError:
                 raise
             except Exception as ex:  # noqa: BLE001 - finalize must still run
-                normalized_error = self._make_failure_error(ex)
+                normalized_error = self._make_failure_error(
+                    ex,
+                    job=job,
+                )
                 self._log_failed(job, normalized_error)
                 job = await self._progress_manager.mark_job_failed(
                     job.job_id, normalized_error

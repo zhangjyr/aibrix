@@ -130,6 +130,17 @@ METRIC_SCRAPE_PATH = os.getenv("METRIC_SCRAPE_PATH", "/metrics")
 # Runtime Metric config
 PROMETHEUS_MULTIPROC_DIR = os.getenv("PROMETHEUS_MULTIPROC_DIR", "/tmp/aibrix/metrics/")
 
+METRICS_SERVICE_NAME = os.getenv("METRICS_SERVICE_NAME", "aibrix-metadata")
+METRICS_PROMETHEUS_ENABLED = _is_true(os.getenv("METRICS_PROMETHEUS_ENABLED", "0"))
+METRICS_STATSD_ADDR = os.getenv("METRICS_STATSD_ADDR", "")
+METRICS_STATSITE_ADDR = os.getenv("METRICS_STATSITE_ADDR", "")
+METRICS_DOGSTATSD_ADDR = os.getenv("METRICS_DOGSTATSD_ADDR", "")
+METRICS_DOGSTATSD_TAGS = [
+    item
+    for item in (_parse_list_str(os.getenv("METRICS_DOGSTATSD_TAGS")) or [])
+    if item
+]
+
 # Metrics transformation config
 METRICS_ENABLE_TRANSFORMATION = _is_true(
     os.getenv("METRICS_ENABLE_TRANSFORMATION", "1")

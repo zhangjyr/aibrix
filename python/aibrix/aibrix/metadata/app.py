@@ -456,7 +456,7 @@ def build_app_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--httpx-telemetry",
         action=argparse.BooleanOptionalAction,
-        default=envs.CORE_HTTPX_CLIENT_TELEMETRY_ENABLED,
+        default=envs.CORE_HTTPX_ASYNC_CLIENT_TELEMETRY_ENABLED,
         help=(
             "Enable HTTPX client telemetry logging. Defaults to "
             "AIBRIX_HTTPX_CLIENT_TELEMETRY_ENABLED."
@@ -465,7 +465,7 @@ def build_app_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--httpx-telemetry-interval-seconds",
         type=float,
-        default=envs.CORE_HTTPX_CLIENT_TELEMETRY_INTERVAL_SECONDS,
+        default=envs.CORE_HTTPX_ASYNC_CLIENT_TELEMETRY_INTERVAL_SECONDS,
         help=(
             "Telemetry summary interval for the shared metadata HTTPX client. "
             "Defaults to AIBRIX_HTTPX_CLIENT_TELEMETRY_INTERVAL_SECONDS."

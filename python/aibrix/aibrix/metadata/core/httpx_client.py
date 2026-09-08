@@ -45,11 +45,11 @@ _LATENCY_BUCKET_UPPER_BOUNDS_SECONDS = _build_latency_bucket_bounds()
 
 
 def _telemetry_interval_seconds() -> float:
-    return envs.CORE_HTTPX_CLIENT_TELEMETRY_INTERVAL_SECONDS
+    return envs.CORE_HTTPX_ASYNC_CLIENT_TELEMETRY_INTERVAL_SECONDS
 
 
 def _telemetry_enabled() -> bool:
-    return envs.CORE_HTTPX_CLIENT_TELEMETRY_ENABLED
+    return envs.CORE_HTTPX_ASYNC_CLIENT_TELEMETRY_ENABLED
 
 
 def _round_optional(value: Optional[float]) -> Optional[float]:

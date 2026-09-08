@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import argparse
 import os
 from unittest.mock import patch
 
@@ -23,7 +22,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
 from aibrix.batch.state import JobStore
-from aibrix.metadata.app import build_app
+from aibrix.metadata.app import build_app, build_app_args
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
 
@@ -31,15 +30,13 @@ from aibrix.storage import StorageType
 def _args(**overrides):
     defaults = {
         "httpx_telemetry": False,
-        "httpx_telemetry_interval_seconds": 60.0,
-        "enable_fastapi_docs": False,
         "enable_k8s_support": True,
         "disable_batch_api": True,
         "disable_file_api": True,
         "dry_run": False,
     }
     defaults.update(overrides)
-    return argparse.Namespace(**defaults)
+    return build_app_args(**defaults)
 
 
 @pytest.fixture(autouse=True)

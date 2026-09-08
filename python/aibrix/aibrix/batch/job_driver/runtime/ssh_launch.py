@@ -172,19 +172,18 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
         url = self._base_url(handle) + "/health"
         loop = asyncio.get_event_loop()
         deadline = loop.time() + self._ready_timeout_s
+        # Since _wait_ready is a short-lived polling loop, enabling telemetry for
+        # this ephemeral client is unnecessary and will flood the logs with
+        # telemetry summaries and task lifecycle logs.
+        # We should disable telemetry for this client by setting telemetry_enabled=False.
         async with HTTPXClientWrapper(
             client_id="ssh-launch-ready",
             timeout=10.0,
+            telemetry_enabled=False,
         ) as client:
             while True:
                 try:
-                    resp = await client.get(
-                        url,
-                        telemetry_call_site=(
-                            "batch.job_driver.runtime.ssh_launch."
-                            "SSHLaunchRuntime._wait_ready"
-                        ),
-                    )
+                    resp = await client.get(url)
                     if resp.status_code == 200:
                         return
                 except Exception:
@@ -200,18 +199,14 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
     ) -> None:
         del reason
         url = self._base_url(handle) + "/health"
+        # For the same reason as _wait_ready, we disable telemetry for this client.
         async with HTTPXClientWrapper(
             client_id="ssh-launch-liveness",
             timeout=10.0,
+            telemetry_enabled=False,
         ) as client:
             try:
-                resp = await client.get(
-                    url,
-                    telemetry_call_site=(
-                        "batch.job_driver.runtime.ssh_launch."
-                        "SSHLaunchRuntime._check_liveness"
-                    ),
-                )
+                resp = await client.get(url)
             except Exception as ex:
                 raise RuntimeError(f"vLLM liveness check failed at {url}: {ex}") from ex
         if resp.status_code != 200:

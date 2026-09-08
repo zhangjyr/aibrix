@@ -73,13 +73,16 @@ class LLMHealthChecker:
         )  # type: ignore[call-arg]
 
         start_time = time.time()
-        async with HTTPXClientWrapper(client_id="batch-worker-health") as client:
+        # Since wait_for_ready is a one-off startup polling loop for in-pod execution,
+        # enabling telemetry for this ephemeral client is unnecessary.
+        async with HTTPXClientWrapper(
+            client_id="batch-worker-health", telemetry_enabled=False
+        ) as client:
             while time.time() - start_time < self.timeout:
                 try:
                     response = await client.get(
                         self.health_url,
                         timeout=5.0,
-                        telemetry_call_site="batch.worker.LLMHealthChecker.wait_for_ready",
                     )
                     if response.status_code == 200:
                         logger.info("vLLM service is ready")

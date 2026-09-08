@@ -112,19 +112,12 @@ class HttpChannel:
             "requesting inference", url=url, model=request.payload.get("model")
         )  # type: ignore[call-arg]
         try:
+            post_kwargs = {"json": request.payload, "timeout": self._timeout_config}
             if isinstance(client, HTTPXClientWrapper):
-                response = await client.post(
-                    url,
-                    json=request.payload,
-                    timeout=self._timeout_config,
-                    telemetry_call_site="batch.client.channel.HttpChannel.send",
+                post_kwargs["telemetry_call_site"] = (
+                    "batch.client.channel.HttpChannel.send"
                 )
-            else:
-                response = await client.post(
-                    url,
-                    json=request.payload,
-                    timeout=self._timeout_config,
-                )
+            response = await client.post(url, **post_kwargs)  # type: ignore[arg-type]
         except httpx.TimeoutException as ex:
             # repr, not str: httpx timeout exceptions often stringify to an
             # empty message, which would leave the log with a bare URL.

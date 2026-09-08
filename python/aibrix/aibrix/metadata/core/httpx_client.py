@@ -241,12 +241,22 @@ class HTTPXClientWrapper:
         )
         self._telemetry_task: Optional[asyncio.Task[None]] = None
         self._telemetry_stats = _HTTPXTelemetryStats()
+        self._last_telemetry_emitted_at: Optional[float] = None
+        self._stopped = False
 
     def start(self):
         """Instantiate the client. Call from the FastAPI startup hook."""
+        if self._stopped:
+            raise RuntimeError(
+                "HTTPXClientWrapper cannot be reused after stop(); create a new wrapper"
+            )
         if self.async_client is None:
             self.async_client = httpx.AsyncClient(**self._client_kwargs)
             self._telemetry_stats = _HTTPXTelemetryStats()
+            try:
+                self._last_telemetry_emitted_at = asyncio.get_running_loop().time()
+            except RuntimeError:
+                self._last_telemetry_emitted_at = None
             logger.info(
                 "httpx.AsyncClient instantiated.",
                 client_id=self.client_id,
@@ -258,6 +268,7 @@ class HTTPXClientWrapper:
 
     async def stop(self):
         """Gracefully shutdown. Call from FastAPI shutdown hook."""
+        self._stopped = True
         if self._telemetry_task is not None:
             self._telemetry_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -272,9 +283,20 @@ class HTTPXClientWrapper:
             client_id=self.client_id,
         )  # type: ignore[call-arg]
         if self._telemetry_enabled:
+            try:
+                now = asyncio.get_running_loop().time()
+                elapsed = max(
+                    now - (self._last_telemetry_emitted_at or now),
+                    1e-9,
+                )
+            except RuntimeError:
+                now = None
+                elapsed = max(self._telemetry_interval_seconds, 1.0)
             self._emit_telemetry(
-                final=True, elapsed=max(self._telemetry_interval_seconds, 1.0)
+                final=True,
+                elapsed=elapsed,
             )
+            self._last_telemetry_emitted_at = now
         await self.async_client.aclose()
         self.async_client = None
         logger.info("httpx.AsyncClient closed", client_id=self.client_id)  # type: ignore[call-arg]
@@ -470,10 +492,11 @@ class HTTPXClientWrapper:
 
     async def _log_telemetry(self) -> None:
         while True:
-            started = asyncio.get_running_loop().time()
             await asyncio.sleep(self._telemetry_interval_seconds)
-            elapsed = max(asyncio.get_running_loop().time() - started, 1e-9)
+            now = asyncio.get_running_loop().time()
+            elapsed = max(now - (self._last_telemetry_emitted_at or now), 1e-9)
             self._emit_telemetry(final=False, elapsed=elapsed)
+            self._last_telemetry_emitted_at = now
 
     def _emit_telemetry(self, *, final: bool, elapsed: float) -> None:
         if not self._telemetry_enabled:

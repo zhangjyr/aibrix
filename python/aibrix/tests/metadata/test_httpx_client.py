@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -119,3 +119,69 @@ async def test_httpx_wrapper_context_manager_starts_and_stops():
 
     assert wrapper.async_client is None
     assert wrapper.is_closed is True
+
+
+@pytest.mark.asyncio
+async def test_httpx_wrapper_cannot_be_reused_after_stop():
+    wrapper = HTTPXClientWrapper(
+        client_id="test-wrapper-stopped",
+        telemetry_interval_seconds=0,
+    )
+
+    with patch(
+        "httpx.AsyncClient.request",
+        new=AsyncMock(return_value=httpx.Response(200, json={"ok": True})),
+    ):
+        response = await wrapper.request("GET", "https://example.com/healthz")
+
+    assert response.status_code == 200
+
+    await wrapper.stop()
+
+    with pytest.raises(RuntimeError, match="cannot be reused after stop"):
+        await wrapper.request("GET", "https://example.com/healthz")
+
+    with pytest.raises(RuntimeError, match="cannot be reused after stop"):
+        _ = wrapper.headers
+
+
+@pytest.mark.asyncio
+async def test_httpx_wrapper_stop_uses_actual_elapsed_time_for_final_telemetry():
+    wrapper = HTTPXClientWrapper(
+        client_id="test-wrapper-final-elapsed",
+        telemetry_enabled=True,
+        telemetry_interval_seconds=60,
+    )
+
+    wrapper.start()
+    assert wrapper.async_client is not None
+
+    wrapper._telemetry_stats.record_start(
+        call_site="tests.metadata.test_httpx_client.final_elapsed"
+    )
+    wrapper._telemetry_stats.record_completion(
+        failed=False,
+        latency_seconds=0.1,
+        call_site="tests.metadata.test_httpx_client.final_elapsed",
+    )
+    wrapper._last_telemetry_emitted_at = 100.0
+
+    with (
+        patch.object(wrapper.async_client, "aclose", new=AsyncMock()),
+        patch(
+            "aibrix.metadata.core.httpx_client.asyncio.get_running_loop",
+            return_value=MagicMock(time=MagicMock(return_value=100.25)),
+        ),
+        patch("aibrix.metadata.core.httpx_client.logger.info") as mock_info,
+    ):
+        await wrapper.stop()
+
+    telemetry_call = next(
+        call
+        for call in mock_info.call_args_list
+        if call.args and call.args[0] == "HTTPX client telemetry summary"
+    )
+    assert telemetry_call.kwargs["final"] is True
+    assert telemetry_call.kwargs["started_qps"] == 4.0
+    assert telemetry_call.kwargs["completed_qps"] == 4.0
+    assert telemetry_call.kwargs["failed_qps"] == 0.0

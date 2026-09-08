@@ -449,7 +449,7 @@ def nullable_str(val: str):
     return val
 
 
-def main():
+def build_app_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=f"Run {settings.PROJECT_NAME}")
     parser.add_argument("--host", type=nullable_str, default=None, help="host name")
     parser.add_argument("--port", type=int, default=8090, help="port number")
@@ -518,6 +518,23 @@ def main():
             "deployment with a redis metastore for crash-safe long-running batches."
         ),
     )
+    return parser
+
+
+def build_app_args(**overrides: Any) -> argparse.Namespace:
+    """Build a metadata-service CLI namespace with parser-backed defaults.
+
+    Tests can override only the fields they care about while staying aligned
+    with the authoritative parser when new CLI flags are added.
+    """
+    args = build_app_arg_parser().parse_args([])
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
+
+
+def main():
+    parser = build_app_arg_parser()
     args = parser.parse_args()
 
     if args.disable_file_api and not args.disable_batch_api:

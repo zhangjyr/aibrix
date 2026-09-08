@@ -26,6 +26,7 @@ from kubernetes import client as k8s_client
 from kubernetes import config
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from aibrix import envs
 from aibrix.batch import BatchDriver
 from aibrix.batch.client import (
     EndpointSource,
@@ -274,7 +275,11 @@ def build_app(args: argparse.Namespace, params={}):
             # Local debug
             config.load_kube_config()
 
-    app.state.httpx_client_wrapper = HTTPXClientWrapper()
+    app.state.httpx_client_wrapper = HTTPXClientWrapper(
+        timeout=envs.CORE_HTTPX_ASYNC_CLIENT_TIMEOUT_SECOND,
+        telemetry_enabled=args.httpx_telemetry,
+        telemetry_interval_seconds=args.httpx_telemetry_interval_seconds,
+    )
 
     # Normalize HTTPException responses to OpenAI's top-level
     # ``{"error": {message, type, param, code}}`` shape so that the
@@ -448,6 +453,24 @@ def main():
     parser = argparse.ArgumentParser(description=f"Run {settings.PROJECT_NAME}")
     parser.add_argument("--host", type=nullable_str, default=None, help="host name")
     parser.add_argument("--port", type=int, default=8090, help="port number")
+    parser.add_argument(
+        "--httpx-telemetry",
+        action=argparse.BooleanOptionalAction,
+        default=envs.CORE_HTTPX_CLIENT_TELEMETRY_ENABLED,
+        help=(
+            "Enable HTTPX client telemetry logging. Defaults to "
+            "AIBRIX_HTTPX_CLIENT_TELEMETRY_ENABLED."
+        ),
+    )
+    parser.add_argument(
+        "--httpx-telemetry-interval-seconds",
+        type=float,
+        default=envs.CORE_HTTPX_CLIENT_TELEMETRY_INTERVAL_SECONDS,
+        help=(
+            "Telemetry summary interval for the shared metadata HTTPX client. "
+            "Defaults to AIBRIX_HTTPX_CLIENT_TELEMETRY_INTERVAL_SECONDS."
+        ),
+    )
     parser.add_argument(
         "--enable-fastapi-docs",
         action="store_true",

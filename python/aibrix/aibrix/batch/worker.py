@@ -48,6 +48,7 @@ from aibrix.batch.job_entity import (
 from aibrix.batch.state import JobMetaInfo
 from aibrix.context.infra import InfrastructureContext
 from aibrix.logger import init_logger
+from aibrix.metadata.core import HTTPXClientWrapper
 
 logger = init_logger(__name__)
 
@@ -72,10 +73,14 @@ class LLMHealthChecker:
         )  # type: ignore[call-arg]
 
         start_time = time.time()
-        async with httpx.AsyncClient() as client:
+        async with HTTPXClientWrapper(client_id="batch-worker-health") as client:
             while time.time() - start_time < self.timeout:
                 try:
-                    response = await client.get(self.health_url, timeout=5.0)
+                    response = await client.get(
+                        self.health_url,
+                        timeout=5.0,
+                        telemetry_call_site="batch.worker.LLMHealthChecker.wait_for_ready",
+                    )
                     if response.status_code == 200:
                         logger.info("vLLM service is ready")
                         return True

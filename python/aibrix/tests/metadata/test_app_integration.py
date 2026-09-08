@@ -30,6 +30,8 @@ from aibrix.storage import StorageType
 
 def _args(**overrides):
     defaults = {
+        "httpx_telemetry": False,
+        "httpx_telemetry_interval_seconds": 60.0,
         "enable_fastapi_docs": False,
         "enable_k8s_support": True,
         "disable_batch_api": True,
@@ -88,6 +90,19 @@ def test_build_app_without_batch(_mock_k8s_config_loading):
 
     assert hasattr(app.state, "httpx_client_wrapper")
     assert not hasattr(app.state, "batch_driver")
+
+
+def test_build_app_wires_httpx_telemetry_settings(_mock_k8s_config_loading):
+    args = _args(
+        enable_k8s_support=False,
+        httpx_telemetry=True,
+        httpx_telemetry_interval_seconds=12.5,
+    )
+
+    app = build_app(args)
+
+    assert app.state.httpx_client_wrapper._telemetry_enabled is True
+    assert app.state.httpx_client_wrapper._telemetry_interval_seconds == 12.5
 
 
 def test_build_app_batch_no_global_inference_endpoint(

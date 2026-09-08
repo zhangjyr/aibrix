@@ -16,11 +16,10 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
-import httpx
-
 from aibrix.batch.client.sources.static import GatewayEndpointSource
 from aibrix.batch.job_driver.runtime import Endpoint, RuntimeBase
 from aibrix.batch.job_entity import BatchJob
+from aibrix.metadata.core import HTTPXClientWrapper
 
 
 @dataclass(slots=True)
@@ -173,10 +172,19 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
         url = self._base_url(handle) + "/health"
         loop = asyncio.get_event_loop()
         deadline = loop.time() + self._ready_timeout_s
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with HTTPXClientWrapper(
+            client_id="ssh-launch-ready",
+            timeout=10.0,
+        ) as client:
             while True:
                 try:
-                    resp = await client.get(url)
+                    resp = await client.get(
+                        url,
+                        telemetry_call_site=(
+                            "batch.job_driver.runtime.ssh_launch."
+                            "SSHLaunchRuntime._wait_ready"
+                        ),
+                    )
                     if resp.status_code == 200:
                         return
                 except Exception:
@@ -192,9 +200,18 @@ class SSHLaunchRuntime(RuntimeBase, abc.ABC):
     ) -> None:
         del reason
         url = self._base_url(handle) + "/health"
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with HTTPXClientWrapper(
+            client_id="ssh-launch-liveness",
+            timeout=10.0,
+        ) as client:
             try:
-                resp = await client.get(url)
+                resp = await client.get(
+                    url,
+                    telemetry_call_site=(
+                        "batch.job_driver.runtime.ssh_launch."
+                        "SSHLaunchRuntime._check_liveness"
+                    ),
+                )
             except Exception as ex:
                 raise RuntimeError(f"vLLM liveness check failed at {url}: {ex}") from ex
         if resp.status_code != 200:

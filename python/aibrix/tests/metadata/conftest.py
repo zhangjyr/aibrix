@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from aibrix import envs
 from aibrix.metadata.app import build_app
 from aibrix.metadata.setting import settings
 from aibrix.storage import StorageType
@@ -76,6 +77,8 @@ def create_test_app(disable_batch_api: bool = False, disable_file_api: bool = Fa
             argparse.Namespace(
                 host=None,
                 port=8090,
+                httpx_telemetry=False,
+                httpx_telemetry_interval_seconds=envs.CORE_HTTPX_CLIENT_TELEMETRY_INTERVAL_SECONDS,
                 enable_fastapi_docs=False,
                 enable_k8s_support=False,
                 disable_batch_api=disable_batch_api,

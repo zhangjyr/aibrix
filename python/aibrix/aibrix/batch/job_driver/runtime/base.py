@@ -274,9 +274,13 @@ class RuntimeBase:
     """
 
     provisions: bool = False
+    # Batch session retries cover failed provision/reconnect attempts before the
+    # job driver gives up and reports the session setup failure.
     session_retry_attempts: int = envs.BATCH_SESSION_RETRY_ATTEMPTS
-    session_retry_base_delay_s: float = 2.0
-    session_retry_max_delay_s: float = 60.0
+    # Initial exponential-backoff delay between failed batch session attempts.
+    session_retry_base_delay_s: float = envs.BATCH_SESSION_RETRY_BASE_DELAY_S
+    # Maximum exponential-backoff delay between failed batch session attempts.
+    session_retry_max_delay_s: float = envs.BATCH_SESSION_RETRY_MAX_DELAY_S
     session_liveness_check_interval_s: float = 30.0
     session_liveness_failure_threshold: Optional[int] = None
 

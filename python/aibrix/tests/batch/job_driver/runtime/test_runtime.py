@@ -1439,6 +1439,14 @@ def test_runtime_base_uses_env_session_retry_attempts():
         RuntimeBase.session_retry_attempts
         == runtime_base_mod.envs.BATCH_SESSION_RETRY_ATTEMPTS
     )
+    assert (
+        RuntimeBase.session_retry_base_delay_s
+        == runtime_base_mod.envs.BATCH_SESSION_RETRY_BASE_DELAY_S
+    )
+    assert (
+        RuntimeBase.session_retry_max_delay_s
+        == runtime_base_mod.envs.BATCH_SESSION_RETRY_MAX_DELAY_S
+    )
 
 
 @pytest.mark.asyncio

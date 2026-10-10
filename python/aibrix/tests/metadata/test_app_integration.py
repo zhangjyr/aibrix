@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 # Set required environment variable before importing
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-testing")
 
+from aibrix.batch.client import StaticDebugDiscoveryFactory, StaticEndpointSource
 from aibrix.batch.state import JobStore
 from aibrix.metadata.app import build_app, build_app_args
 from aibrix.metadata.setting import settings
@@ -34,6 +35,10 @@ def _args(**overrides):
         "disable_batch_api": True,
         "disable_file_api": True,
         "dry_run": False,
+        "batch_runtime_endpoint": None,
+        "batch_runtime_source": "static",
+        "batch_runtime_capacity": 16,
+        "batch_runtime_replicas": 1,
     }
     defaults.update(overrides)
     return build_app_args(**defaults)
@@ -100,6 +105,7 @@ def test_build_app_wires_httpx_telemetry_settings(_mock_k8s_config_loading):
 
     assert app.state.httpx_client_wrapper._telemetry_enabled is True
     assert app.state.httpx_client_wrapper._telemetry_interval_seconds == 12.5
+    assert app.state.httpx_client_wrapper.client_id == "app_shared_httpx_client"
 
 
 def test_build_app_batch_no_global_inference_endpoint(
@@ -116,6 +122,63 @@ def test_build_app_batch_no_global_inference_endpoint(
 
     assert hasattr(app.state, "batch_driver")
     assert isinstance(app.state.batch_driver.job_manager._job_entity_manager, JobStore)
+
+
+def test_build_app_batch_with_explicit_runtime_endpoint_skips_k8s(
+    _mock_k8s_runtime, _mock_k8s_config_loading
+):
+    args = _args(
+        disable_batch_api=False,
+        enable_k8s_support=False,
+        batch_runtime_endpoint="http://127.0.0.1:18080",
+        batch_runtime_capacity=24,
+    )
+    load_incluster, load_kube = _mock_k8s_config_loading
+    core_api, apps_api = _mock_k8s_runtime
+
+    app = build_app(args)
+
+    load_incluster.assert_not_called()
+    load_kube.assert_not_called()
+    core_api.assert_not_called()
+    apps_api.assert_not_called()
+    assert isinstance(app.state.batch_driver._endpoint_source, StaticEndpointSource)
+    assert app.state.batch_driver._endpoint_source._capacity == 24
+
+
+@pytest.mark.asyncio
+async def test_build_app_batch_with_discovery_runtime_endpoint_skips_k8s(
+    _mock_k8s_runtime, _mock_k8s_config_loading
+):
+    args = _args(
+        disable_batch_api=False,
+        enable_k8s_support=False,
+        batch_runtime_endpoint="http://127.0.0.1:18080",
+        batch_runtime_source="discovery",
+        batch_runtime_capacity=24,
+        batch_runtime_replicas=3,
+    )
+    load_incluster, load_kube = _mock_k8s_config_loading
+    core_api, apps_api = _mock_k8s_runtime
+
+    app = build_app(args)
+
+    load_incluster.assert_not_called()
+    load_kube.assert_not_called()
+    core_api.assert_not_called()
+    apps_api.assert_not_called()
+    endpoint_source = app.state.batch_driver._endpoint_source
+    assert isinstance(endpoint_source, StaticDebugDiscoveryFactory)
+    job_source = endpoint_source.for_job("job-a")
+    capacity = await job_source.capacity()
+    assert capacity.count == 24
+    assert [
+        endpoint.base_url for endpoint in job_source._discovery._snapshot.endpoints
+    ] == [
+        "http://127.0.0.1:18080#job-job-a-pod-0",
+        "http://127.0.0.1:18080#job-job-a-pod-1",
+        "http://127.0.0.1:18080#job-job-a-pod-2",
+    ]
 
 
 def test_build_app_creates_k8s_clients_when_enabled(

@@ -21,7 +21,15 @@ from starlette.types import ASGIApp
 
 from aibrix.logger import init_logger
 from aibrix.metadata.core.metrics.prometheus import PrometheusSink
-from aibrix.metadata.core.metrics.sink import Emitter, FanoutSink, NoopSink, Sink
+from aibrix.metadata.core.metrics.sink import (
+    Emitter,
+    FanoutSink,
+    MetricEmissionObserver,
+    NoopSink,
+    ObservedSink,
+    Sink,
+    describe_sink,
+)
 from aibrix.metadata.core.metrics.udp import DogStatsdSink, StatsdSink, StatsiteSink
 from aibrix.metadata.setting import (
     MetricsConfig,
@@ -36,6 +44,7 @@ class MetricsRuntime:
     sink: Sink
     registry: CollectorRegistry | None = None
     metrics_app: ASGIApp | None = None
+    observer: MetricEmissionObserver | None = None
 
 
 def setup_metrics(config: MetricsConfig | None = None) -> MetricsRuntime:
@@ -72,12 +81,24 @@ def setup_metrics(config: MetricsConfig | None = None) -> MetricsRuntime:
     if not sinks:
         logger.warning("Metrics configured without any enabled sink; using noop sink")
         sink = NoopSink()
-        Emitter.set_sink(sink)
-        return MetricsRuntime(sink=sink, registry=registry, metrics_app=metrics_app)
+    else:
+        sink = sinks[0] if len(sinks) == 1 else FanoutSink(sinks)
 
-    sink = sinks[0] if len(sinks) == 1 else FanoutSink(sinks)
+    observer: MetricEmissionObserver | None = None
+    if config.emit_observation_enabled:
+        observer = MetricEmissionObserver(
+            interval_seconds=config.emit_observation_interval_seconds,
+            active_metric_backend=describe_sink(sink),
+        )
+        sink = ObservedSink(sink, observer)
+
     Emitter.set_sink(sink)
-    return MetricsRuntime(sink=sink, registry=registry, metrics_app=metrics_app)
+    return MetricsRuntime(
+        sink=sink,
+        registry=registry,
+        metrics_app=metrics_app,
+        observer=observer,
+    )
 
 
 def shutdown_metrics() -> None:

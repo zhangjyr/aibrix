@@ -16,7 +16,16 @@ from aibrix.metadata.setting import MetricsConfig, load_metrics_config
 
 from . import names as metrics_names
 from .setup import MetricsRuntime, setup_metrics, shutdown_metrics
-from .sink import Emitter, FanoutSink, NoopSink, T, Tag, duration_ms
+from .sink import (
+    Emitter,
+    FanoutSink,
+    MetricEmissionObserver,
+    NoopSink,
+    ObservedSink,
+    T,
+    Tag,
+    duration_ms,
+)
 from .tracking import (
     begin_backend_operation_count,
     get_backend_operation_count,
@@ -27,9 +36,11 @@ from .tracking import (
 __all__ = [
     "Emitter",
     "FanoutSink",
+    "MetricEmissionObserver",
     "MetricsConfig",
     "MetricsRuntime",
     "NoopSink",
+    "ObservedSink",
     "T",
     "Tag",
     "begin_backend_operation_count",

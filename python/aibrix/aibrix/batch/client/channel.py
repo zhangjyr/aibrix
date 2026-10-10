@@ -29,13 +29,14 @@ import httpx
 
 from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.logger import init_logger
-from aibrix.metadata.core import HTTPXClientWrapper
+from aibrix.metadata.core import HTTPXClientWrapper, JsonProfiler
 
 logger = init_logger(__name__)
 
 Response = Dict[str, Any]
 _MAX_ERROR_BODY_CHARS = 4096
 _HTTPXLikeClient = HTTPXClientWrapper | httpx.AsyncClient
+JSON_PROFILER = JsonProfiler(purpose="batch_json")
 
 # Idle connections must be discarded before the server's own keep-alive timeout,
 # not at the same moment. httpx defaults to 5s and so does uvicorn: under
@@ -147,7 +148,10 @@ class HttpChannel:
             )
 
         try:
-            return response.json()
+            return JSON_PROFILER.profile(
+                "batch.runtime.response_json",
+                response.json,
+            )
         except ValueError as ex:
             raise InferenceError(
                 InferenceErrorCode.RESPONSE_ERROR,
@@ -161,6 +165,7 @@ class HttpChannel:
         if self._client is None:
             self._client = HTTPXClientWrapper(
                 client_id=f"http-channel-{self._base_url}",
+                purpose="batch_runtime_http",
                 limits=httpx.Limits(
                     # Restate httpx's own defaults: constructing Limits() to set
                     # keepalive_expiry alone would reset these two to unbounded.

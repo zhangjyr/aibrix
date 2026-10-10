@@ -161,6 +161,12 @@ METRICS_DOGSTATSD_TAGS = [
     for item in (_parse_list_str(os.getenv("METRICS_DOGSTATSD_TAGS")) or [])
     if item
 ]
+METRICS_EMIT_OBSERVATION_ENABLED = _is_true(
+    os.getenv("METRICS_EMIT_OBSERVATION_ENABLED", "0")
+)
+METRICS_EMIT_OBSERVATION_INTERVAL_SECONDS = float(
+    os.getenv("METRICS_EMIT_OBSERVATION_INTERVAL_SECONDS", "10")
+)
 
 # Metrics transformation config
 METRICS_ENABLE_TRANSFORMATION = _is_true(
@@ -203,4 +209,17 @@ CORE_HTTPX_ASYNC_CLIENT_TELEMETRY_INTERVAL_SECONDS = max(
         60.0,
     ),
     15.0,
+)
+
+# Lightweight JSON CPU-cost profiler used by batch stress experiments. It is
+# disabled by default and only logs aggregated latency windows when enabled.
+JSON_PROFILER_TELEMETRY_ENABLED = _is_true(
+    os.getenv("AIBRIX_JSON_PROFILER_TELEMETRY_ENABLED", "0")
+)
+JSON_PROFILER_TELEMETRY_INTERVAL_SECONDS = max(
+    _parse_float(
+        os.getenv("AIBRIX_JSON_PROFILER_TELEMETRY_INTERVAL_SECONDS"),
+        60.0,
+    ),
+    1.0,
 )

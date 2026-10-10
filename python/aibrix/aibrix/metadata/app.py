@@ -31,6 +31,8 @@ from aibrix.batch import BatchDriver
 from aibrix.batch.client import (
     EndpointSource,
     NoopEndpointSource,
+    StaticDebugDiscoveryFactory,
+    StaticEndpointSource,
 )
 from aibrix.batch.state import JobStore
 from aibrix.context import InfrastructureContext
@@ -276,6 +278,7 @@ def build_app(args: argparse.Namespace, params={}):
             config.load_kube_config()
 
     app.state.httpx_client_wrapper = HTTPXClientWrapper(
+        client_id="app_shared_httpx_client",
         timeout=envs.CORE_HTTPX_ASYNC_CLIENT_TIMEOUT_SECOND,
         telemetry_enabled=args.httpx_telemetry,
         telemetry_interval_seconds=args.httpx_telemetry_interval_seconds,
@@ -392,12 +395,35 @@ def build_app(args: argparse.Namespace, params={}):
     # source is the echo client used by --dry-run.
     endpoint_source: Optional[EndpointSource] = None
     dry_run = getattr(args, "dry_run", False)
+    batch_runtime_endpoint = getattr(args, "batch_runtime_endpoint", None)
     if dry_run:
         endpoint_source = NoopEndpointSource()
         logger.warning(
             "DRY RUN MODE — outputs are echoed inputs, not real model "
             "completions. Refuses to write to non-local storage."
         )
+    elif batch_runtime_endpoint:
+        batch_runtime_capacity = max(getattr(args, "batch_runtime_capacity", 16), 1)
+        batch_runtime_source = getattr(args, "batch_runtime_source", "static")
+        batch_runtime_replicas = max(getattr(args, "batch_runtime_replicas", 1), 1)
+        if batch_runtime_source == "discovery":
+            endpoint_source = StaticDebugDiscoveryFactory(
+                batch_runtime_endpoint,
+                replica_count=batch_runtime_replicas,
+                capacity=batch_runtime_capacity,
+            )
+        else:
+            endpoint_source = StaticEndpointSource(
+                batch_runtime_endpoint,
+                capacity=batch_runtime_capacity,
+            )
+        logger.info(
+            "Batch driver using explicit runtime endpoint",
+            batch_runtime_endpoint=batch_runtime_endpoint,
+            batch_runtime_capacity=batch_runtime_capacity,
+            batch_runtime_source=batch_runtime_source,
+            batch_runtime_replicas=batch_runtime_replicas,
+        )  # type: ignore[call-arg]
 
     # Initialize batches API
     if not args.disable_batch_api:
@@ -409,7 +435,7 @@ def build_app(args: argparse.Namespace, params={}):
         app.state.template_registry = infrastructure_context.template_registry
         app.state.profile_registry = infrastructure_context.profile_registry
 
-        if not args.dry_run:
+        if not args.dry_run and endpoint_source is None:
             if infrastructure_context is None:
                 raise RuntimeError("Kubernetes batch context is required")
 
@@ -516,6 +542,42 @@ def build_app_arg_parser() -> argparse.ArgumentParser:
             "upload ids are kept in memory only, so if the server is killed "
             "mid-batch the partial output is unrecoverable. Use a real K8s "
             "deployment with a redis metastore for crash-safe long-running batches."
+        ),
+    )
+    parser.add_argument(
+        "--batch-runtime-endpoint",
+        type=nullable_str,
+        default=None,
+        help=(
+            "Optional fixed runtime base URL for local batch execution without "
+            "Kubernetes provisioning."
+        ),
+    )
+    parser.add_argument(
+        "--batch-runtime-capacity",
+        type=int,
+        default=16,
+        help=(
+            "Advertised concurrency for --batch-runtime-endpoint. Higher values "
+            "allow more in-flight requests against the same runtime endpoint."
+        ),
+    )
+    parser.add_argument(
+        "--batch-runtime-source",
+        choices=("static", "discovery"),
+        default="static",
+        help=(
+            "EndpointSource used for --batch-runtime-endpoint. Use discovery to "
+            "exercise DiscoveryEndpointSource with a local static discovery backend."
+        ),
+    )
+    parser.add_argument(
+        "--batch-runtime-replicas",
+        type=int,
+        default=1,
+        help=(
+            "Number of local debug endpoints to publish when "
+            "--batch-runtime-source=discovery."
         ),
     )
     return parser

@@ -28,6 +28,8 @@ class MetricsConfig:
     statsite_addr: str = ""
     dogstatsd_addr: str = ""
     dogstatsd_tags: list[str] = field(default_factory=list)
+    emit_observation_enabled: bool = False
+    emit_observation_interval_seconds: float = 10.0
 
 
 def load_public_metrics_config() -> Optional[MetricsConfig]:
@@ -38,6 +40,8 @@ def load_public_metrics_config() -> Optional[MetricsConfig]:
         statsite_addr=envs.METRICS_STATSITE_ADDR,
         dogstatsd_addr=envs.METRICS_DOGSTATSD_ADDR,
         dogstatsd_tags=list(envs.METRICS_DOGSTATSD_TAGS),
+        emit_observation_enabled=envs.METRICS_EMIT_OBSERVATION_ENABLED,
+        emit_observation_interval_seconds=envs.METRICS_EMIT_OBSERVATION_INTERVAL_SECONDS,
     )
 
     if (
@@ -45,6 +49,7 @@ def load_public_metrics_config() -> Optional[MetricsConfig]:
         and not config.statsd_addr
         and not config.statsite_addr
         and not config.dogstatsd_addr
+        and not config.emit_observation_enabled
     ):
         return None
 

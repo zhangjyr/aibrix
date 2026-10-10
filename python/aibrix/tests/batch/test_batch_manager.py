@@ -799,6 +799,56 @@ async def test_admit_job_persists_validated_request_count(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_admit_uses_job_scoped_endpoint_source_when_supported(monkeypatch):
+    job_manager = _job_manager()
+    created_sources: list[str] = []
+    admitted_sources: list[str] = []
+
+    class _JobScopedEndpointSource:
+        def for_job(self, job_id: str):
+            source = f"endpoint-source-for-{job_id}"
+            created_sources.append(source)
+            return source
+
+        async def aclose(self) -> None:
+            return None
+
+    class _ValidatedDriver:
+        async def validate_job(self, job):
+            return None
+
+    def _create_job_driver(
+        context, progress_manager, entity_manager, job, endpoint_source
+    ):
+        admitted_sources.append(endpoint_source)
+        return _ValidatedDriver()
+
+    monkeypatch.setattr(
+        "aibrix.batch.batch_manager.create_job_driver",
+        _create_job_driver,
+    )
+    job_manager.set_endpoint_source(_JobScopedEndpointSource())
+
+    first = _in_progress_meta_job("job-a", total_requests=1).batch_job
+    first.status.state = BatchJobState.CREATED
+    first.status.in_progress_at = None
+    second = _in_progress_meta_job("job-b", total_requests=1).batch_job
+    second.status.state = BatchJobState.CREATED
+    second.status.in_progress_at = None
+    job_manager._pending_jobs[first.job_id] = first
+    job_manager._pending_jobs[second.job_id] = second
+
+    await job_manager.admit(first.job_id)
+    await job_manager.admit(second.job_id)
+
+    assert created_sources == [
+        "endpoint-source-for-job-a",
+        "endpoint-source-for-job-b",
+    ]
+    assert admitted_sources == created_sources
+
+
+@pytest.mark.asyncio
 async def test_mark_job_failed_is_idempotent_for_done_job():
     job_manager = _job_manager()
 

@@ -37,6 +37,7 @@ from aibrix.batch.job_entity import (
     TypeMeta,
 )
 from aibrix.batch.storage.adapter import BatchStorageAdapter
+from aibrix.metadata.core import JsonProfiler
 from aibrix.storage.base import (
     LOCAL_PART_PROVIDER_MARKER,
     LOCAL_PART_PROVIDER_MARKER_VALUE,
@@ -221,6 +222,39 @@ async def test_read_job_next_input_data_keeps_locking_behavior(mock_storage):
     assert mock_lock.await_count == 2
     assert mock_lock.await_args_list[0].kwargs["expiration_seconds"] == 45
     assert mock_lock.await_args_list[1].kwargs["expiration_seconds"] == 45
+
+
+@pytest.mark.asyncio
+async def test_read_job_next_input_data_profiles_json_line_decode(
+    mock_storage, monkeypatch
+):
+    adapter = BatchStorageAdapter(mock_storage)
+    job = create_test_batch_job(total=1)
+    mock_storage.readline_iter.side_effect = _readline_iter_from_lines(
+        ['{"custom_id":"a","body":{"i":0}}']
+    )
+    profiler = JsonProfiler(
+        purpose="test-batch-json-storage",
+        telemetry_enabled=True,
+        telemetry_interval_seconds=0,
+    )
+    monkeypatch.setattr("aibrix.batch.storage.adapter.JSON_PROFILER", profiler)
+
+    with (
+        patch(
+            "aibrix.batch.storage.adapter.is_request_locking_supported",
+            return_value=False,
+        ),
+    ):
+        requests = [
+            item async for item in adapter.read_job_next_input_data(job, start_index=0)
+        ]
+
+    assert requests[0]["custom_id"] == "a"
+    snapshot = profiler.snapshot(reset_window=False)
+    assert snapshot.started == 1
+    assert snapshot.failed == 0
+    assert snapshot.operations[0].operation == "batch.input.json_loads"
 
 
 @pytest.mark.asyncio

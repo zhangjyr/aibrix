@@ -1755,6 +1755,12 @@ class BaseJobDriver:
             window_failed=snapshot.window_failed,
             avg_latency_seconds=_round_optional(snapshot.avg_latency_seconds),
             p95_latency_seconds=_round_optional(snapshot.p95_latency_seconds),
+            avg_queue_wait_seconds=_round_optional(snapshot.avg_queue_wait_seconds),
+            p95_queue_wait_seconds=_round_optional(snapshot.p95_queue_wait_seconds),
+            avg_qps_wait_seconds=_round_optional(snapshot.avg_qps_wait_seconds),
+            p95_qps_wait_seconds=_round_optional(snapshot.p95_qps_wait_seconds),
+            avg_send_latency_seconds=_round_optional(snapshot.avg_send_latency_seconds),
+            p95_send_latency_seconds=_round_optional(snapshot.p95_send_latency_seconds),
         )  # type: ignore[call-arg]
 
     async def _send_one(

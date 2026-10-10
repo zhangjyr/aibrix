@@ -35,6 +35,7 @@ from aibrix.batch.client import (
     RetryConfig,
 )
 from aibrix.batch.client.engine import _ConcurrencyAdmission
+from aibrix.metadata.core import JsonProfiler
 
 
 class _FakeChannel:
@@ -253,6 +254,45 @@ async def test_http_channel_truncates_large_error_body():
     assert isinstance(err.response_body, str)
     assert len(err.response_body) < len(body)
     assert err.response_body.endswith("...<truncated>")
+
+
+@pytest.mark.asyncio
+async def test_http_channel_profiles_success_response_json_decode(monkeypatch):
+    async def handler(request):
+        return httpx.Response(200, json={"ok": True})
+
+    profiler = JsonProfiler(
+        purpose="test-batch-json-channel",
+        telemetry_enabled=True,
+        telemetry_interval_seconds=0,
+    )
+    monkeypatch.setattr("aibrix.batch.client.channel.JSON_PROFILER", profiler)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    channel = HttpChannel("http://engine", client=client)
+    try:
+        response = await channel.send(InferenceRequest("/v1/x", {}))
+    finally:
+        await channel.aclose()
+        await client.aclose()
+
+    assert response == {"ok": True}
+    snapshot = profiler.snapshot(reset_window=False)
+    assert snapshot.started == 1
+    assert snapshot.failed == 0
+    assert snapshot.operations[0].operation == "batch.runtime.response_json"
+
+
+@pytest.mark.asyncio
+async def test_http_channel_default_connection_pool_allows_100_connections():
+    channel = HttpChannel("http://engine")
+    try:
+        client = channel._ensure_client()
+        assert client.purpose == "batch_runtime_http"
+        client.start()
+        assert client.async_client is not None
+        assert client.async_client._transport._pool._max_connections == 100
+    finally:
+        await channel.aclose()
 
 
 def test_retry_config_rejects_invalid_values():
@@ -1229,6 +1269,61 @@ async def test_dispatch_stats_tracks_qps_inputs_and_limit():
     assert final.window_started == 2
     assert final.window_completed == 2
     assert final.avg_latency_seconds is not None
+
+
+def test_dispatch_stats_tracks_stage_latencies():
+    stats = DispatchStats()
+
+    stats.record_start(
+        limit=4,
+        inflight=1,
+        queue_wait_seconds=0.1,
+        qps_wait_seconds=0.2,
+    )
+    stats.record_complete(
+        success=True,
+        latency_seconds=1.0,
+        send_latency_seconds=0.7,
+        limit=4,
+        inflight=0,
+    )
+
+    snapshot = stats.snapshot(reset_window=True)
+
+    assert snapshot.avg_queue_wait_seconds == 0.1
+    assert snapshot.p95_queue_wait_seconds == 0.1
+    assert snapshot.avg_qps_wait_seconds == 0.2
+    assert snapshot.p95_qps_wait_seconds == 0.2
+    assert snapshot.avg_send_latency_seconds == 0.7
+    assert snapshot.p95_send_latency_seconds == 0.7
+
+
+@pytest.mark.asyncio
+async def test_dispatch_stats_records_admission_queue_wait_from_run_loop():
+    class _SlowChannel(_FakeChannel):
+        async def send(self, request):
+            await asyncio.sleep(0.05)
+            return await super().send(request)
+
+    stats = DispatchStats()
+    engine = DispatchEngine(_FakeSource([_SlowChannel("s")]), max_retries=0)
+    results = []
+
+    async def feed():
+        for request in _reqs(2):
+            yield request
+
+    async def on_result(req, resp, err):
+        results.append((req.ref, resp, err))
+
+    await engine.run(feed(), on_result, max_concurrency=1, stats=stats)
+
+    snapshot = stats.snapshot()
+    assert len(results) == 2
+    assert snapshot.avg_queue_wait_seconds is not None
+    assert snapshot.avg_queue_wait_seconds > 0
+    assert snapshot.p95_send_latency_seconds is not None
+    assert snapshot.p95_send_latency_seconds >= 0.05
 
 
 @pytest.mark.asyncio

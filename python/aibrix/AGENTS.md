@@ -1,6 +1,20 @@
 # AGENTS.md
 
-This file captures repository-specific guidance for AI coding agents working in `python/aibrix`. Keep it focused on facts about this codebase rather than generic agent workflow rules.
+This file captures repository-specific guidance for AI coding agents working in
+`python/aibrix`. Keep it focused on facts about this codebase and the required
+development workflow for this subtree.
+
+## Scope And Ownership
+
+- This file is the source of truth for Python-runtime setup, validation
+  commands, subsystem guidance, and Python-specific development rules under
+  `python/aibrix`.
+- Repo-wide workflow, completion, and cross-language collaboration rules belong
+  in `/Users/bytedance/Studio/aibrix/AGENTS.md`.
+- `python/aibrix/superpowers/README.md` is the detailed source of truth for
+  Python-runtime superpowers spec and execution-plan workflow.
+- Keep Python operational detail here instead of duplicating it in root-level
+  docs or handoff notes.
 
 ## Setup And Common Commands
 
@@ -29,7 +43,31 @@ poetry run pytest tests/metadata/
 poetry run pytest tests/runtime/
 ```
 
-Note: The Python tooling here is installed via Poetry. Unless you are already inside `poetry shell`, run validation commands with `poetry run ...`. In particular, run `poetry run bash ./scripts/format.sh` and `poetry run pytest` from the `python/aibrix` repository root after code changes in this subtree.
+Note: The Python tooling here is installed via Poetry. Unless you are already
+inside `poetry shell`, run validation commands with `poetry run ...`. In
+particular, run `poetry run bash ./scripts/format.sh` and `poetry run pytest`
+from the `python/aibrix` repository root after code changes in this subtree.
+
+## Default Development Flow
+
+- Re-open the relevant Python files, call sites, and nearby tests before
+  editing.
+- For behavior changes, bug fixes, refactors, or other multi-step work,
+  clarify the approach first and write down a short plan before implementation.
+- For Python-runtime new features, behavior changes, architecture changes,
+  major refactors, or other non-trivial multi-step work, follow
+  `python/aibrix/superpowers/README.md`.
+- When that workflow requires a formal design, write it under
+  `python/aibrix/superpowers/` using a `YYYY-MM-DD-<topic>-design.md` name.
+- When that workflow requires a formal implementation plan, write it under
+  `python/aibrix/superpowers/` using a `YYYY-MM-DD-<topic>-plan.md` or
+  `YYYY-MM-DD-<topic>-implementation-plan.md` name.
+- Prefer adding or updating focused tests before changing behavior when
+  practical.
+- Keep changes localized to the touched subsystem unless shared abstractions
+  must move together.
+- Run the relevant existing AIBrix validation commands before claiming the
+  task is complete.
 
 ## CLI Entry Points
 
@@ -67,30 +105,54 @@ Defined in `pyproject.toml`:
 - Contains engine abstractions and vLLM-specific implementations
 
 ### GPU Optimizer (`aibrix/gpu_optimizer/`)
-- Contains load monitoring, profiling, clustering, benchmarking, and optimization logic
+- Contains load monitoring, profiling, clustering, benchmarking, and
+  optimization logic
 
 ### Storage (`aibrix/storage/`)
-- Provides storage abstractions and implementations used by runtime and batch features
+- Provides storage abstractions and implementations used by runtime and batch
+  features
 
 ## Configuration Pointers
 
 - `aibrix/envs.py` defines environment-variable-backed settings
 - `aibrix/config.py` contains configuration constants
-- `aibrix/batch/constant.py` defines batch defaults such as pool size and timeouts
+- `aibrix/batch/constant.py` defines batch defaults such as pool size and
+  timeouts
 
 ## Repo Conventions
 
-- Use `aibrix.logger`; loggers are initialized through `init_logger` and support structlog
-- Follow existing subsystem patterns before introducing new abstractions
-- Prefer targeted tests for the subsystem you change, then run broader validation before finishing, using `poetry run pytest ...`
-- Keep existing comments unless they are clearly wrong or misleading
-- Add comments for non-obvious behavior in new or significantly modified code paths to support human review
-- If the user interrupts a running tool call or terminal command, stop the current execution flow and ask for user input before starting new tool calls or commands
+- Use `aibrix.logger`; loggers are initialized through `init_logger` and
+  support structlog.
+- Follow existing subsystem patterns before introducing new abstractions.
+- Keep existing comments unless they are clearly wrong or misleading.
+- Add comments for non-obvious behavior in new or significantly modified code
+  paths to support human review.
+- If the user interrupts a running tool call or terminal command, stop the
+  current execution flow and ask for user input before starting new tool calls
+  or commands.
+
+## Validation Rules
+
+- Use the existing Poetry-based AIBrix toolchain for this subtree. Do not
+  replace it with new ad hoc lint, format, or test workflows in this guidance.
+- Keep Python-runtime superpowers documents tied to this subtree. Do not place
+  Python design or execution-plan artifacts in the repo-root
+  `docs/superpowers/` tree.
+- After Python code changes, run `poetry run bash ./scripts/format.sh` from the
+  `python/aibrix` repository root.
+- Prefer focused `poetry run pytest ...` targets while iterating, then run
+  broader validation when shared code or cross-subsystem behavior changes.
+- Run full `poetry run pytest` when changes cross subsystem boundaries or affect
+  shared infrastructure.
+- Treat completion claims as invalid until the relevant `poetry run ...`
+  commands have been executed and reviewed.
 
 ## Test Map
 
-- `tests/batch/` covers batch APIs, driver behavior, persistence, RBAC, and worker integrations
-- `tests/downloader/` covers backend-specific downloader behavior and related utilities
+- `tests/batch/` covers batch APIs, driver behavior, persistence, RBAC, and
+  worker integrations
+- `tests/downloader/` covers backend-specific downloader behavior and related
+  utilities
 - `tests/metadata/` covers metadata APIs, secrets, and integration flows
 - `tests/metrics/` covers metrics behavior across engine modes
 - `tests/runtime/` covers runtime downloader and artifact-service behavior
@@ -100,16 +162,38 @@ Defined in `pyproject.toml`:
 
 ## Change Checklist
 
-- After every code modification, run `poetry run bash ./scripts/format.sh` from the `python/aibrix` repository root (`/Users/bytedance/Studio/aibrix/python/aibrix`)
-- Run the most relevant `poetry run pytest ...` targets for the touched subsystem
-- Run full `poetry run pytest` when changes cross subsystem boundaries or affect shared infrastructure
-- Update affected docs, config wiring, or CLI entry points when behavior changes
+- After every code modification, run `poetry run bash ./scripts/format.sh`
+  from the `python/aibrix` repository root
+  (`/Users/bytedance/Studio/aibrix/python/aibrix`).
+- Run the most relevant `poetry run pytest ...` targets for the touched
+  subsystem.
+- Run full `poetry run pytest` when changes cross subsystem boundaries or
+  affect shared infrastructure.
+- Update affected docs, config wiring, or CLI entry points when behavior
+  changes.
+- Record validation results before claiming the task is done.
+
+## Do Not Do This
+
+- Do not bypass `poetry run ...` unless you are already inside the intended
+  Poetry environment.
+- Do not swap in a new lint or formatting workflow when existing AIBrix scripts
+  already cover the change.
+- Do not place Python-runtime superpowers specs or plans under
+  `docs/superpowers/`; keep them under `python/aibrix/superpowers/`.
+- Do not introduce cross-subsystem abstractions without first checking nearby
+  patterns in runtime, batch, downloader, metadata, storage, or optimizer code.
+- Do not skip targeted tests for the touched subsystem when behavior changes.
 
 ## Codebase Freshness Rule
 
-Do not assume the codebase is unchanged between tasks, even within the same session.
+Do not assume the codebase is unchanged between tasks, even within the same
+session.
 
 Before making edits or reasoning about behavior:
-- Re-open the relevant files to confirm their current contents and surrounding context.
-- Re-verify key call sites, signatures, and invariants through code reading or repository history.
-- Use Git tools (e.g., diff/blame/log/show) to confirm what changed since the last task and to validate any assumptions that depend on prior state.
+- Re-open the relevant files to confirm their current contents and surrounding
+  context.
+- Re-verify key call sites, signatures, and invariants through code reading or
+  repository history.
+- Use Git tools (e.g., diff/blame/log/show) to confirm what changed since the
+  last task and to validate any assumptions that depend on prior state.

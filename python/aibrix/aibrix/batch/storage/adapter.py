@@ -34,6 +34,7 @@ from aibrix.batch.storage.batch_metastore import (
     unlock_request,
 )
 from aibrix.logger import init_logger
+from aibrix.metadata.core import JsonProfiler
 from aibrix.storage.base import (
     LOCAL_PART_PROVIDER_MARKER,
     LOCAL_PART_PROVIDER_MARKER_VALUE,
@@ -41,6 +42,7 @@ from aibrix.storage.base import (
 )
 
 logger = init_logger(__name__)
+JSON_PROFILER = JsonProfiler(purpose="batch_json")
 
 UNREADABLE_COMPLETED_OUTPUT_PART_MESSAGE = (
     "Failed to read completed request output part during batch finalization"
@@ -157,7 +159,11 @@ class BatchStorageAdapter:
                     locked = True
 
             if locked:
-                request_data = json.loads(line)
+                request_data = JSON_PROFILER.profile(
+                    "batch.input.json_loads",
+                    json.loads,
+                    line,
+                )
                 request_data["_request_index"] = idx  # Add index for tracking
                 request_data["_done"] = done  # return done requests so far
                 logger.debug(

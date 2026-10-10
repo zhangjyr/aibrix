@@ -119,6 +119,16 @@ def _runtime_connected_at(job: BatchJob) -> Optional[datetime]:
     return min(connected_times)
 
 
+def _refresh_job_from_entity_manager(
+    current_job: BatchJob, incoming_job: BatchJob
+) -> BatchJob:
+    """Refresh a cached job with the entity-manager snapshot."""
+    _preserve_local_timestamps(current_job.status, incoming_job.status)
+    current_job.metadata = incoming_job.metadata
+    current_job.status = incoming_job.status
+    return current_job
+
+
 class BatchManager(RunningJobs, SchedulableJobs):
     # Valid state transitions are defined as:
     # 1. Started -> Validating -> In_progress -> Finalizing -> Finalzed(condition: completed)
@@ -709,11 +719,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
 
             # No category change, try update status
             if old_category == new_category:
-                # avoid override local metainfo by update status only
-                _preserve_local_timestamps(old_job.status, new_job.status)
-                old_job.metadata = new_job.metadata  # Update resource version
-                old_job.status = new_job.status  # Update status
-                new_job = old_job
+                new_job = _refresh_job_from_entity_manager(old_job, new_job)
             else:
                 # Move job from old category to new category
                 _preserve_local_timestamps(old_job.status, new_job.status)
@@ -910,12 +916,17 @@ class BatchManager(RunningJobs, SchedulableJobs):
             )  # type: ignore[call-arg]
 
         try:
+            endpoint_source = self._endpoint_source
+            source_factory = getattr(endpoint_source, "for_job", None)
+            if callable(source_factory):
+                endpoint_source = source_factory(job_id)
+
             job_driver = create_job_driver(
                 self._context,
                 self,
                 self._job_entity_manager,
                 meta_data,
-                self._endpoint_source,
+                endpoint_source,
             )
             meta_data._job_driver = job_driver
             if needs_validation:

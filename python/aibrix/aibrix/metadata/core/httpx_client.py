@@ -29,6 +29,7 @@ logger = init_logger(__name__)
 _CLIENT_ID_COUNTER = count(1)
 _LATENCY_BUCKET_MAX_SECONDS = 600.0
 _LATENCY_BUCKET_MIN_SECONDS = 0.001
+_PURPOSE_TELEMETRY_STATES: dict[str, "_HTTPXPurposeTelemetryState"] = {}
 
 
 def _build_latency_bucket_bounds() -> tuple[float, ...]:
@@ -218,6 +219,31 @@ class _HTTPXTelemetryStats:
         return snapshots
 
 
+@dataclass
+class _HTTPXPurposeTelemetryState:
+    stats: _HTTPXTelemetryStats = field(default_factory=_HTTPXTelemetryStats)
+    active_clients: int = 0
+    emitter_client_id: Optional[str] = None
+    last_emitted_at: Optional[float] = None
+
+    def register(self, *, client_id: str, now: Optional[float]) -> None:
+        self.active_clients += 1
+        if self.emitter_client_id is None:
+            self.emitter_client_id = client_id
+            self.last_emitted_at = now
+
+    def release(self, *, client_id: str) -> None:
+        self.active_clients = max(self.active_clients - 1, 0)
+        if self.emitter_client_id == client_id:
+            self.emitter_client_id = None
+
+    def ensure_emitter(self, *, client_id: str, now: Optional[float]) -> bool:
+        if self.emitter_client_id is None:
+            self.emitter_client_id = client_id
+            self.last_emitted_at = self.last_emitted_at or now
+        return self.emitter_client_id == client_id
+
+
 class HTTPXClientWrapper:
     async_client: Optional[httpx.AsyncClient] = None
 
@@ -225,11 +251,13 @@ class HTTPXClientWrapper:
         self,
         *,
         client_id: Optional[str] = None,
+        purpose: Optional[str] = None,
         telemetry_enabled: Optional[bool] = None,
         telemetry_interval_seconds: Optional[float] = None,
         **client_kwargs,
     ) -> None:
         self.client_id = client_id or f"httpx-client-{next(_CLIENT_ID_COUNTER):04d}"
+        self.purpose = purpose
         self._client_kwargs = client_kwargs
         self._telemetry_enabled = (
             telemetry_enabled if telemetry_enabled is not None else _telemetry_enabled()
@@ -240,7 +268,16 @@ class HTTPXClientWrapper:
             else _telemetry_interval_seconds()
         )
         self._telemetry_task: Optional[asyncio.Task[None]] = None
-        self._telemetry_stats = _HTTPXTelemetryStats()
+        self._purpose_state = (
+            _PURPOSE_TELEMETRY_STATES.setdefault(purpose, _HTTPXPurposeTelemetryState())
+            if purpose is not None
+            else None
+        )
+        self._telemetry_stats = (
+            self._purpose_state.stats
+            if self._purpose_state is not None
+            else _HTTPXTelemetryStats()
+        )
         self._last_telemetry_emitted_at: Optional[float] = None
         self._stopped = False
 
@@ -252,14 +289,18 @@ class HTTPXClientWrapper:
             )
         if self.async_client is None:
             self.async_client = httpx.AsyncClient(**self._client_kwargs)
-            self._telemetry_stats = _HTTPXTelemetryStats()
             try:
-                self._last_telemetry_emitted_at = asyncio.get_running_loop().time()
+                now = asyncio.get_running_loop().time()
             except RuntimeError:
-                self._last_telemetry_emitted_at = None
+                now = None
+            if self._purpose_state is None:
+                self._last_telemetry_emitted_at = now
+            else:
+                self._purpose_state.register(client_id=self.client_id, now=now)
             logger.info(
                 "httpx.AsyncClient instantiated.",
                 client_id=self.client_id,
+                purpose=self.purpose,
                 id=id(self.async_client),
                 telemetry_enabled=self._telemetry_enabled,
                 telemetry_interval_seconds=self._telemetry_interval_seconds,
@@ -276,17 +317,22 @@ class HTTPXClientWrapper:
             self._telemetry_task = None
         if self.async_client is None:
             return
+        should_emit_final = True
+        if self._purpose_state is not None:
+            self._purpose_state.release(client_id=self.client_id)
+            should_emit_final = self._purpose_state.active_clients == 0
         logger.debug(
             "httpx.async_client.status",
             is_closed=self.async_client.is_closed,
             id=id(self.async_client),
             client_id=self.client_id,
+            purpose=self.purpose,
         )  # type: ignore[call-arg]
-        if self._telemetry_enabled:
+        if self._telemetry_enabled and should_emit_final:
             try:
                 now = asyncio.get_running_loop().time()
                 elapsed = max(
-                    now - (self._last_telemetry_emitted_at or now),
+                    now - (self._last_telemetry_emitted_at_or(now) or now),
                     1e-9,
                 )
             except RuntimeError:
@@ -296,7 +342,7 @@ class HTTPXClientWrapper:
                 final=True,
                 elapsed=elapsed,
             )
-            self._last_telemetry_emitted_at = now
+            self._set_last_telemetry_emitted_at(now)
         await self.async_client.aclose()
         self.async_client = None
         logger.info("httpx.AsyncClient closed", client_id=self.client_id)  # type: ignore[call-arg]
@@ -351,6 +397,7 @@ class HTTPXClientWrapper:
                 logger.debug(
                     "HTTPX request failed",
                     client_id=self.client_id,
+                    purpose=self.purpose,
                     call_site=telemetry_call_site,
                     method=method,
                     url=url,
@@ -392,6 +439,7 @@ class HTTPXClientWrapper:
                 logger.debug(
                     "HTTPX stream failed",
                     client_id=self.client_id,
+                    purpose=self.purpose,
                     call_site=telemetry_call_site,
                     method=method,
                     url=url,
@@ -485,8 +533,14 @@ class HTTPXClientWrapper:
         ):
             return
         try:
-            asyncio.get_running_loop()
+            loop = asyncio.get_running_loop()
         except RuntimeError:
+            return
+        # only one client owns the telemetry task.
+        if self._purpose_state is not None and not self._purpose_state.ensure_emitter(
+            client_id=self.client_id,
+            now=loop.time(),
+        ):
             return
         self._telemetry_task = asyncio.create_task(self._log_telemetry())
 
@@ -494,9 +548,9 @@ class HTTPXClientWrapper:
         while True:
             await asyncio.sleep(self._telemetry_interval_seconds)
             now = asyncio.get_running_loop().time()
-            elapsed = max(now - (self._last_telemetry_emitted_at or now), 1e-9)
+            elapsed = max(now - (self._last_telemetry_emitted_at_or(now) or now), 1e-9)
             self._emit_telemetry(final=False, elapsed=elapsed)
-            self._last_telemetry_emitted_at = now
+            self._set_last_telemetry_emitted_at(now)
 
     def _emit_telemetry(self, *, final: bool, elapsed: float) -> None:
         if not self._telemetry_enabled:
@@ -506,6 +560,7 @@ class HTTPXClientWrapper:
         logger.info(
             "HTTPX client telemetry summary",
             client_id=self.client_id,
+            purpose=self.purpose,
             final=final,
             started_qps=round(snapshot.window_started / elapsed, 3),
             completed_qps=round(snapshot.window_completed / elapsed, 3),
@@ -518,6 +573,7 @@ class HTTPXClientWrapper:
             window_started=snapshot.window_started,
             window_completed=snapshot.window_completed,
             window_failed=snapshot.window_failed,
+            registered_clients=self._registered_clients(),
             p50_latency_seconds=_round_optional(snapshot.p50_latency_seconds),
             p95_latency_seconds=_round_optional(snapshot.p95_latency_seconds),
             exception_types=snapshot.exception_types,
@@ -528,6 +584,7 @@ class HTTPXClientWrapper:
             logger.debug(
                 "HTTPX client telemetry by call site",
                 client_id=self.client_id,
+                purpose=self.purpose,
                 final=final,
                 call_site=call_site_snapshot.call_site,
                 started=call_site_snapshot.started,
@@ -536,3 +593,19 @@ class HTTPXClientWrapper:
                 inflight=call_site_snapshot.inflight,
                 exception_types=call_site_snapshot.exception_types,
             )  # type: ignore[call-arg]
+
+    def _last_telemetry_emitted_at_or(self, default: float) -> Optional[float]:
+        if self._purpose_state is not None:
+            return self._purpose_state.last_emitted_at or default
+        return self._last_telemetry_emitted_at or default
+
+    def _set_last_telemetry_emitted_at(self, value: Optional[float]) -> None:
+        if self._purpose_state is not None:
+            self._purpose_state.last_emitted_at = value
+        else:
+            self._last_telemetry_emitted_at = value
+
+    def _registered_clients(self) -> int:
+        if self._purpose_state is not None:
+            return self._purpose_state.active_clients
+        return 0 if self.is_closed else 1

@@ -161,6 +161,13 @@ METRICS_DOGSTATSD_TAGS = [
     for item in (_parse_list_str(os.getenv("METRICS_DOGSTATSD_TAGS")) or [])
     if item
 ]
+METRICS_LOG_ENABLED = _is_true(os.getenv("METRICS_LOG_ENABLED", "0"))
+METRICS_LOG_INCLUDE = [
+    item for item in (_parse_list_str(os.getenv("METRICS_LOG_INCLUDE")) or []) if item
+]
+METRICS_LOG_EXCLUDE = [
+    item for item in (_parse_list_str(os.getenv("METRICS_LOG_EXCLUDE")) or []) if item
+]
 METRICS_EMIT_OBSERVATION_ENABLED = _is_true(
     os.getenv("METRICS_EMIT_OBSERVATION_ENABLED", "0")
 )
@@ -189,7 +196,7 @@ INFERENCE_TASK_TIMEOUT = int(os.getenv("INFERENCE_TASK_TIMEOUT", "600"))
 # metadata HTTPX AsyncClient: request volume, concurrency, latency, and
 # exception spikes become visible in logs without requiring a separate metrics
 # backend. These settings are referenced when `metadata.app.build_app()`
-# instantiates the shared `HTTPXClientWrapper`, when
+# instantiates the shared `HTTPClient`, when
 # `metadata.app.build_app_arg_parser()` exposes CLI defaults, and when
 # `metadata.core.httpx_client` falls back to env-backed telemetry defaults.
 #
@@ -209,6 +216,10 @@ CORE_HTTPX_ASYNC_CLIENT_TELEMETRY_INTERVAL_SECONDS = max(
         60.0,
     ),
     15.0,
+)
+BATCH_RUNTIME_HTTP_CLIENT = os.getenv(
+    "AIBRIX_BATCH_RUNTIME_HTTP_CLIENT",
+    "aiohttp_client",
 )
 
 # Lightweight JSON CPU-cost profiler used by batch stress experiments. It is

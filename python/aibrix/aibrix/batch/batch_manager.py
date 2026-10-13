@@ -47,6 +47,7 @@ from aibrix.batch.job_entity import (
 )
 from aibrix.batch.metrics import (
     metric_duration_ms,
+    tags_for_job_latency_log,
     tags_from_finalized_job,
     tags_from_job,
 )
@@ -212,6 +213,10 @@ class BatchManager(RunningJobs, SchedulableJobs):
                     f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_TIME}.ms",
                     execution_ms,
                     *finalized_tags,
+                    *tags_for_job_latency_log(job),
+                    T("log_field", "execution_duration_ms"),
+                    T("log_default_map", "phase_duration_ms"),
+                    T("flush", "true"),
                 )
         except Exception:
             logger.warning(
@@ -222,6 +227,13 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 else "complete",
                 exc_info=True,
             )  # type: ignore[call-arg]
+
+    def _emit_finished_job_metrics_on_terminal_transition(
+        self, old_job: BatchJob, new_job: BatchJob
+    ) -> None:
+        if old_job.status.finished or not new_job.status.finished:
+            return
+        self._emit_finished_job_metrics(new_job)
 
     def _emit_execution_phase_metric(
         self,
@@ -239,7 +251,10 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME}.ms",
                 phase_ms,
                 *tags_from_job(job),
+                *tags_for_job_latency_log(job),
                 T("phase", phase),
+                T("log_map", "phase_duration_ms"),
+                T("log_key", phase),
             )
         except Exception:
             logger.warning(
@@ -616,6 +631,15 @@ class BatchManager(RunningJobs, SchedulableJobs):
         # derived from the registry's pending pool, so no due time is pushed.
         if self._job_scheduler:
             logger.info("Add job to scheduler", job_id=job_id)  # type: ignore[call-arg]
+            scheduling_started_at = datetime.now(timezone.utc)
+            if job_id in self._pending_jobs:
+                pending_job = self._as_job_meta(self._pending_jobs[job_id])
+                pending_job.scheduling_started_at = scheduling_started_at
+                self._pending_jobs[job_id] = pending_job
+            elif job_id in self._in_progress_jobs:
+                self._in_progress_jobs[
+                    job_id
+                ].scheduling_started_at = scheduling_started_at
             self._job_scheduler.append_job(job_id)
         # For metadata server (no scheduler): prepare job output files when job is committed
         elif (
@@ -698,10 +722,6 @@ class BatchManager(RunningJobs, SchedulableJobs):
                     )  # type: ignore[call-arg]
                     return False
             old_job = old_job_in_category
-            was_finished = old_job.status.finished
-            had_in_progress_at = old_job.status.in_progress_at is not None
-            had_runtime_connection = _runtime_connected_at(old_job) is not None
-            was_finalizing = old_job.status.finalizing_at is not None
 
             # Validate state transition
             if not self._validate_state_transition(old_job, new_job):
@@ -737,39 +757,6 @@ class BatchManager(RunningJobs, SchedulableJobs):
                     new_category=new_name,
                 )  # type: ignore[call-arg]
 
-            if not had_in_progress_at and new_job.status.in_progress_at is not None:
-                self._emit_execution_phase_metric(
-                    new_job,
-                    phase="scheduling",
-                    start_at=new_job.status.created_at,
-                    end_at=new_job.status.in_progress_at,
-                )
-            if (
-                not had_runtime_connection
-                and _runtime_connected_at(new_job) is not None
-            ):
-                self._emit_execution_phase_metric(
-                    new_job,
-                    phase="runtime_provision",
-                    start_at=new_job.status.in_progress_at,
-                    end_at=_runtime_connected_at(new_job),
-                )
-            if not was_finalizing and new_job.status.finalizing_at is not None:
-                self._emit_execution_phase_metric(
-                    new_job,
-                    phase="task_execution",
-                    start_at=_runtime_connected_at(new_job)
-                    or new_job.status.in_progress_at,
-                    end_at=new_job.status.finalizing_at,
-                )
-            if not was_finished and new_job.status.finished:
-                self._emit_execution_phase_metric(
-                    new_job,
-                    phase="finalization",
-                    start_at=new_job.status.finalizing_at,
-                    end_at=new_job.status.finalized_at,
-                )
-                self._emit_finished_job_metrics(new_job)
             if job_id in self._pending_deleted_jobs and new_job.status.finished:
                 await self.job_deleted_handler(new_job)
             return True
@@ -972,9 +959,11 @@ class BatchManager(RunningJobs, SchedulableJobs):
         if self._job_entity_manager is not None:
             await self._job_entity_manager.update_job_status(validated)
             current_job = await self.get_job(job_id)
-            return current_job if current_job is not None else validated
-        await self.job_updated_handler(meta_data, validated)
-        return validated
+            emitted_job = current_job if current_job is not None else validated
+        else:
+            await self.job_updated_handler(meta_data, validated)
+            emitted_job = validated
+        return emitted_job
 
     async def update_job_status(self, job_id: str, status: BatchJobStatus) -> BatchJob:
         meta_data = await self._meta_from_updatable_job(job_id)
@@ -1090,9 +1079,18 @@ class BatchManager(RunningJobs, SchedulableJobs):
         if self._job_entity_manager is not None:
             await self._job_entity_manager.update_job_status(persisted)
             current_job = await self.get_job(job_id)
-            return current_job if current_job is not None else persisted
-        await self.job_updated_handler(meta_data, persisted)
-        return persisted
+            emitted_job = current_job if current_job is not None else persisted
+        else:
+            await self.job_updated_handler(meta_data, persisted)
+            emitted_job = persisted
+        self._emit_execution_phase_metric(
+            emitted_job,
+            phase="task_execution",
+            start_at=_runtime_connected_at(emitted_job)
+            or emitted_job.status.in_progress_at,
+            end_at=emitted_job.status.finalizing_at,
+        )
+        return emitted_job
 
     async def mark_job_done(self, job: BatchJob) -> BatchJob:
         """
@@ -1307,6 +1305,10 @@ class BatchManager(RunningJobs, SchedulableJobs):
         """
         try:
             # Call update directly
+            if self._job_entity_manager is not None:
+                persisted_job = await self._job_entity_manager.get_job(job.job_id)
+                if persisted_job is not None:
+                    old_job = persisted_job
             if old_job is None:
                 old_job = await self.get_job(job.job_id)
                 assert old_job is not None
@@ -1321,10 +1323,12 @@ class BatchManager(RunningJobs, SchedulableJobs):
                     state=job.status.state,
                     condition=job.status.condition,
                 )  # type: ignore[call-arg]
+                self._emit_finished_job_metrics_on_terminal_transition(old_job, job)
                 return True
 
             logger.debug("Job status synced to job entity manager")
             await self.job_updated_handler(old_job, job)
+            self._emit_finished_job_metrics_on_terminal_transition(old_job, job)
             return True
         except Exception as e:
             logger.error(

@@ -20,6 +20,7 @@ from prometheus_client import CollectorRegistry, make_asgi_app
 from starlette.types import ASGIApp
 
 from aibrix.logger import init_logger
+from aibrix.metadata.core.metrics.log import LogSink
 from aibrix.metadata.core.metrics.prometheus import PrometheusSink
 from aibrix.metadata.core.metrics.sink import (
     Emitter,
@@ -75,6 +76,14 @@ def setup_metrics(config: MetricsConfig | None = None) -> MetricsRuntime:
                 config.dogstatsd_addr,
                 prefix=config.service_name,
                 global_tags=config.dogstatsd_tags,
+            )
+        )
+
+    if config.log_enabled:
+        sinks.append(
+            LogSink(
+                include_patterns=config.log_include_patterns,
+                exclude_patterns=config.log_exclude_patterns,
             )
         )
 

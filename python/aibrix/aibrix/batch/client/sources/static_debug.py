@@ -71,10 +71,12 @@ class StaticDebugDiscoveryFactory:
         *,
         replica_count: int = 1,
         capacity: int = 1,
+        timeout: float = 30.0,
     ) -> None:
         self._base_url = base_url
         self._replica_count = max(int(replica_count), 1)
         self._capacity = max(int(capacity), 1)
+        self._timeout = timeout
         self._sources: list[DiscoveryEndpointSource] = []
 
     def for_job(self, job_id: str) -> DiscoveryEndpointSource:
@@ -86,6 +88,7 @@ class StaticDebugDiscoveryFactory:
             ),
             served_model_name="stress-runtime",
             capacity=self._capacity,
+            timeout=self._timeout,
         )
         self._sources.append(source)
         return source
@@ -100,8 +103,16 @@ class StaticDebugEndpointSource(DiscoveryEndpointSource):
     """Discovery source with local stress capacity decoupled from URL count."""
 
     def __init__(self, *args, capacity: int = 1, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
         self._capacity = max(int(capacity), 1)
+        super().__init__(
+            *args,
+            max_connections_per_endpoint=self._capacity,
+            **kwargs,
+        )
+
+    @property
+    def configured_capacity(self) -> int:
+        return self._capacity
 
     async def capacity(self) -> CapacitySignal:
         signal = await super().capacity()

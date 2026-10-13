@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ast
 import asyncio
 import hashlib
 import os
@@ -19,7 +20,7 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterator, BinaryIO, Optional, TextIO, Union
+from typing import AsyncIterator, Awaitable, BinaryIO, Callable, Optional, TextIO, Union
 from urllib.parse import unquote
 
 from aibrix.storage.base import (
@@ -52,6 +53,7 @@ class LocalStorage(BaseStorage2):
 
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
+        self._multipart_part_cache: dict[str, dict[int, bytes]] = {}
 
     def _get_full_path(
         self,
@@ -289,6 +291,7 @@ class LocalStorage(BaseStorage2):
         # Clean up metadata file if it exists
         if metadata_path.exists():
             await asyncio.get_event_loop().run_in_executor(None, metadata_path.unlink)
+        self._drop_cached_multipart_part(key)
 
     async def list_objects(
         self,
@@ -319,13 +322,23 @@ class LocalStorage(BaseStorage2):
                 except (ValueError, TypeError):
                     offset = 0
 
-            # Recover every stored key by enumerating the sidecar ``.metadata``
-            # files anywhere under base_path. ``prefix`` is matched as an
-            # S3-style string prefix (``key.startswith(prefix)``), NOT as a
-            # directory path, so both hierarchical keys like ``batchjob/<id>``
-            # and flat keys like ``flatkey:<id>`` are discovered correctly.
+            search_root = self.base_path
+            use_fast_created_at = False
+            if prefix.endswith("/"):
+                prefix_root = self.base_path / _sanitize_key(prefix.rstrip("/"))
+                if prefix_root.is_dir():
+                    search_root = prefix_root
+                    use_fast_created_at = True
+
+            # Recover stored keys by enumerating sidecar ``.metadata`` files.
+            # Hierarchical prefixes can scan their subtree directly; flat
+            # string prefixes still need the root fallback for S3-style
+            # ``key.startswith(prefix)`` semantics. The subtree path is used by
+            # local debug/metastore workloads with thousands of keys; using the
+            # sidecar mtime avoids opening every metadata JSON file just to sort.
             entry_created_at: dict[str, Optional[datetime]] = {}
-            for item in self.base_path.rglob("*" + _METADATA_SUFFIX):
+            entry_created_at_ts: dict[str, float] = {}
+            for item in search_root.rglob("*" + _METADATA_SUFFIX):
                 if not item.is_file():
                     continue
                 encoded_key = item.relative_to(self.base_path).as_posix()[
@@ -344,23 +357,39 @@ class LocalStorage(BaseStorage2):
                     )
                 else:
                     entry = key
-                created_at = self._read_metadata_created_at(item)
-                previous_created_at = entry_created_at.get(entry)
-                if previous_created_at is None or (
-                    created_at is not None and created_at > previous_created_at
-                ):
-                    entry_created_at[entry] = created_at
+                if use_fast_created_at:
+                    created_at_ts = item.stat().st_mtime
+                    previous_created_at_ts = entry_created_at_ts.get(entry)
+                    if (
+                        previous_created_at_ts is None
+                        or created_at_ts > previous_created_at_ts
+                    ):
+                        entry_created_at_ts[entry] = created_at_ts
+                else:
+                    created_at = self._read_metadata_created_at(item)
+                    previous_created_at = entry_created_at.get(entry)
+                    if previous_created_at is None or (
+                        created_at is not None and created_at > previous_created_at
+                    ):
+                        entry_created_at[entry] = created_at
 
-            sorted_entries = sorted(
-                entry_created_at.items(),
-                key=lambda entry: entry[0],
-            )
-            sorted_entries.sort(
-                key=lambda entry: (
-                    entry[1].timestamp() if entry[1] is not None else float("-inf")
-                ),
-                reverse=True,
-            )
+            if use_fast_created_at:
+                sorted_entries = sorted(
+                    entry_created_at_ts.items(),
+                    key=lambda entry: entry[0],
+                )
+                sorted_entries.sort(key=lambda entry: entry[1], reverse=True)
+            else:
+                sorted_entries = sorted(
+                    entry_created_at.items(),
+                    key=lambda entry: entry[0],
+                )
+                sorted_entries.sort(
+                    key=lambda entry: (
+                        entry[1].timestamp() if entry[1] is not None else float("-inf")
+                    ),
+                    reverse=True,
+                )
             entries = [entry for entry, _ in sorted_entries]
 
             if continuation_token is None and after_key:
@@ -482,6 +511,162 @@ class LocalStorage(BaseStorage2):
                 None, shutil.copy2, source_metadata_path, dest_metadata_path
             )
 
+    async def upload_part(
+        self,
+        key: str,
+        upload_id: str,
+        part_number: int,
+        data: Union[str, bytes, BinaryIO, TextIO, Reader],
+    ) -> str:
+        """Upload a local small part and keep an in-process debug cache."""
+        part_data = self._wrap_data(data).read_all()
+        await self.put_object(
+            self._multipart_upload_part_key(upload_id, part_number),
+            part_data,
+            content_type="application/octet-stream",
+        )
+        self._multipart_part_cache.setdefault(upload_id, {})[part_number] = part_data
+        return hashlib.md5(part_data).hexdigest()
+
+    async def complete_multipart_upload(
+        self,
+        key: str,
+        upload_id: str,
+        parts: list[dict[str, Union[str, int]]],
+        *,
+        tolerate_part_get_error: bool = False,
+        local_part_provider: Callable[
+            [dict[str, Union[str, int]]], Awaitable[bytes | str | None]
+        ]
+        | None = None,
+    ) -> list[dict[str, Union[str, int]]]:
+        """Complete local small-parts uploads by concatenating staged files."""
+        if local_part_provider is not None:
+            return await super().complete_multipart_upload(
+                key,
+                upload_id,
+                parts,
+                tolerate_part_get_error=tolerate_part_get_error,
+                local_part_provider=local_part_provider,
+            )
+
+        try:
+            metadata_data = await self.get_object(self._multipart_upload_key(upload_id))
+            upload_metadata = ast.literal_eval(metadata_data.decode("utf-8"))
+        except Exception as exc:
+            raise ValueError(f"Upload ID {upload_id} not found or corrupted") from exc
+
+        content_type_value = upload_metadata.get("content_type")
+        content_type = (
+            content_type_value if isinstance(content_type_value, str) else None
+        )
+        metadata_value = upload_metadata.get("metadata")
+        metadata = metadata_value if isinstance(metadata_value, dict) else {}
+        sorted_parts = sorted(parts, key=lambda part: part["part_number"])
+
+        if not sorted_parts:
+            await self.put_object(key, b"", content_type, metadata)
+            await self.abort_multipart_upload(key, upload_id)
+            return []
+
+        (
+            failed_parts,
+            content_length,
+            etag,
+            last_modified,
+        ) = await asyncio.get_event_loop().run_in_executor(
+            None,
+            self._complete_local_multipart_files,
+            key,
+            upload_id,
+            sorted_parts,
+            tolerate_part_get_error,
+            content_type,
+            metadata,
+            self._multipart_part_cache,
+        )
+        await self._store_metadata(
+            key,
+            content_type,
+            metadata,
+            content_length,
+            etag,
+            last_modified,
+        )
+        if not failed_parts:
+            await self.abort_multipart_upload(key, upload_id)
+        return failed_parts
+
+    def _complete_local_multipart_files(
+        self,
+        key: str,
+        upload_id: str,
+        parts: list[dict[str, Union[str, int]]],
+        tolerate_part_get_error: bool,
+        content_type: Optional[str],
+        metadata: dict[str, str],
+        part_cache: dict[str, dict[int, bytes]],
+    ) -> tuple[list[dict[str, Union[str, int]]], int, str, datetime]:
+        full_path = self._get_full_path(key, content_type, metadata)
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        failed_parts: list[dict[str, Union[str, int]]] = []
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(full_path.parent), prefix=f".{full_path.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "wb") as output_file:
+                for part in parts:
+                    part_upload_id = part.get("source_upload_id")
+                    source_upload_id = (
+                        part_upload_id if isinstance(part_upload_id, str) else upload_id
+                    )
+                    part_key = self._multipart_upload_part_key(
+                        source_upload_id,
+                        int(part["part_number"]),
+                    )
+                    part_path = self._get_full_path(
+                        part_key,
+                        "application/octet-stream",
+                    )
+                    try:
+                        if not part_path.exists():
+                            raise FileNotFoundError(part_path)
+                        cached_part = part_cache.get(source_upload_id, {}).get(
+                            int(part["part_number"])
+                        )
+                        if cached_part is not None:
+                            output_file.write(cached_part)
+                        else:
+                            with open(part_path, "rb") as part_file:
+                                shutil.copyfileobj(part_file, output_file)
+                    except OSError as exc:
+                        if tolerate_part_get_error:
+                            failed_parts.append(dict(part))
+                            continue
+                        raise ValueError(
+                            f"Failed to retrieve part {part['part_number']} "
+                            f"for upload {source_upload_id}"
+                        ) from exc
+                output_file.flush()
+                os.fsync(output_file.fileno())
+            os.replace(tmp_path, full_path)
+            stat = full_path.stat()
+            content_length = stat.st_size
+            etag_data = f"{content_length}-{stat.st_mtime}"
+            etag = hashlib.md5(etag_data.encode()).hexdigest()
+            last_modified = datetime.fromtimestamp(stat.st_mtime)
+            return failed_parts, content_length, etag, last_modified
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            raise
+
     async def _native_create_multipart_upload(
         self,
         key: str,
@@ -517,6 +702,7 @@ class LocalStorage(BaseStorage2):
     ) -> None:
         """Abort a multipart upload and clean up."""
         upload_dir = self.base_path / self._multipart_upload_key(upload_id, "")
+        self._multipart_part_cache.pop(upload_id, None)
         if upload_dir.exists():
             await asyncio.get_event_loop().run_in_executor(
                 None, shutil.rmtree, upload_dir
@@ -529,6 +715,24 @@ class LocalStorage(BaseStorage2):
     ) -> None:
         """Call _native_abort_multipart_upload for local storage."""
         await self._native_abort_multipart_upload(key, upload_id)
+
+    def _drop_cached_multipart_part(self, key: str) -> None:
+        parts = key.split("/")
+        if len(parts) != 3 or parts[0] != ".multipart":
+            return
+        part_name = parts[2]
+        if not part_name.startswith("part_"):
+            return
+        try:
+            part_number = int(part_name.removeprefix("part_"))
+        except ValueError:
+            return
+        upload_parts = self._multipart_part_cache.get(parts[1])
+        if upload_parts is None:
+            return
+        upload_parts.pop(part_number, None)
+        if not upload_parts:
+            self._multipart_part_cache.pop(parts[1], None)
 
     def _write_json_file(self, path: Path, data: dict) -> None:
         """Write JSON data to file (synchronous helper)."""
@@ -543,6 +747,13 @@ class LocalStorage(BaseStorage2):
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, path)
+            created_at = data.get("created_at")
+            if isinstance(created_at, str) and created_at:
+                try:
+                    created_at_ts = datetime.fromisoformat(created_at).timestamp()
+                    os.utime(path, (created_at_ts, created_at_ts))
+                except ValueError:
+                    pass
         except Exception:
             try:
                 os.close(fd)

@@ -42,11 +42,17 @@ from typing import (
     runtime_checkable,
 )
 
-from aibrix.batch.client.channel import Channel, HttpChannel
+from aibrix.batch.client.channel import (
+    Channel,
+    HttpChannel,
+    create_batch_runtime_http_client,
+)
 from aibrix.batch.client.source import CapacitySignal
 from aibrix.logger import init_logger
+from aibrix.metadata.core import HTTPClient
 
 logger = init_logger(__name__)
+_MAX_CONNECTIONS_PER_ENDPOINT = 100
 
 
 @runtime_checkable
@@ -82,6 +88,7 @@ class DiscoveryEndpointSource:
         service_id: Optional[str] = None,
         timeout: float = 30.0,
         refresh_interval_seconds: float = 20.0,
+        max_connections_per_endpoint: int = _MAX_CONNECTIONS_PER_ENDPOINT,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         self._discovery = discovery
@@ -89,11 +96,16 @@ class DiscoveryEndpointSource:
         self._service_id = service_id
         self._timeout = timeout
         self._refresh_interval_seconds = max(float(refresh_interval_seconds), 0.0)
+        self._max_connections_per_endpoint = max(int(max_connections_per_endpoint), 1)
+        self._max_connections_total: Optional[int] = None
         self._clock = clock
         self._version: Optional[int] = None
         self._channels: List[Channel] = []
         self._by_url: Dict[str, Channel] = {}
         self._retired_channels: List[Channel] = []
+        self._shared_client: Optional[HTTPClient] = None
+        self._shared_client_endpoint_count = 0
+        self._retired_clients: List[HTTPClient] = []
         self._lock = asyncio.Lock()
         self._refresh_lock = asyncio.Lock()
         self._last_refresh_at: Optional[float] = None
@@ -172,6 +184,25 @@ class DiscoveryEndpointSource:
                 error=f"{exc!r}" + (f" (caused by {chained!r})" if chained else ""),
             )  # type: ignore[call-arg]
 
+    def set_http_connection_limit(self, limit: int) -> None:
+        """Set the shared client connection ceiling before dispatch starts."""
+        normalized_limit = max(int(limit), 1)
+        if (
+            self._max_connections_total == normalized_limit
+            and self._max_connections_per_endpoint == normalized_limit
+        ):
+            return
+        self._max_connections_total = normalized_limit
+        self._max_connections_per_endpoint = normalized_limit
+        if self._shared_client is not None:
+            self._retired_clients.append(self._shared_client)
+            self._shared_client = None
+            self._shared_client_endpoint_count = 0
+            self._retired_channels.extend(self._channels)
+            self._channels = []
+            self._by_url = {}
+            self._last_refresh_at = None
+
     async def _remove_channel(self, channel_id: str) -> None:
         """Deprecated: no longer called on request failures.
 
@@ -219,14 +250,28 @@ class DiscoveryEndpointSource:
             if set(new_urls) == set(self._by_url):
                 self._version = snapshot.version
                 return
+            previous_shared_client = self._shared_client
+            shared_client = (
+                self._ensure_shared_client(endpoint_count=len(new_urls))
+                if new_urls
+                else None
+            )
+            rebuild_channels = (
+                previous_shared_client is not None
+                and shared_client is not previous_shared_client
+            )
             keep: Dict[str, Channel] = {}
             for url in new_urls:
-                keep[url] = self._by_url.get(url) or HttpChannel(
-                    url, timeout=self._timeout
+                keep[url] = (
+                    None if rebuild_channels else self._by_url.get(url)
+                ) or HttpChannel(
+                    url,
+                    timeout=self._timeout,
+                    client=shared_client,
                 )
             retired_urls: list[str] = []
             for url, channel in self._by_url.items():
-                if url not in keep:
+                if rebuild_channels or url not in keep:
                     self._retired_channels.append(channel)
                     retired_urls.append(url)
             self._by_url = keep
@@ -254,6 +299,36 @@ class DiscoveryEndpointSource:
     async def aclose(self) -> None:
         for channel in [*self._channels, *self._retired_channels]:
             await channel.aclose()
+        for client in self._retired_clients:
+            await client.aclose()
+        if self._shared_client is not None:
+            await self._shared_client.aclose()
         self._channels = []
         self._by_url = {}
         self._retired_channels = []
+        self._shared_client = None
+        self._shared_client_endpoint_count = 0
+        self._retired_clients = []
+
+    def _ensure_shared_client(self, *, endpoint_count: int) -> HTTPClient:
+        if (
+            self._shared_client is None
+            or endpoint_count > self._shared_client_endpoint_count
+        ):
+            if self._shared_client is not None:
+                self._retired_clients.append(self._shared_client)
+            client_id = f"discovery-source-{self._model}"
+            if self._service_id is not None:
+                client_id = f"{client_id}-{self._service_id}"
+            self._shared_client = create_batch_runtime_http_client(
+                f"{client_id}-batch-runtime-http",
+                max_connections=max(
+                    self._max_connections_total
+                    if self._max_connections_total is not None
+                    else endpoint_count * self._max_connections_per_endpoint,
+                    1,
+                ),
+                limit_per_host=self._max_connections_per_endpoint,
+            )
+            self._shared_client_endpoint_count = endpoint_count
+        return self._shared_client

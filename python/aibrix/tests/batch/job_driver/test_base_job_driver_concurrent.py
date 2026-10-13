@@ -98,6 +98,14 @@ class _Source:
     def __init__(self, channel, capacity: int):
         self._channel = channel
         self._capacity = capacity
+        self.http_connection_limit = None
+
+    @property
+    def configured_capacity(self):
+        return self._capacity
+
+    def set_http_connection_limit(self, limit):
+        self.http_connection_limit = limit
 
     async def channels(self):
         return [self._channel]
@@ -610,6 +618,46 @@ async def test_execute_worker_passes_client_concurrency_as_absolute_adaptive_cap
     assert engine.run_kwargs["adaptive_healthy_window"] == 2
     assert engine.run_kwargs["adaptive_additive_increase"] == 4
     assert "max_concurrency" not in engine.run_kwargs
+
+
+def test_configure_endpoint_http_connection_limit_uses_adaptive_max_factor():
+    job = _make_job(total=1)
+    job.spec.aibrix = AibrixMetadata(
+        client={"adaptive_concurrency": True, "adaptive_max_factor": 4}
+    )
+    source = _Source(_SlowChannel(), capacity=100)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
+
+    driver._configure_endpoint_http_connection_limit(
+        source=source,
+        job=job,
+        configured_capacity=None,
+    )
+
+    assert source.http_connection_limit == 400
+
+
+def test_configure_endpoint_http_connection_limit_uses_capacity_without_adaptive():
+    job = _make_job(total=1)
+    job.spec.aibrix = AibrixMetadata(client={"adaptive_concurrency": False})
+    source = _Source(_SlowChannel(), capacity=100)
+    driver = BaseJobDriver(
+        InfrastructureContext(),
+        SingleJobRunner(job),
+        ExternalRuntime(None),
+    )
+
+    driver._configure_endpoint_http_connection_limit(
+        source=source,
+        job=job,
+        configured_capacity=None,
+    )
+
+    assert source.http_connection_limit == 100
 
 
 @pytest.mark.asyncio

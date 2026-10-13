@@ -39,24 +39,25 @@ const (
 )
 
 type Config struct {
-	Scenario            string
-	MDSBaseURL          string
-	APIKey              string
-	RuntimeListenAddr   string
-	RuntimeBaseURL      string
-	RuntimeFixedLatency time.Duration
-	Duration            time.Duration
-	Concurrency         int
-	OutputDir           string
-	ScrapeMetricsURL    string
-	Endpoint            string
-	CompletionWindow    string
-	RequestsPerJob      int
-	TotalJobs           int
-	PollTimeout         time.Duration
-	PollInterval        time.Duration
-	CleanupFiles        bool
-	StatsInterval       time.Duration
+	Scenario               string
+	MDSBaseURL             string
+	APIKey                 string
+	RuntimeListenAddr      string
+	RuntimeBaseURL         string
+	RuntimeFixedLatency    time.Duration
+	Duration               time.Duration
+	Concurrency            int
+	OutputDir              string
+	ScrapeMetricsURL       string
+	Endpoint               string
+	CompletionWindow       string
+	JobAdaptiveConcurrency bool
+	RequestsPerJob         int
+	TotalJobs              int
+	PollTimeout            time.Duration
+	PollInterval           time.Duration
+	CleanupFiles           bool
+	StatsInterval          time.Duration
 }
 
 type PlannedJob struct {
@@ -227,7 +228,11 @@ func main() {
 
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ctx, cancel := context.WithTimeout(signalCtx, cfg.Duration)
+	ctx := signalCtx
+	cancel := context.CancelFunc(func() {})
+	if cfg.Duration > 0 {
+		ctx, cancel = context.WithTimeout(signalCtx, cfg.Duration)
+	}
 	defer cancel()
 	runStart := time.Now()
 
@@ -463,12 +468,13 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.APIKey, "api-key", "dummy", "API key for MDS if required")
 	flag.StringVar(&cfg.RuntimeListenAddr, "runtime-listen-addr", "127.0.0.1:18080", "fake runtime listen address")
 	flag.DurationVar(&cfg.RuntimeFixedLatency, "runtime-fixed-latency-ms", 100*time.Millisecond, "fixed runtime latency")
-	flag.DurationVar(&cfg.Duration, "duration", 5*time.Minute, "run duration")
+	flag.DurationVar(&cfg.Duration, "duration", 0, "optional max run duration; 0 waits for planned jobs to finish")
 	flag.IntVar(&cfg.Concurrency, "concurrency", 4, "number of driver workers")
 	flag.StringVar(&cfg.OutputDir, "output-dir", filepath.Join("python", "aibrix", "artifacts", "prometheus_sink_stress"), "artifact output directory")
 	flag.StringVar(&cfg.ScrapeMetricsURL, "scrape-metrics-url", "", "optional metrics endpoint to scrape")
 	flag.StringVar(&cfg.Endpoint, "endpoint", "/v1/chat/completions", "batch endpoint to execute")
 	flag.StringVar(&cfg.CompletionWindow, "completion-window", "24h", "batch completion window")
+	flag.BoolVar(&cfg.JobAdaptiveConcurrency, "job-adaptive-concurrency", false, "enable adaptive concurrency for created batch jobs")
 	flag.IntVar(&cfg.RequestsPerJob, "requests-per-job", 1, "requests per batch job")
 	flag.IntVar(&cfg.TotalJobs, "total-jobs", 100, "total jobs to submit")
 	flag.DurationVar(&cfg.PollTimeout, "poll-timeout", 5*time.Minute, "max wait for terminal batch state")
@@ -738,6 +744,11 @@ func createBatch(ctx context.Context, client *http.Client, cfg Config, fileID st
 		"input_file_id":     fileID,
 		"endpoint":          cfg.Endpoint,
 		"completion_window": cfg.CompletionWindow,
+		"aibrix": map[string]any{
+			"client": map[string]any{
+				"adaptive_concurrency": cfg.JobAdaptiveConcurrency,
+			},
+		},
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(cfg.MDSBaseURL, "/")+"/v1/batches", bytes.NewReader(body))

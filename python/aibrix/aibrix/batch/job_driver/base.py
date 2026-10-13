@@ -38,7 +38,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
-from math import isfinite
+from math import ceil, isfinite
 from typing import Any, Dict, Iterable, Optional, Set, Tuple
 
 import aibrix.batch.storage as storage
@@ -80,7 +80,8 @@ from aibrix.batch.job_entity import (
     RequestCountStats,
     ensure_batch_job_error,
 )
-from aibrix.batch.metrics import tags_from_job
+from aibrix.batch.metrics import tags_for_job_latency_log, tags_from_job
+from aibrix.batch.metrics.common import metric_duration_ms
 from aibrix.context.infra import InfrastructureContext
 from aibrix.logger import init_logger
 from aibrix.metadata.core.metrics import Emitter, T, metrics_names
@@ -318,6 +319,7 @@ class BaseJobDriver:
     # ── protocol methods ──────────────────────────────────────────
 
     async def validate_job(self, job: BatchJob):
+        validation_started_at = datetime.now(timezone.utc)
         self._ensure_error_injector(job)
         await self._apply_error_injector_breakpoint(job, BREAKPOINT_VALIDATION)
         logger.debug(
@@ -358,6 +360,11 @@ class BaseJobDriver:
             )
         validated_status = job.status.model_copy(deep=True)
         validated_status.request_counts.total = total
+        self._emit_validation_phase_metric(
+            job,
+            validation_started_at=validation_started_at,
+            validation_ended_at=datetime.now(timezone.utc),
+        )
         await self._progress_manager.mark_job_validated(job.job_id, validated_status)
 
     async def execute(self, job_id) -> None:
@@ -653,6 +660,64 @@ class BaseJobDriver:
                 T("result", "fail"),
             )
 
+    def _emit_validation_phase_metric(
+        self,
+        job: BatchJob,
+        *,
+        validation_started_at: datetime,
+        validation_ended_at: datetime,
+    ) -> None:
+        try:
+            phase_ms = metric_duration_ms(validation_started_at, validation_ended_at)
+            if phase_ms is None or not isfinite(phase_ms) or phase_ms < 0:
+                return
+            phase = "validation"
+            Emitter.timer(
+                f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME}.ms",
+                phase_ms,
+                *tags_from_job(job),
+                *tags_for_job_latency_log(job),
+                T("phase", phase),
+                T("log_map", "phase_duration_ms"),
+                T("log_key", phase),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to emit validation phase metric",
+                job_id=job.job_id,
+                exc_info=True,
+            )  # type: ignore[call-arg]
+
+    def _emit_finalization_phase_metric(
+        self,
+        job: BatchJob,
+        *,
+        finalization_started_at: Optional[datetime],
+        finalization_ended_at: Optional[datetime],
+    ) -> None:
+        try:
+            phase_ms = metric_duration_ms(
+                finalization_started_at, finalization_ended_at
+            )
+            if phase_ms is None or not isfinite(phase_ms) or phase_ms < 0:
+                return
+            phase = "finalization"
+            Emitter.timer(
+                f"{metrics_names.METRIC_METADATA_BATCH_API_JOB_EXECUTION_PHASE_TIME}.ms",
+                phase_ms,
+                *tags_from_job(job),
+                *tags_for_job_latency_log(job),
+                T("phase", phase),
+                T("log_map", "phase_duration_ms"),
+                T("log_key", phase),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to emit finalization phase metric",
+                job_id=job.job_id,
+                exc_info=True,
+            )  # type: ignore[call-arg]
+
     def _log_failed(self, job: BatchJob, error: BatchJobError) -> None:
         logger.error(
             "Failed to execute job",
@@ -744,6 +809,11 @@ class BaseJobDriver:
         # Passing the pre-finalizing `job` object into mark_job_done() can race
         # with manager/store updates and lose newer cancel conditions or counts.
         job = await self._progress_manager.mark_job_finalizing(job.job_id)
+        self._emit_finalization_phase_metric(
+            job,
+            finalization_started_at=job.status.finalizing_at,
+            finalization_ended_at=datetime.now(timezone.utc),
+        )
         synced = await self._progress_manager.mark_job_done(job)
         self._log_completed(synced)
         return synced
@@ -1047,6 +1117,53 @@ class BaseJobDriver:
                 kwargs["max_concurrency"] = max_concurrency
         return kwargs
 
+    def _configure_endpoint_http_connection_limit(
+        self,
+        *,
+        source: Any,
+        job: BatchJob,
+        configured_capacity: Optional[int],
+    ) -> None:
+        configure_limit = getattr(source, "set_http_connection_limit", None)
+        if not callable(configure_limit):
+            return
+
+        base_capacity = configured_capacity or getattr(
+            source, "configured_capacity", None
+        )
+        if base_capacity is None:
+            return
+        try:
+            limit = max(int(base_capacity), 1)
+        except (TypeError, ValueError):
+            return
+
+        client = job.spec.aibrix.client if job.spec.aibrix else None
+        adaptive = (
+            client.adaptive_concurrency
+            if client is not None and client.adaptive_concurrency is not None
+            else True
+        )
+        max_concurrency = client.max_concurrency if client is not None else None
+        if max_concurrency is not None:
+            limit = max(int(max_concurrency), 1)
+        elif adaptive:
+            adaptive_max_factor = (
+                client.adaptive_max_factor
+                if client is not None and client.adaptive_max_factor is not None
+                else _adaptive_max_factor()
+            )
+            try:
+                safe_factor = float(adaptive_max_factor)
+            except (TypeError, ValueError):
+                safe_factor = 1.0
+            if not isfinite(safe_factor):
+                safe_factor = 1.0
+            safe_factor = max(safe_factor, 1.0)
+            limit = max(limit, ceil(limit * safe_factor))
+
+        configure_limit(limit)
+
     def _pending_request_retry_poll_seconds(self, job: BatchJob) -> float:
         client = job.spec.aibrix.client if job.spec.aibrix else None
         request_timeout_seconds = getattr(client, "request_timeout_seconds", None)
@@ -1216,6 +1333,12 @@ class BaseJobDriver:
             worker_id_generator=self._assign_worker_id,
             error_injection=self._error_injector,
         ) as endpoint:
+            if endpoint.source is not None:
+                self._configure_endpoint_http_connection_limit(
+                    source=endpoint.source,
+                    job=job,
+                    configured_capacity=endpoint.configured_capacity,
+                )
             self._engine = (
                 DispatchEngine(
                     endpoint.source,
@@ -1868,6 +1991,11 @@ class BaseJobDriver:
             self._ensure_error_injector(job)
             job = await self._progress_manager.mark_job_finalizing(job.job_id)
             job = await storage.finalize_job_output_data(job)
+            self._emit_finalization_phase_metric(
+                job,
+                finalization_started_at=job.status.finalizing_at,
+                finalization_ended_at=datetime.now(timezone.utc),
+            )
             synced = await self._progress_manager.mark_job_done(job)
             logger.debug("Finalized job", job_id=job.job_id)  # type: ignore[call-arg]
             self._log_completed(synced)

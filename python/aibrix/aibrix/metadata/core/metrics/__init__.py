@@ -15,6 +15,7 @@
 from aibrix.metadata.setting import MetricsConfig, load_metrics_config
 
 from . import names as metrics_names
+from .log import LogSink
 from .setup import MetricsRuntime, setup_metrics, shutdown_metrics
 from .sink import (
     Emitter,
@@ -39,6 +40,7 @@ __all__ = [
     "MetricEmissionObserver",
     "MetricsConfig",
     "MetricsRuntime",
+    "LogSink",
     "NoopSink",
     "ObservedSink",
     "T",

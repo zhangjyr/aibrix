@@ -282,6 +282,213 @@ class TestLocalStorage:
         await local_storage.delete_object(key)
 
     @pytest.mark.asyncio
+    async def test_list_objects_uses_prefix_subtree_for_hierarchical_prefix(
+        self, local_storage: LocalStorage, monkeypatch: pytest.MonkeyPatch
+    ):
+        target_key = "batchrequest:job-1:output/999"
+        unrelated_key = "batchrequest:job-2:output/999"
+        await local_storage.put_object(target_key, b"target")
+        await local_storage.put_object(unrelated_key, b"unrelated")
+
+        scanned_roots: list[Path] = []
+        original_rglob = Path.rglob
+
+        def record_rglob(path: Path, pattern: str):
+            scanned_roots.append(path)
+            return original_rglob(path, pattern)
+
+        monkeypatch.setattr(Path, "rglob", record_rglob)
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchrequest:job-1:output/",
+        )
+
+        assert objects == [target_key]
+        assert scanned_roots[0] == (
+            local_storage.base_path / "batchrequest%3Ajob-1%3Aoutput"
+        )
+
+        await local_storage.delete_object(target_key)
+        await local_storage.delete_object(unrelated_key)
+
+    @pytest.mark.asyncio
+    async def test_hierarchical_prefix_fast_path_avoids_metadata_json_reads(
+        self, local_storage: LocalStorage, monkeypatch: pytest.MonkeyPatch
+    ):
+        keys = [
+            "batchrequest:job-1:output/001",
+            "batchrequest:job-1:output/002",
+        ]
+        for key in keys:
+            await local_storage.put_object(key, b"payload")
+
+        def fail_metadata_read(_path: Path):
+            del _path
+            raise AssertionError("hierarchical fast path should not read metadata JSON")
+
+        monkeypatch.setattr(
+            local_storage,
+            "_read_metadata_created_at",
+            fail_metadata_read,
+        )
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchrequest:job-1:output/",
+        )
+
+        assert sorted(objects) == sorted(keys)
+
+        for key in keys:
+            await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_hierarchical_prefix_fast_path_orders_by_created_at_desc(
+        self, local_storage: LocalStorage
+    ):
+        created_at_by_key = {
+            "batchrequest:job-1:output/old": "2026-01-01T00:00:01+00:00",
+            "batchrequest:job-1:output/new": "2026-01-01T00:00:03+00:00",
+            "batchrequest:job-1:output/mid": "2026-01-01T00:00:02+00:00",
+        }
+
+        for key in created_at_by_key:
+            await local_storage.put_object(key, b"payload")
+
+        for key in (
+            "batchrequest:job-1:output/new",
+            "batchrequest:job-1:output/old",
+            "batchrequest:job-1:output/mid",
+        ):
+            metadata_path = local_storage._get_metadata_path(key)
+            metadata = local_storage._read_json_file(metadata_path)
+            metadata["created_at"] = created_at_by_key[key]
+            local_storage._write_json_file(metadata_path, metadata)
+
+        objects, _ = await local_storage.list_objects(
+            prefix="batchrequest:job-1:output/",
+        )
+
+        assert objects == [
+            "batchrequest:job-1:output/new",
+            "batchrequest:job-1:output/mid",
+            "batchrequest:job-1:output/old",
+        ]
+
+        for key in created_at_by_key:
+            await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_local_complete_multipart_upload_reads_part_files_directly(
+        self, local_storage: LocalStorage, monkeypatch: pytest.MonkeyPatch
+    ):
+        key = "batch/job-1/output.jsonl"
+        upload_id = await local_storage.create_multipart_upload(
+            key,
+            content_type="application/jsonl",
+            small_parts=True,
+        )
+        parts = []
+        for part_number, payload in enumerate((b"one\n", b"two\n", b"three\n"), 1):
+            etag = await local_storage.upload_part(key, upload_id, part_number, payload)
+            parts.append({"part_number": part_number, "etag": etag})
+
+        original_get_object = local_storage.get_object
+
+        async def fail_part_get_object(part_key: str, *args, **kwargs):
+            if "/part_" in part_key:
+                raise AssertionError("local completion should read part files directly")
+            return await original_get_object(part_key, *args, **kwargs)
+
+        monkeypatch.setattr(local_storage, "get_object", fail_part_get_object)
+
+        failed_parts = await local_storage.complete_multipart_upload(
+            key,
+            upload_id,
+            parts,
+            tolerate_part_get_error=True,
+        )
+
+        assert failed_parts == []
+        assert await local_storage.get_object(key) == b"one\ntwo\nthree\n"
+        assert not await local_storage.object_exists(
+            local_storage._multipart_upload_key(upload_id)
+        )
+
+        await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_local_complete_multipart_upload_uses_cached_part_data(
+        self, local_storage: LocalStorage, monkeypatch: pytest.MonkeyPatch
+    ):
+        import builtins
+
+        key = "batch/job-1/output.jsonl"
+        upload_id = await local_storage.create_multipart_upload(
+            key,
+            content_type="application/jsonl",
+            small_parts=True,
+        )
+        parts = []
+        for part_number, payload in enumerate((b"one\n", b"two\n", b"three\n"), 1):
+            etag = await local_storage.upload_part(key, upload_id, part_number, payload)
+            parts.append({"part_number": part_number, "etag": etag})
+
+        original_open = builtins.open
+
+        def fail_part_file_open(file, *args, **kwargs):
+            if "part_" in str(file):
+                raise AssertionError("local completion should use cached part data")
+            return original_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", fail_part_file_open)
+
+        failed_parts = await local_storage.complete_multipart_upload(
+            key,
+            upload_id,
+            parts,
+            tolerate_part_get_error=True,
+        )
+
+        assert failed_parts == []
+        assert await local_storage.get_object(key) == b"one\ntwo\nthree\n"
+
+        await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
+    async def test_local_complete_multipart_upload_tolerates_missing_direct_part(
+        self, local_storage: LocalStorage
+    ):
+        key = "batch/job-1/output.jsonl"
+        upload_id = await local_storage.create_multipart_upload(
+            key,
+            content_type="application/jsonl",
+            small_parts=True,
+        )
+        parts = []
+        for part_number, payload in enumerate((b"one\n", b"two\n", b"three\n"), 1):
+            etag = await local_storage.upload_part(key, upload_id, part_number, payload)
+            parts.append({"part_number": part_number, "etag": etag})
+        await local_storage.delete_object(
+            local_storage._multipart_upload_part_key(upload_id, 2)
+        )
+
+        failed_parts = await local_storage.complete_multipart_upload(
+            key,
+            upload_id,
+            parts,
+            tolerate_part_get_error=True,
+        )
+
+        assert failed_parts == [{"part_number": 2, "etag": parts[1]["etag"]}]
+        assert await local_storage.get_object(key) == b"one\nthree\n"
+        assert await local_storage.object_exists(
+            local_storage._multipart_upload_key(upload_id)
+        )
+
+        await local_storage.abort_multipart_upload(key, upload_id)
+        await local_storage.delete_object(key)
+
+    @pytest.mark.asyncio
     async def test_concurrent_operations(self, local_storage: LocalStorage):
         """Test concurrent read/write operations."""
         import asyncio

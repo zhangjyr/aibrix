@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from aibrix.metadata.core.json_profiler import JsonProfiler
+from aibrix.metadata.core.metrics.sink import T
 
 
 def test_json_profiler_records_success_and_failure_by_shared_purpose():
@@ -32,7 +33,7 @@ def test_json_profiler_records_success_and_failure_by_shared_purpose():
     assert snapshot.operations[0].failed == 1
 
 
-def test_json_profiler_emits_summary_with_purpose():
+def test_json_profiler_emits_summary_gauge_with_purpose():
     profiler = JsonProfiler(
         purpose="test-json-log",
         telemetry_enabled=True,
@@ -41,16 +42,58 @@ def test_json_profiler_emits_summary_with_purpose():
 
     profiler.profile("json.loads", json.loads, '{"ok": true}')
 
-    with patch("aibrix.metadata.core.json_profiler.logger.info") as mock_info:
+    gauges = []
+    with patch(
+        "aibrix.metadata.core.json_profiler.Emitter.gauge",
+        lambda name, value, *tags: gauges.append((name, value, tags)),
+    ):
         profiler.emit_telemetry(final=False, elapsed=1.0)
 
-    mock_info.assert_called_once()
-    _, kwargs = mock_info.call_args
-    assert kwargs["purpose"] == "test-json-log"
-    assert kwargs["started_qps"] == 1.0
-    assert kwargs["completed_qps"] == 1.0
-    assert kwargs["failed_qps"] == 0.0
-    assert kwargs["p50_latency_seconds"] is not None
+    summary_gauge = next(
+        tags for name, _, tags in gauges if name == "metadata_json_telemetry_summary"
+    )
+    assert T("purpose", "test-json-log") in summary_gauge
+    assert T("flush", "true") in summary_gauge
+    metric_values = {name: value for name, value, _ in gauges}
+    assert metric_values["metadata_json_telemetry_started_qps"] == 1.0
+    assert metric_values["metadata_json_telemetry_completed_qps"] == 1.0
+    assert metric_values["metadata_json_telemetry_failed_qps"] == 0.0
+    assert "metadata_json_telemetry_p50_latency_seconds" in metric_values
+
+
+def test_json_profiler_emits_telemetry_numeric_metrics(monkeypatch):
+    gauges = []
+
+    monkeypatch.setattr(
+        "aibrix.metadata.core.json_profiler.Emitter.gauge",
+        lambda name, value, *tags: gauges.append((name, value, tags)),
+    )
+    profiler = JsonProfiler(
+        purpose="batch_json",
+        telemetry_enabled=True,
+        telemetry_interval_seconds=0,
+    )
+    profiler.profile("decode_response", lambda: {"ok": True})
+
+    profiler.emit_telemetry(final=False, elapsed=1.0)
+
+    emitted_names = {name for name, _, _ in gauges}
+    assert "metadata_json_telemetry_completed" in emitted_names
+    assert "metadata_json_telemetry_completed_qps" in emitted_names
+    assert "metadata_json_telemetry_summary" in emitted_names
+    completed_tags = next(
+        tags for name, _, tags in gauges if name == "metadata_json_telemetry_completed"
+    )
+    assert T("log_field", "completed") in completed_tags
+    summary_gauges = [
+        (value, tags)
+        for name, value, tags in gauges
+        if name == "metadata_json_telemetry_summary"
+    ]
+    assert summary_gauges
+    assert summary_gauges[0][0] == 1.0
+    assert T("flush", "true") in summary_gauges[0][1]
+    assert T("event", "JSON profiler telemetry summary") in summary_gauges[0][1]
 
 
 def test_json_profiler_shares_periodic_emit_clock_by_purpose():
@@ -66,22 +109,25 @@ def test_json_profiler_shares_periodic_emit_clock_by_purpose():
     )
     first._purpose_state.last_telemetry_emitted_at = 0.0
 
+    gauges = []
     with (
         patch(
             "aibrix.metadata.core.json_profiler.time.perf_counter",
             side_effect=[2.0, 2.1, 2.1, 2.2, 2.2, 2.2],
         ),
-        patch("aibrix.metadata.core.json_profiler.logger.info") as mock_info,
+        patch(
+            "aibrix.metadata.core.json_profiler.Emitter.gauge",
+            lambda name, value, *tags: gauges.append((name, value, tags)),
+        ),
     ):
         first.profile("json.loads", json.loads, '{"first": true}')
         second.profile("json.loads", json.loads, '{"second": true}')
 
-    telemetry_calls = [
-        call
-        for call in mock_info.call_args_list
-        if call.args and call.args[0] == "JSON profiler telemetry summary"
+    summary_gauges = [
+        tags for name, _, tags in gauges if name == "metadata_json_telemetry_summary"
     ]
-    assert len(telemetry_calls) == 1
-    assert telemetry_calls[0].kwargs["purpose"] == "test-json-periodic-shared"
-    assert telemetry_calls[0].kwargs["window_completed"] == 1
+    assert len(summary_gauges) == 1
+    assert T("purpose", "test-json-periodic-shared") in summary_gauges[0]
+    metric_values = {name: value for name, value, _ in gauges}
+    assert metric_values["metadata_json_telemetry_window_completed"] == 1.0
     assert second.snapshot(reset_window=False).window_completed == 1

@@ -23,6 +23,7 @@ from typing import Callable, Optional, ParamSpec, TypeVar
 
 from aibrix import envs
 from aibrix.logger import init_logger
+from aibrix.metadata.core.metrics import Emitter, T
 
 logger = init_logger(__name__)
 
@@ -36,12 +37,6 @@ def _telemetry_enabled() -> bool:
 
 def _telemetry_interval_seconds() -> float:
     return envs.JSON_PROFILER_TELEMETRY_INTERVAL_SECONDS
-
-
-def _round_optional(value: Optional[float]) -> Optional[float]:
-    if value is None:
-        return None
-    return round(value, 6)
 
 
 def _percentile(samples: list[float], percentile: float) -> Optional[float]:
@@ -247,23 +242,59 @@ class JsonProfiler:
             return
         snapshot = self.snapshot(reset_window=True)
         elapsed = max(elapsed, 1e-9)
-        logger.info(
-            "JSON profiler telemetry summary",
-            purpose=self.purpose,
-            final=final,
-            started_qps=round(snapshot.window_started / elapsed, 3),
-            completed_qps=round(snapshot.window_completed / elapsed, 3),
-            failed_qps=round(snapshot.window_failed / elapsed, 3),
-            started=snapshot.started,
-            completed=snapshot.completed,
-            failed=snapshot.failed,
-            window_started=snapshot.window_started,
-            window_completed=snapshot.window_completed,
-            window_failed=snapshot.window_failed,
-            p50_latency_seconds=_round_optional(snapshot.p50_latency_seconds),
-            p95_latency_seconds=_round_optional(snapshot.p95_latency_seconds),
-            exception_types=snapshot.exception_types,
-        )  # type: ignore[call-arg]
+        event = "JSON profiler telemetry summary"
+        base_tags = (
+            T("event", event),
+            T("purpose", self.purpose),
+            T("final", str(final).lower()),
+            T("log_context", "purpose,final"),
+            T("log_context_bool", "final"),
+        )
+        numeric_fields = {
+            "started_qps": round(snapshot.window_started / elapsed, 3),
+            "completed_qps": round(snapshot.window_completed / elapsed, 3),
+            "failed_qps": round(snapshot.window_failed / elapsed, 3),
+            "started": snapshot.started,
+            "completed": snapshot.completed,
+            "failed": snapshot.failed,
+            "window_started": snapshot.window_started,
+            "window_completed": snapshot.window_completed,
+            "window_failed": snapshot.window_failed,
+        }
+        if snapshot.p50_latency_seconds is not None:
+            numeric_fields["p50_latency_seconds"] = round(
+                snapshot.p50_latency_seconds,
+                6,
+            )
+        if snapshot.p95_latency_seconds is not None:
+            numeric_fields["p95_latency_seconds"] = round(
+                snapshot.p95_latency_seconds,
+                6,
+            )
+        for metric_field, value in numeric_fields.items():
+            Emitter.gauge(
+                f"metadata_json_telemetry_{metric_field}",
+                float(value),
+                *base_tags,
+                T("log_field", metric_field),
+            )
+        for exception_type, exception_count in snapshot.exception_types.items():
+            Emitter.gauge(
+                "metadata_json_telemetry_exception_count",
+                float(exception_count),
+                *base_tags,
+                T("log_map", "exception_types"),
+                T("log_key", exception_type),
+                T("exception_type", exception_type),
+            )
+        Emitter.gauge(
+            "metadata_json_telemetry_summary",
+            1.0,
+            *base_tags,
+            T("log_default_null", "p50_latency_seconds,p95_latency_seconds"),
+            T("log_default_map", "exception_types"),
+            T("flush", "true"),
+        )
         for operation_snapshot in snapshot.operations:
             logger.debug(
                 "JSON profiler telemetry by operation",

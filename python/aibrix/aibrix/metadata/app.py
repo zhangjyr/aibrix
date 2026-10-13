@@ -38,7 +38,7 @@ from aibrix.batch.state import JobStore
 from aibrix.context import InfrastructureContext
 from aibrix.logger import init_logger, logging_basic_config
 from aibrix.metadata.api.v1 import batch, files, models, users
-from aibrix.metadata.core import HTTPXClientWrapper
+from aibrix.metadata.core import HTTPClient
 from aibrix.metadata.core.metrics import (
     Emitter,
     T,
@@ -277,7 +277,7 @@ def build_app(args: argparse.Namespace, params={}):
             # Local debug
             config.load_kube_config()
 
-    app.state.httpx_client_wrapper = HTTPXClientWrapper(
+    app.state.httpx_client_wrapper = HTTPClient(
         client_id="app_shared_httpx_client",
         timeout=envs.CORE_HTTPX_ASYNC_CLIENT_TIMEOUT_SECOND,
         telemetry_enabled=args.httpx_telemetry,
@@ -406,16 +406,22 @@ def build_app(args: argparse.Namespace, params={}):
         batch_runtime_capacity = max(getattr(args, "batch_runtime_capacity", 16), 1)
         batch_runtime_source = getattr(args, "batch_runtime_source", "static")
         batch_runtime_replicas = max(getattr(args, "batch_runtime_replicas", 1), 1)
+        batch_runtime_timeout = max(
+            float(getattr(args, "batch_runtime_timeout_seconds", 30.0)),
+            0.001,
+        )
         if batch_runtime_source == "discovery":
             endpoint_source = StaticDebugDiscoveryFactory(
                 batch_runtime_endpoint,
                 replica_count=batch_runtime_replicas,
                 capacity=batch_runtime_capacity,
+                timeout=batch_runtime_timeout,
             )
         else:
             endpoint_source = StaticEndpointSource(
                 batch_runtime_endpoint,
                 capacity=batch_runtime_capacity,
+                timeout=batch_runtime_timeout,
             )
         logger.info(
             "Batch driver using explicit runtime endpoint",
@@ -423,6 +429,7 @@ def build_app(args: argparse.Namespace, params={}):
             batch_runtime_capacity=batch_runtime_capacity,
             batch_runtime_source=batch_runtime_source,
             batch_runtime_replicas=batch_runtime_replicas,
+            batch_runtime_timeout_seconds=batch_runtime_timeout,
         )  # type: ignore[call-arg]
 
     # Initialize batches API
@@ -579,6 +586,12 @@ def build_app_arg_parser() -> argparse.ArgumentParser:
             "Number of local debug endpoints to publish when "
             "--batch-runtime-source=discovery."
         ),
+    )
+    parser.add_argument(
+        "--batch-runtime-timeout-seconds",
+        type=float,
+        default=30.0,
+        help="Read timeout in seconds for explicit local batch runtime requests.",
     )
     return parser
 

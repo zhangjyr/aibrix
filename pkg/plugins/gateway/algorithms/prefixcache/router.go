@@ -881,6 +881,8 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 	}
 	matchedPods, prefixHashes = k.syncIndexer.MatchPrefix(indexModel, loraID, tokens, readyPodsMap)
 
+	podRequestCount := routeutil.GetRequestCounts(k.cache, readyPods)
+
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("prefix cache matching completed",
 			"model", modelName,
@@ -894,38 +896,38 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 		// The request's resolved overrides carry the profile's value on top of
 		// the process default (see ResolveRoutingOverrides).
 		sigma := ctx.RoutingOverrides().PrefixCache.StandardDeviationFactor
-		targetPod = getTargetPodFromMatchedPods(k.cache, readyPods, matchedPods, sigma)
+		targetPod = getTargetPodFromMatchedPodsFromCounts(podRequestCount, readyPods, matchedPods, sigma)
 		if targetPod != nil {
 			selection = selectionPrefixMatch
-			klog.InfoS("prefix_cache_matched_pods",
+			klog.V(4).InfoS("prefix_cache_matched_pods",
 				"request_id", ctx.RequestID,
 				"target_pod", targetPod.Name,
 				"target_pod_ip", targetPod.Status.PodIP,
 				"matched_pods", matchedPods,
-				"pod_request_count", routeutil.GetRequestCounts(k.cache, readyPods))
+				"pod_request_count", podRequestCount)
 		} else {
-			klog.InfoS("prefix_cache_skip_matched_pods",
+			klog.V(4).InfoS("prefix_cache_skip_matched_pods",
 				"request_id", ctx.RequestID,
 				"matched_pods", matchedPods,
-				"pod_request_count", routeutil.GetRequestCounts(k.cache, readyPods))
+				"pod_request_count", podRequestCount)
 		}
 	}
 
 	// Fallback to least request count selection
 	if len(matchedPods) == 0 || targetPod == nil {
-		targetPod = routeutil.SelectTargetPodWithLeastRequestCount(k.cache, readyPods)
+		targetPod = routeutil.SelectTargetPodWithLeastRequestCountFromCounts(podRequestCount, readyPods)
 		if targetPod != nil {
 			if len(matchedPods) > 0 {
 				selection = "prefix_match_skipped"
 			} else {
 				selection = selectionLeastRequestFallback
 			}
-			klog.InfoS("prefix_cache_fallback_least_request_count",
+			klog.V(4).InfoS("prefix_cache_fallback_least_request_count",
 				"request_id", ctx.RequestID,
 				"target_pod", targetPod.Name,
 				"target_pod_ip", targetPod.Status.PodIP,
 				"matched_pods", matchedPods,
-				"pod_request_count", routeutil.GetRequestCounts(k.cache, readyPods))
+				"pod_request_count", podRequestCount)
 		}
 	}
 

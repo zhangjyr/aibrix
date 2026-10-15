@@ -644,6 +644,32 @@ class BatchManager(RunningJobs, SchedulableJobs):
 
         return True
 
+    async def _finish_recovered_expired_job(self, job_id: str) -> None:
+        """Finish an expired in-progress job that has no driver and no execution.
+
+        expire_job leaves an in-progress job to its live driver, and only reruns
+        orphan cleanup when durable execution metadata exists. A recovered job
+        with no execution metadata has neither, so it would stay in-progress
+        with the expired condition forever.
+        """
+        job = self._in_progress_jobs.get(job_id)
+        if (
+            job is None
+            or job.status.state != BatchJobState.IN_PROGRESS
+            or job.status.execution is not None
+            or getattr(job, "job_driver", None) is not None
+        ):
+            return
+        cleanup_driver = create_job_driver(
+            self._context,
+            self,
+            self._job_entity_manager,
+            job,
+            self._endpoint_source,
+        )
+        await cleanup_driver.cleanup(job)
+        logger.info("Recovered expired job finished", job_id=job_id)  # type: ignore[call-arg]
+
     async def job_updated_handler(self, old_job: BatchJob, new_job: BatchJob) -> bool:
         """
         This is called by job entity manager when a job status is updated.
@@ -1230,6 +1256,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
             old_job.status.state == BatchJobState.IN_PROGRESS
             and old_job.status.check_condition(ConditionType.EXPIRED)
         ):
+            # A driverless job without execution metadata has nobody else to
+            # finish it, so each pass retries a failed finish.
+            await self._finish_recovered_expired_job(job_id)
             return True
 
         if old_job.status.state == BatchJobState.FINALIZING:
@@ -1284,6 +1313,8 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 "Expired job cleaned orphaned execution",
                 job_id=job_id,
             )  # type: ignore[call-arg]
+        else:
+            await self._finish_recovered_expired_job(job_id)
 
         logger.info("Job expired", job_id=job_id)  # type: ignore[call-arg]
         return True

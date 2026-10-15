@@ -552,6 +552,20 @@ func (p prefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodLi
 	return nil
 }
 
+// indexContext returns the sync index context a request's blocks are kept
+// under. KV events index an adapter's blocks under its base model, keyed by
+// the adapter name, which is also the model name the request uses. Events take
+// the base model from the pod's model label, so the adapter's baseModel must
+// match that label or its requests won't find any blocks.
+func (k *kvSyncPrefixCacheRouter) indexContext(model string) (string, int64) {
+	if k.cache != nil {
+		if base, ok := k.cache.ModelBaseModel(model); ok {
+			return base, syncindexer.LoraIDFromName(model)
+		}
+	}
+	return model, -1
+}
+
 func (k *kvSyncPrefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, readyPodList types.PodList, targetPod *v1.Pod) error {
 	pods := readyPodList.All()
 	modelName := ctx.Model
@@ -571,12 +585,13 @@ func (k *kvSyncPrefixCacheRouter) PostRouteUpdate(ctx *types.RoutingContext, rea
 	if k.syncIndexer == nil {
 		return fmt.Errorf("sync indexer not available for KV sync routing")
 	}
-	_, prefixHashes := k.syncIndexer.MatchPrefix(modelName, int64(-1), tokens, readyPodsMap)
+	indexModel, loraID := k.indexContext(modelName)
+	_, prefixHashes := k.syncIndexer.MatchPrefix(indexModel, loraID, tokens, readyPodsMap)
 	if len(prefixHashes) == 0 {
 		return nil
 	}
 	selectedPodKey := fmt.Sprintf("%s/%s", targetPod.Namespace, targetPod.Name)
-	return k.syncIndexer.AddPrefix(modelName, int64(-1), selectedPodKey, prefixHashes)
+	return k.syncIndexer.AddPrefix(indexModel, loraID, selectedPodKey, prefixHashes)
 }
 
 // ScoreAll traverses the Radix Tree to calculate the prefix match ratio (matched tokens / total tokens) for all ready pods.
@@ -627,7 +642,7 @@ func (k *kvSyncPrefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodLi
 		modelName, _ = constants.ModelNameFromMetadata(pods[0].Labels, pods[0].Annotations)
 	}
 
-	loraID := int64(-1)
+	indexModel, loraID := k.indexContext(modelName)
 
 	tokens, err := k.tokenize(ctx, readyPodList)
 	if err != nil {
@@ -643,7 +658,7 @@ func (k *kvSyncPrefixCacheRouter) ScoreAll(ctx *types.RoutingContext, readyPodLi
 	if k.syncIndexer == nil {
 		return nil, nil, fmt.Errorf("sync indexer not available for KV sync routing")
 	}
-	matchedPods, _ := k.syncIndexer.MatchPrefix(modelName, loraID, tokens, readyPodsMap)
+	matchedPods, _ := k.syncIndexer.MatchPrefix(indexModel, loraID, tokens, readyPodsMap)
 
 	for i, pod := range pods {
 		podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
@@ -842,7 +857,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 		}
 	}()
 
-	loraID := int64(-1) // TODO: Extract from context when available
+	indexModel, loraID := k.indexContext(modelName)
 
 	tokens, err := k.tokenize(ctx, readyPodList)
 	if err != nil {
@@ -864,7 +879,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 		recordRoutingError(modelName, "sync_indexer_unavailable", true)
 		return "", fmt.Errorf("sync indexer not available for KV sync routing")
 	}
-	matchedPods, prefixHashes = k.syncIndexer.MatchPrefix(modelName, loraID, tokens, readyPodsMap)
+	matchedPods, prefixHashes = k.syncIndexer.MatchPrefix(indexModel, loraID, tokens, readyPodsMap)
 
 	if klog.V(4).Enabled() {
 		klog.V(4).InfoS("prefix cache matching completed",
@@ -924,7 +939,7 @@ func (k *kvSyncPrefixCacheRouter) Route(ctx *types.RoutingContext, readyPodList 
 
 	// Add prefix to sync indexer if we have prefixes
 	if len(prefixHashes) > 0 {
-		_ = k.syncIndexer.AddPrefix(modelName, loraID, selectedPodKey, prefixHashes)
+		_ = k.syncIndexer.AddPrefix(indexModel, loraID, selectedPodKey, prefixHashes)
 	}
 
 	matchPercent := 0

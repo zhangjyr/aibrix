@@ -937,6 +937,9 @@ class BatchManager(RunningJobs, SchedulableJobs):
 
         try:
             endpoint_source = self._endpoint_source
+            source_factory = getattr(endpoint_source, "for_job", None)
+            if callable(source_factory):
+                endpoint_source = source_factory(job_id)
 
             job_driver = create_job_driver(
                 self._context,

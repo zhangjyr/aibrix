@@ -56,7 +56,9 @@ from aibrix.batch.client.sources import (
     InClusterEndpointSource,
     NoopEndpointSource,
     PortForwardEndpointSource,
+    StaticDebugDiscoveryFactory,
     StaticEndpointSource,
+    StaticModelDiscovery,
 )
 
 __all__ = [
@@ -82,6 +84,8 @@ __all__ = [
     "InClusterEndpointSource",
     "PortForwardEndpointSource",
     "DiscoveryEndpointSource",
+    "StaticDebugDiscoveryFactory",
+    "StaticModelDiscovery",
     # engine + policy
     "DispatchEngine",
     "DispatchStats",

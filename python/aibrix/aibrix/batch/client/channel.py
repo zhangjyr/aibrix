@@ -189,6 +189,23 @@ class HttpChannel:
             self._client = None
 
 
+def create_batch_runtime_http_client(
+    client_id: str,
+    *,
+    max_connections: int = 100,
+    limit_per_host: int = 100,
+) -> HTTPXClientWrapper:
+    del limit_per_host  # HTTPX does not support a separate per-host limit.
+    normalized_max_connections = max(int(max_connections), 1)
+    return HTTPXClientWrapper(
+        client_id=client_id,
+        limits=httpx.Limits(
+            max_connections=normalized_max_connections,
+            keepalive_expiry=_KEEPALIVE_EXPIRY_SECONDS,
+        ),
+    )
+
+
 class EchoChannel:
     """Returns the request payload verbatim. For --dry-run only; no real engine.
 

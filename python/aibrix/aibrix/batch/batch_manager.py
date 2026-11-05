@@ -942,12 +942,17 @@ class BatchManager(RunningJobs, SchedulableJobs):
             )  # type: ignore[call-arg]
 
         try:
+            endpoint_source = self._endpoint_source
+            source_factory = getattr(endpoint_source, "for_job", None)
+            if callable(source_factory):
+                endpoint_source = source_factory(job_id)
+
             job_driver = create_job_driver(
                 self._context,
                 self,
                 self._job_entity_manager,
                 meta_data,
-                self._endpoint_source,
+                endpoint_source,
             )
             meta_data._job_driver = job_driver
             if needs_validation:

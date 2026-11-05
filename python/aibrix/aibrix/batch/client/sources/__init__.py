@@ -23,6 +23,10 @@ from aibrix.batch.client.sources.static import (
     NoopEndpointSource,
     StaticEndpointSource,
 )
+from aibrix.batch.client.sources.static_debug import (
+    StaticDebugDiscoveryFactory,
+    StaticModelDiscovery,
+)
 
 __all__ = [
     "StaticEndpointSource",
@@ -32,4 +36,6 @@ __all__ = [
     "K8sEndpointSliceDiscovery",
     "PortForwardEndpointSource",
     "DiscoveryEndpointSource",
+    "StaticDebugDiscoveryFactory",
+    "StaticModelDiscovery",
 ]

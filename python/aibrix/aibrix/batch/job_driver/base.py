@@ -38,7 +38,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
-from math import isfinite
+from math import ceil, isfinite
 from typing import Any, Dict, Iterable, Optional, Set, Tuple
 
 import aibrix.batch.storage as storage
@@ -1053,6 +1053,53 @@ class BaseJobDriver:
         client = job.spec.aibrix.client if job.spec.aibrix else None
         return getattr(client, "request_timeout_seconds", None)
 
+    def _configure_endpoint_http_connection_limit(
+        self,
+        *,
+        source: Any,
+        job: BatchJob,
+        configured_capacity: Optional[int],
+    ) -> None:
+        configure_limit = getattr(source, "set_http_connection_limit", None)
+        if not callable(configure_limit):
+            return
+
+        base_capacity = configured_capacity or getattr(
+            source, "configured_capacity", None
+        )
+        if base_capacity is None:
+            return
+        try:
+            limit = max(int(base_capacity), 1)
+        except (TypeError, ValueError):
+            return
+
+        client = job.spec.aibrix.client if job.spec.aibrix else None
+        adaptive = (
+            client.adaptive_concurrency
+            if client is not None and client.adaptive_concurrency is not None
+            else True
+        )
+        max_concurrency = client.max_concurrency if client is not None else None
+        if max_concurrency is not None:
+            limit = max(int(max_concurrency), 1)
+        elif adaptive:
+            adaptive_max_factor = (
+                client.adaptive_max_factor
+                if client is not None and client.adaptive_max_factor is not None
+                else _adaptive_max_factor()
+            )
+            try:
+                safe_factor = float(adaptive_max_factor)
+            except (TypeError, ValueError):
+                safe_factor = 1.0
+            if not isfinite(safe_factor):
+                safe_factor = 1.0
+            safe_factor = max(safe_factor, 1.0)
+            limit = max(limit, ceil(limit * safe_factor))
+
+        configure_limit(limit)
+
     def _pending_request_retry_poll_seconds(self, job: BatchJob) -> float:
         client = job.spec.aibrix.client if job.spec.aibrix else None
         request_timeout_seconds = getattr(client, "request_timeout_seconds", None)
@@ -1225,6 +1272,12 @@ class BaseJobDriver:
             worker_id_generator=self._assign_worker_id,
             error_injection=self._error_injector,
         ) as endpoint:
+            if endpoint.source is not None:
+                self._configure_endpoint_http_connection_limit(
+                    source=endpoint.source,
+                    job=job,
+                    configured_capacity=endpoint.configured_capacity,
+                )
             self._engine = (
                 DispatchEngine(
                     endpoint.source,

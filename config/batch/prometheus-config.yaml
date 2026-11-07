@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - aibrix-prometheus:9090
+
+  - job_name: metadata-service
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - aibrix-metadata-service.aibrix-system.svc.cluster.local:8090
+
+  - job_name: console
+    metrics_path: /api/v1/metrics
+    static_configs:
+      - targets:
+          - aibrix-console.aibrix-system.svc.cluster.local:8080

@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: batch-grafana-datasources
+  namespace: aibrix-system
+data:
+  datasources.yaml: |
+    apiVersion: 1
+
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        isDefault: true
+        url: http://aibrix-prometheus.aibrix-system.svc.cluster.local:9090
+        jsonData:
+          timeInterval: 15s
+      - name: OpenTSDB
+        type: opentsdb
+        access: proxy
+        url: http://aibrix-opentsdb.aibrix-system.svc.cluster.local:4242
+        jsonData:
+          tsdbVersion: 2.4

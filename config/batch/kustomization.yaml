@@ -1,0 +1,54 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namePrefix: aibrix-
+
+resources:
+  - ../namespace
+  - ../metadata
+  - metadata-deployment-rbac.yaml
+  - batch_profiles.yaml
+  - model_deployment_templates.yaml
+  - prometheus-configmap.yaml
+  - grafana-datasources-configmap.yaml
+  - console.yaml
+  - storage.yaml
+  - prometheus.yaml
+  - opentsdb.yaml
+  - grafana.yaml
+
+patches:
+  - path: metadata-local-patch.yaml
+  - path: metadata-s3-env-patch.yaml
+  - path: metadata-opentsdb-env-patch.yaml
+  - target:
+      version: v1
+      kind: Namespace
+      name: system
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: aibrix-system
+
+images:
+  - name: metadata-service
+    newName: aibrix/metadata-service
+    newTag: nightly
+  - name: console
+    newName: aibrix/console
+    newTag: latest
+  - name: redis
+    newName: redis
+    newTag: "7.4"
+  - name: busybox
+    newName: busybox
+    newTag: stable
+  - name: opentsdb
+    newName: petergrace/opentsdb-docker
+    newTag: latest
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: aibrix
+      app.kubernetes.io/managed-by: kubectl
+      app.kubernetes.io/part-of: batch-local

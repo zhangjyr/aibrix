@@ -461,7 +461,7 @@
       "targets": [
         {
           "aggregator": "avg",
-          "alias": "p90",
+          "alias": "avg $tag_finalize_type",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
           "currentFilterType": "literal_or",
@@ -487,42 +487,6 @@
           "prevRateOrDelte": null,
           "rateDownsampleType": "before_downsample",
           "refId": "A",
-          "shouldComputeMulti": false,
-          "shouldComputeRate": false,
-          "shouldComputeTopK": false,
-          "tags": {},
-          "tenant": "default",
-          "topKType": "top"
-        },
-        {
-          "aggregator": "avg",
-          "alias": "avg $tag_finalize_type",
-          "currentFilterGroupBy": false,
-          "currentFilterKey": "",
-          "currentFilterType": "literal_or",
-          "currentFilterValue": "",
-          "currentTagKey": "",
-          "currentTagValue": "",
-          "datasource": "${datasource}",
-          "downsampleAggregator": "avg",
-          "downsampleAggregatorDisabled": false,
-          "downsampleFillPolicy": "none",
-          "downsampleFillPolicyDisabled": false,
-          "downsampleInterval": "",
-          "explicitTags": false,
-          "filters": [
-            {
-              "filter": "*",
-              "groupBy": true,
-              "tagk": "finalize_type",
-              "type": "wildcard"
-            }
-          ],
-          "hide": true,
-          "metric": "metadata.batch.api.job.execution_time.ms",
-          "prevRateOrDelte": null,
-          "rateDownsampleType": "before_downsample",
-          "refId": "B",
           "shouldComputeMulti": false,
           "shouldComputeRate": false,
           "shouldComputeTopK": false,
@@ -1496,7 +1460,7 @@
       },
       "targets": [
         {
-          "aggregator": "avg",
+          "aggregator": "sum",
           "alias": "request rate",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -1511,14 +1475,7 @@
           "downsampleFillPolicyDisabled": false,
           "downsampleInterval": "",
           "explicitTags": false,
-          "filters": [
-            {
-              "filter": "$job_id",
-              "groupBy": false,
-              "tagk": "job_id",
-              "type": "wildcard"
-            }
-          ],
+          "filters": [],
           "isCounter": false,
           "metric": "metadata.http.request",
           "prevRateOrDelte": null,
@@ -1583,7 +1540,7 @@
       "targets": [
         {
           "aggregator": "avg",
-          "alias": "mean",
+          "alias": "avg",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
           "currentFilterType": "literal_or",
@@ -1612,7 +1569,7 @@
           "topKType": "top"
         }
       ],
-      "title": "MDS Mean Latency",
+      "title": "MDS Avg Latency",
       "type": "stat"
     },
     {
@@ -1740,7 +1697,7 @@
       },
       "targets": [
         {
-          "aggregator": "avg",
+          "aggregator": "sum",
           "alias": "inflight",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -1819,7 +1776,7 @@
       },
       "targets": [
         {
-          "aggregator": "p90",
+          "aggregator": "avg",
           "alias": "p90",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -1986,7 +1943,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "avg",
+          "downsampleAggregator": "p90",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,
@@ -2135,7 +2092,7 @@
       },
       "targets": [
         {
-          "aggregator": "avg",
+          "aggregator": "max",
           "alias": "rss mb",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -2144,7 +2101,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "avg",
+          "downsampleAggregator": "max",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,
@@ -2214,7 +2171,7 @@
       },
       "targets": [
         {
-          "aggregator": "avg",
+          "aggregator": "max",
           "alias": "gen2 count",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -2223,7 +2180,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "avg",
+          "downsampleAggregator": "max",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,
@@ -2336,7 +2293,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "sum",
+          "downsampleAggregator": "avg",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,
@@ -2436,7 +2393,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "sum",
+          "downsampleAggregator": "avg",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,
@@ -2541,7 +2498,7 @@
       "targets": [
         {
           "aggregator": "avg",
-          "alias": "mean",
+          "alias": "latency",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
           "currentFilterType": "literal_or",
@@ -2570,7 +2527,7 @@
           "topKType": "top"
         }
       ],
-      "title": "MDS Mean Latency",
+      "title": "MDS Avg Latency",
       "type": "timeseries"
     },
     {
@@ -2762,7 +2719,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "sum",
+          "downsampleAggregator": "avg",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,
@@ -2860,7 +2817,7 @@
       },
       "targets": [
         {
-          "aggregator": "avg",
+          "aggregator": "sum",
           "alias": "inflight",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -2990,7 +2947,7 @@
           "topKType": "top"
         },
         {
-          "aggregator": "p90",
+          "aggregator": "avg",
           "alias": "p90",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -3355,7 +3312,7 @@
       },
       "targets": [
         {
-          "aggregator": "avg",
+          "aggregator": "sum",
           "alias": "started $tag_purpose",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -3392,7 +3349,7 @@
           "topKType": "top"
         },
         {
-          "aggregator": "avg",
+          "aggregator": "sum",
           "alias": "completed $tag_purpose",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -3429,7 +3386,7 @@
           "topKType": "top"
         },
         {
-          "aggregator": "avg",
+          "aggregator": "sum",
           "alias": "failed $tag_purpose",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -3536,7 +3493,7 @@
       },
       "targets": [
         {
-          "aggregator": "avg",
+          "aggregator": "sum",
           "alias": "failed $tag_purpose",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -3545,7 +3502,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "avg",
+          "downsampleAggregator": "sum",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,
@@ -3573,7 +3530,7 @@
           "topKType": "top"
         },
         {
-          "aggregator": "avg",
+          "aggregator": "sum",
           "alias": "window_failed $tag_purpose",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -3717,7 +3674,7 @@
           "topKType": "top"
         },
         {
-          "aggregator": "avg",
+          "aggregator": "p90",
           "alias": "p90 $tag_purpose",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -3824,7 +3781,7 @@
       },
       "targets": [
         {
-          "aggregator": "avg",
+          "aggregator": "sum",
           "alias": "$tag_purpose $tag_exception_type",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -3833,7 +3790,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "avg",
+          "downsampleAggregator": "sum",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,
@@ -4072,7 +4029,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "avg",
+          "downsampleAggregator": "p90",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,
@@ -4176,7 +4133,7 @@
       },
       "targets": [
         {
-          "aggregator": "sum",
+          "aggregator": "count",
           "alias": "$tag_backend $tag_operation",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -4185,7 +4142,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "sum",
+          "downsampleAggregator": "count",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,
@@ -4206,7 +4163,7 @@
             }
           ],
           "isCounter": false,
-          "metric": "metadata.store.duration.count",
+          "metric": "metadata.store.duration.ms",
           "prevRateOrDelte": null,
           "rateDownsampleType": "before_downsample",
           "refId": "A",
@@ -4421,7 +4378,7 @@
       },
       "targets": [
         {
-          "aggregator": "avg",
+          "aggregator": "sum",
           "alias": "emit/s",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -4551,7 +4508,7 @@
           "topKType": "top"
         },
         {
-          "aggregator": "p90",
+          "aggregator": "avg",
           "alias": "p90",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -4651,7 +4608,7 @@
       },
       "targets": [
         {
-          "aggregator": "avg",
+          "aggregator": "max",
           "alias": "rss_mb",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -4660,7 +4617,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "avg",
+          "downsampleAggregator": "max",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,
@@ -4751,7 +4708,7 @@
       },
       "targets": [
         {
-          "aggregator": "avg",
+          "aggregator": "max",
           "alias": "gen0",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -4760,7 +4717,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "avg",
+          "downsampleAggregator": "max",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,
@@ -4781,7 +4738,7 @@
           "topKType": "top"
         },
         {
-          "aggregator": "avg",
+          "aggregator": "max",
           "alias": "gen1",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -4790,7 +4747,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "avg",
+          "downsampleAggregator": "max",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,
@@ -4811,7 +4768,7 @@
           "topKType": "top"
         },
         {
-          "aggregator": "avg",
+          "aggregator": "max",
           "alias": "gen2",
           "currentFilterGroupBy": false,
           "currentFilterKey": "",
@@ -4820,7 +4777,7 @@
           "currentTagKey": "",
           "currentTagValue": "",
           "datasource": "${datasource}",
-          "downsampleAggregator": "avg",
+          "downsampleAggregator": "max",
           "downsampleAggregatorDisabled": false,
           "downsampleFillPolicy": "none",
           "downsampleFillPolicyDisabled": false,

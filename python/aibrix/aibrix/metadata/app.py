@@ -29,7 +29,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from aibrix import envs
 from aibrix.batch import BatchDriver
 from aibrix.batch.client import (
-    EndpointSource,
+    EndpointSourceHandle,
     NoopEndpointSource,
     StaticDebugDiscoveryFactory,
     StaticEndpointSource,
@@ -393,7 +393,7 @@ def build_app(args: argparse.Namespace, params={}):
     # carry their own ``aibrix.runtime.target`` and the per-job runtime
     # (k8s job / deployment) builds its own EndpointSource. The only app-level
     # source is the echo client used by --dry-run.
-    endpoint_source: Optional[EndpointSource] = None
+    endpoint_source: Optional[EndpointSourceHandle] = None
     dry_run = getattr(args, "dry_run", False)
     batch_runtime_endpoint = getattr(args, "batch_runtime_endpoint", None)
     if dry_run:

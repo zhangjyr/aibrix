@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 from typing import Any, Collection, Dict, List, Optional, Tuple, cast
 
 from aibrix.batch.batch_scheduler import BatchScheduler
-from aibrix.batch.client import EndpointSource
+from aibrix.batch.client import EndpointSource, EndpointSourceHandle
+from aibrix.batch.client.source import PerJobEndpointSourceFactory
 from aibrix.batch.job_driver import (
     JobDriver,
     RunningJobs,
@@ -189,7 +190,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
         self._context = context
         # Injected at startup by the BatchDriver; passed to create_job_driver
         # when admitting a job (the inference backend the driver dispatches to).
-        self._endpoint_source: Optional[EndpointSource] = None
+        self._endpoint_source: Optional[EndpointSourceHandle] = None
 
         self._creation_timeouts: Dict[str, asyncio.Task] = {}
         self._session_metadata: Dict[str, Dict[str, Any]] = {}
@@ -283,10 +284,18 @@ class BatchManager(RunningJobs, SchedulableJobs):
     def set_scheduler(self, scheduler: BatchScheduler) -> None:
         self._job_scheduler = scheduler
 
-    def set_endpoint_source(self, endpoint_source: Optional[EndpointSource]) -> None:
+    def set_endpoint_source(
+        self, endpoint_source: Optional[EndpointSourceHandle]
+    ) -> None:
         """The inference backend an admitted job's driver dispatches against.
         Injected once at startup so admission need not thread it through."""
         self._endpoint_source = endpoint_source
+
+    def _endpoint_source_for_job(self, job_id: str) -> Optional[EndpointSource]:
+        endpoint_source = self._endpoint_source
+        if isinstance(endpoint_source, PerJobEndpointSourceFactory):
+            return endpoint_source.for_job(job_id)
+        return endpoint_source
 
     def _as_job_meta(self, job: BatchJob) -> JobMetaInfo:
         if isinstance(job, JobMetaInfo):
@@ -700,7 +709,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
             self,
             self._job_entity_manager,
             job,
-            self._endpoint_source,
+            self._endpoint_source_for_job(job_id),
         )
         await cleanup_driver.cleanup(job)
         logger.info("Recovered expired job finished", job_id=job_id)  # type: ignore[call-arg]
@@ -936,17 +945,12 @@ class BatchManager(RunningJobs, SchedulableJobs):
             )  # type: ignore[call-arg]
 
         try:
-            endpoint_source = self._endpoint_source
-            source_factory = getattr(endpoint_source, "for_job", None)
-            if callable(source_factory):
-                endpoint_source = source_factory(job_id)
-
             job_driver = create_job_driver(
                 self._context,
                 self,
                 self._job_entity_manager,
                 meta_data,
-                endpoint_source,
+                self._endpoint_source_for_job(job_id),
             )
             meta_data._job_driver = job_driver
             if needs_validation:
@@ -1316,7 +1320,7 @@ class BatchManager(RunningJobs, SchedulableJobs):
                 self,
                 self._job_entity_manager,
                 old_job,
-                self._endpoint_source,
+                self._endpoint_source_for_job(job_id),
             )
             await cleanup_driver.cleanup(job_expired)
             logger.info(

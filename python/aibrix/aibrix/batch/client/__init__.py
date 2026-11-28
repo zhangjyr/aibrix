@@ -49,7 +49,12 @@ from aibrix.batch.client.engine import (
 )
 from aibrix.batch.client.errors import InferenceError, InferenceErrorCode
 from aibrix.batch.client.policy import FIFO, RoundRobin, Router, Scheduler
-from aibrix.batch.client.source import CapacitySignal, EndpointSource
+from aibrix.batch.client.source import (
+    CapacitySignal,
+    EndpointSource,
+    EndpointSourceHandle,
+    PerJobEndpointSourceFactory,
+)
 from aibrix.batch.client.sources import (
     DiscoveryEndpointSource,
     GatewayEndpointSource,
@@ -77,6 +82,8 @@ __all__ = [
     "concurrency_outcome_from_result",
     # source
     "EndpointSource",
+    "PerJobEndpointSourceFactory",
+    "EndpointSourceHandle",
     "CapacitySignal",
     "StaticEndpointSource",
     "GatewayEndpointSource",

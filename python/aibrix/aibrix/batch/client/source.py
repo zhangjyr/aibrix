@@ -28,7 +28,7 @@ not escape as a job-level internal error.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Protocol, runtime_checkable
+from typing import List, Protocol, TypeAlias, runtime_checkable
 
 from aibrix.batch.client.channel import Channel
 
@@ -71,6 +71,18 @@ class EndpointSource(Protocol):
     ) -> CapacitySignal: ...
 
     async def aclose(self) -> None: ...
+
+
+@runtime_checkable
+class PerJobEndpointSourceFactory(Protocol):
+    """Creates one endpoint source per job while keeping source lifecycle local."""
+
+    def for_job(self, job_id: str) -> EndpointSource: ...
+
+    async def aclose(self) -> None: ...
+
+
+EndpointSourceHandle: TypeAlias = EndpointSource | PerJobEndpointSourceFactory
 
 
 @runtime_checkable

@@ -186,6 +186,8 @@ METRICS_DOGSTATSD_TAGS = [
 METRICS_LOG_ENABLED = _is_true(os.getenv("METRICS_LOG_ENABLED", "0"))
 DEFAULT_METRICS_LOG_INCLUDE = [
     "metadata.metrics.emit.*",
+    "metadata.process.*,",
+    "metadata.gc.*",
     "metadata.http.client.telemetry.*",
     "metadata.batch.dispatch.telemetry.*",
     "metadata.json.telemetry.*",

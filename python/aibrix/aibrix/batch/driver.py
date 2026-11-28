@@ -18,7 +18,7 @@ from typing import Any, Coroutine, Dict, List, Optional
 import aibrix.batch.storage as _storage
 from aibrix.batch.batch_manager import BatchManager
 from aibrix.batch.batch_scheduler import BatchScheduler
-from aibrix.batch.client import EndpointSource
+from aibrix.batch.client import EndpointSourceHandle
 from aibrix.batch.constant import DEFAULT_JOB_POOL_SIZE
 from aibrix.batch.job_driver.driver import TerminateResult
 from aibrix.batch.job_entity import BatchJob, BatchJobSpec
@@ -38,7 +38,7 @@ class BatchDriver:
         job_entity_manager: Optional[JobEntityManager] = None,
         storage_type: StorageType = StorageType.AUTO,
         metastore_type: StorageType = StorageType.AUTO,
-        endpoint_source: Optional[EndpointSource] = None,
+        endpoint_source: Optional[EndpointSourceHandle] = None,
         stand_alone: bool = False,
         params={},
     ):
